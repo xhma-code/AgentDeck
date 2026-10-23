@@ -1710,7 +1710,7 @@ function renderSidebarStatus() {
     // 发现前端代码更新：亮蓝呼吸脉冲 + 向上箭头图标（手机端专属更新入口）
     if (btn) {
       btn.className =
-        "flex md:hidden h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/50 text-sky-200 items-center gap-1.5 text-xs transition active:scale-95 shadow-[0_0_12px_rgba(56,189,248,0.25)] animate-pulse cursor-pointer";
+        "flex md:hidden h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/50 text-sky-200 items-center gap-1.5 text-xs transition active:scale-95 shadow-[0_0_12px_rgba(56,189,248,0.25)] animate-pulse cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none";
       btn.title = "发现新版本前端代码，点击立即载入更新";
       btn.innerHTML = `
         <svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -1723,7 +1723,7 @@ function renderSidebarStatus() {
     if (headerIndicator) {
       headerIndicator.classList.remove("hidden");
       headerIndicator.className =
-        "shrink-0 h-6 px-1.5 rounded-md bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/50 text-sky-300 flex items-center gap-1 text-[11px] transition active:scale-95 shadow-sm animate-pulse cursor-pointer";
+        "shrink-0 h-6 px-1.5 rounded-md bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/50 text-sky-300 flex items-center gap-1 text-[11px] transition active:scale-95 shadow-sm animate-pulse cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none";
       headerIndicator.title = "发现前端代码更新，点击立即载入最新代码";
       headerIndicator.innerHTML = `
         <svg class="w-3 h-3 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -1739,7 +1739,7 @@ function renderSidebarStatus() {
   // 常规连接状态：仅手机端保留圆圈图标以供状态显示与更新，电脑网页端隐藏（与右上角扫码前圆点去重）
   if (btn) {
     btn.className =
-      "flex md:hidden h-8 w-8 rounded-lg bg-transparent hover:bg-zinc-900/60 text-zinc-300 items-center justify-center text-xs transition active:scale-95 cursor-pointer";
+      "flex md:hidden h-8 w-8 rounded-lg bg-transparent hover:bg-zinc-900/60 text-zinc-300 items-center justify-center text-xs transition active:scale-95 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none";
 
     if (state.wsConnected) {
       btn.title = "WebSocket 实时连接正常（双击可强制重载）";

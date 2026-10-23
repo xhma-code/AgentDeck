@@ -161,7 +161,11 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 except Exception:
                     continue
         except Exception as exc:
-            logger.debug(f"扫描 Claude 活跃状态会话异常: {exc}")
+            logger.error(
+                "扫描 Claude 活跃状态会话异常: 目标目录=%s, 异常=%s, 处理=降级返回空映射",
+                self.config_dir,
+                exc,
+            )
         return active_map
 
     def is_external_session_active(self, raw_session_id: str) -> bool:

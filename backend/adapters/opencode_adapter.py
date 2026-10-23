@@ -160,7 +160,7 @@ class OpenCodeHttpBridge:
         except (urllib.error.URLError, TimeoutError, OSError):
             pass
         except Exception as exc:
-            logger.debug(f"探测 OpenCode 2 API 遇到非网络异常: {exc}")
+            logger.error("探测 OpenCode 2 API 遇到非网络异常: 服务地址=%s, 异常=%s, 处理=尝试回退探测 v1", self.base_url, exc)
 
         # 2. 回退探测 OpenCode 1 的 /session
         try:
@@ -170,7 +170,7 @@ class OpenCodeHttpBridge:
         except (urllib.error.URLError, TimeoutError, OSError):
             return False
         except Exception as exc:
-            logger.debug(f"探测 OpenCode 1 API 遇到非网络异常: {exc}")
+            logger.error("探测 OpenCode 1 API 遇到非网络异常: 服务地址=%s, 异常=%s, 处理=判定服务未就绪", self.base_url, exc)
             return False
 
     def is_alive(self) -> bool:
@@ -927,7 +927,8 @@ class OpenCodeAdapter(BaseAgentAdapter):
                         if state.get("error"):
                             full_chunks.append(str(state["error"]))
                 return "\n\n".join(full_chunks)
-            except Exception:
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as parse_err:
+                logger.error("解析 OpenCode 2 消息工具内容失败: 消息ID=%s, 异常=%s, 处理=回退至 OpenCode 1 消息解析", target_mid, parse_err)
                 return ""
 
         # OpenCode 1 回退

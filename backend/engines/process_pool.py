@@ -695,7 +695,11 @@ class AgentOrchestrator:
                                 is_active = True
                             break
             except Exception as exc:
-                logger.debug(f"检查会话 {raw_id[:8]} 活跃态异常: {exc}")
+                logger.error(
+                    "检查外部会话活跃态失败: 会话ID=%s, 异常=%s, 处理=安全降级为非活跃",
+                    raw_id[:8],
+                    exc,
+                )
         if not is_active and messages:
             last_msg = messages[-1]
             if last_msg.get("status") == "RUNNING":
@@ -922,11 +926,10 @@ class AgentOrchestrator:
         default_mid = self._resolve_default_model(agent_type)
         chosen_model = model_name or overrides.get("model_name") or default_mid
 
-        # 测试安全护栏：若处于测试环境或虚拟测试会话，严禁拉起外部宿主机 CLI 污染真实数据
-        if (
-            raw_session_id.startswith(("test_", "mock_"))
-            or "PYTEST_CURRENT_TEST" in os.environ
-        ) and not getattr(self, "_allow_real_process_in_test", False):
+        # 测试安全护栏：若处于测试环境，严禁拉起外部宿主机 CLI 污染真实数据
+        if "PYTEST_CURRENT_TEST" in os.environ and not getattr(
+            self, "_allow_real_process_in_test", False
+        ):
             return {
                 "ok": True,
                 "unified_id": unified_id,
@@ -1131,8 +1134,8 @@ class AgentOrchestrator:
         实时解析思考增量、工具调用、权限审批请求并通过 WebSocket 推送到手机端。
         """
         unified_id = ctx.unified_id
-        # 虚拟测试会话安全护栏：若为模拟会话且未显式允许真实子进程，安全广播完成，不拉起外部进程
-        if ctx.raw_session_id.startswith(("test_", "mock_")) and not getattr(
+        # 测试环境安全护栏：若处于测试环境且未显式允许真实子进程，安全广播完成，不拉起外部进程
+        if "PYTEST_CURRENT_TEST" in os.environ and not getattr(
             self, "_allow_real_process_in_test", False
         ):
             await self.broadcast_event(
