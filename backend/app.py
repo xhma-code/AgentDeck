@@ -39,6 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.core.workspace import (
+    WorkspaceDocumentReader,
     decode_workspace_uri,
     discover_quick_workflows,
     get_git_workspace_diff,
@@ -649,55 +650,14 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         _auth: bool = Depends(verify_request_auth),
     ) -> dict[str, Any]:
         """供手机端全屏阅读器安全读取本地 Markdown 文档（如 implementation_plan.md）或源码文件。"""
-        raw_clean = path.split("#")[0].split("?")[0].strip()
-        norm_path = decode_workspace_uri(raw_clean)
-        if not norm_path:
-            raise HTTPException(status_code=400, detail="无效的文件路径")
-
-        file_obj = Path(norm_path).resolve()
-        if not file_obj.exists() or not file_obj.is_file():
-            raise HTTPException(status_code=404, detail=f"文件不存在: {file_obj.name}")
-
-        lower_name = file_obj.name.lower()
-        ext = file_obj.suffix.lower()
-        parts_lower = {p.lower() for p in file_obj.parts}
-        blocked_dir_names = {".ssh", ".aws", ".azure", ".kube", ".gnupg", ".git", ".docker", "credentials"}
-        if any(bd in parts_lower for bd in blocked_dir_names):
-            raise HTTPException(status_code=403, detail=f"禁止读取系统敏感配置目录文件 ({file_obj.name})")
-
-        blocked_names = {
-            ".env", ".env.local", ".env.production", ".env.staging", ".env.test",
-            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "known_hosts", "authorized_keys",
-            ".npmrc", ".pypirc", ".netrc", ".bash_history", ".zsh_history",
-        }
-        blocked_exts = {
-            ".exe", ".dll", ".so", ".dylib", ".db", ".sqlite", ".sqlite3",
-            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".tar", ".gz",
-            ".pem", ".key", ".pfx", ".crt",
-        }
-        if lower_name in blocked_names or ext in blocked_exts or lower_name.startswith(".env"):
-            raise HTTPException(status_code=403, detail=f"暂不支持直接文本预览该类型文件 ({file_obj.name})")
-
-        max_bytes = 256 * 1024
-        stat = file_obj.stat()
-        raw_bytes = await asyncio.to_thread(file_obj.read_bytes)
-        is_truncated = len(raw_bytes) > max_bytes
-        if is_truncated:
-            raw_bytes = raw_bytes[:max_bytes]
-
-        content = raw_bytes.decode("utf-8", errors="replace")
-        if is_truncated:
-            content += f"\n\n> [!NOTE]\n> 文档较大（共 {stat.st_size} 字节），手机端已截取前 256KB 展示。"
-
-        return {
-            "ok": True,
-            "path": norm_path,
-            "filename": file_obj.name,
-            "ext": ext,
-            "is_markdown": ext in (".md", ".markdown", ".mdx", ".txt"),
-            "size_bytes": stat.st_size,
-            "content": content,
-        }
+        try:
+            return await asyncio.to_thread(WorkspaceDocumentReader.read_document, path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
 
     @app.get("/api/v1/git/status")
     async def read_git_status(

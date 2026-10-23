@@ -21,8 +21,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Coroutine, NamedTuple, Optional
 
-import watchfiles
-
 from backend.adapters.antigravity_adapter import (
     AntigravityAdapter,
     fork_ide_session_to_cli,
@@ -41,7 +39,10 @@ from backend.adapters.opencode_adapter import OpenCodeAdapter
 from backend.core.database import PROJECT_ROOT, MetaDatabase, utc_now_iso
 from backend.core.logger import log_structured_error, logger
 from backend.core.workspace import discover_quick_workflows, evaluate_project_dir
+from backend.engines.approval import ApprovalCoordinator, PendingApproval
+from backend.engines.cache import EtagNegotiator, SessionMessagesEtagEntry
 from backend.engines.event_bus import RealtimeEventBus
+from backend.engines.watcher import SafeStorageWatcher
 
 # 四大 Agent 可选模型目录（严格对齐本机 agy models 官方完整清单与 Claude Code / OpenCode）
 AGENT_MODELS: dict[str, list[dict[str, Any]]] = {
@@ -105,37 +106,6 @@ class TurnContext:
     approved_tools: Optional[list[str]] = None
 
 
-@dataclass
-class PendingApproval:
-    """挂起等待手机端用户确认的工具审批请求快照。"""
-
-    approval_id: str
-    unified_id: str
-    agent_type: str
-    raw_session_id: str
-    tool_call_id: str
-    tool_name: str
-    args_summary: str
-    diff_text: str
-    risk_level: str  # "normal" | "high"
-    prompt_context: str
-    project_path: str
-    created_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-class SessionMessagesEtagEntry(NamedTuple):
-    """单会话消息轻量 ETag 缓存快照条目（消除原始元组基本类型偏执）。"""
-
-    mtime_ns: int
-    fsize: int
-    is_running: int
-    pa_flag: int
-    etag: str
-
-
 def kill_windows_process_tree(pid: Optional[int]) -> bool:
     """
     在 Windows 下使用 `taskkill /F /T /PID` 递归强杀整棵子孙进程树（含派生的 pwsh.exe / node.exe）。
@@ -170,8 +140,9 @@ class AgentOrchestrator:
     四大 Agent 统一编排器与 `StreamJsonProcessPool` 进程池总管。
     负责：
     1. 聚合 4 大适配器的会话列表与历史消息。
-    2. 维护活跃子进程、工具审批挂起队列与断线重连环形缓冲区（200 条事件）。
-    3. 监听本地文件变动并向所有已连接的手机 WebSocket 广播增量更新。
+    2. 维护活跃子进程与执行池调度。
+    3. 协同 ApprovalCoordinator 工具审批与 EtagNegotiator 缓存。
+    4. 监听本地文件变动并向所有已连接的手机 WebSocket 广播增量更新。
     """
 
     def __init__(
@@ -200,20 +171,27 @@ class AgentOrchestrator:
         self.active_processes: dict[str, asyncio.subprocess.Process] = {}
         # unified_id -> last_activity_epoch (用于 10 分钟空闲 TTL 回收)
         self.process_last_active: dict[str, float] = {}
-        # unified_id -> PendingApproval
-        self.pending_approvals: dict[str, PendingApproval] = {}
-        # unified_id -> asyncio.Event + decision result (用于长驻管道内唤醒等待中的审批)
-        self._approval_futures: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
         # 实时事件与 WebSocket 广播总线（解耦环形缓冲区与广播管理）
         self.event_bus = RealtimeEventBus(buffer_maxlen=200)
+
+        # 深模块协作：工具审批协调器与 ETag 协商器
+        self.approval_coordinator = ApprovalCoordinator(
+            meta_db=self.meta_db,
+            event_bus=self.event_bus,
+            adapters_getter=lambda: self.adapters,
+        )
+        self.etag_negotiator = EtagNegotiator(maxsize=200)
+        self.storage_watcher = SafeStorageWatcher(
+            adapters_getter=lambda: self.adapters,
+            event_bus=self.event_bus,
+        )
 
         # 正在执行的后台协程强引用集合（防止被 Python GC 意外回收）
         self.background_tasks: set[asyncio.Task[Any]] = set()
         # unified_id -> asyncio.Task (针对原生直连派发任务的进度同步与取消控制)
         self.active_direct_tasks: dict[str, asyncio.Task[None]] = {}
 
-        self._watcher_task: Optional[asyncio.Task[None]] = None
         self._ttl_task: Optional[asyncio.Task[None]] = None
 
         # 全局子进程并发控制信号量，防止移动端多会话并发打垮宿主机 CPU 与内存
@@ -223,10 +201,26 @@ class AgentOrchestrator:
         # 启动体检与模型列表内存缓存，消除移动端轮询与点击扫码时的重复开销
         self._health_report_cache: tuple[float, list[dict[str, Any]]] = (0.0, [])
         self._available_models_cache: tuple[float, dict[str, list[dict[str, Any]]]] = (0.0, {})
-        # 会话消息轻量 ETag 缓存（OrderedDict LRU 缓存，多协程并发安全）
-        self._messages_etag_cache: collections.OrderedDict[str, SessionMessagesEtagEntry] = (
-            collections.OrderedDict()
-        )
+
+    @property
+    def pending_approvals(self) -> dict[str, PendingApproval]:
+        """向后兼容属性：代理至 ApprovalCoordinator.pending_approvals。"""
+        return self.approval_coordinator.pending_approvals
+
+    @property
+    def _approval_futures(self) -> dict[str, asyncio.Future[dict[str, Any]]]:
+        """向后兼容属性：代理至 ApprovalCoordinator._approval_futures。"""
+        return self.approval_coordinator._approval_futures
+
+    @property
+    def _messages_etag_cache(self) -> collections.OrderedDict[str, SessionMessagesEtagEntry]:
+        """向后兼容属性：代理至 EtagNegotiator._messages_etag_cache。"""
+        return self.etag_negotiator._messages_etag_cache
+
+    @property
+    def _watcher_task(self) -> Optional[asyncio.Task[None]]:
+        """向后兼容属性：代理至 SafeStorageWatcher._task。"""
+        return self.storage_watcher._task
 
     @property
     def _seq_counter(self) -> int:
@@ -248,7 +242,13 @@ class AgentOrchestrator:
         """计算会话列表的高效 ETag 指纹（基于序列计数器、活跃进程与审批队列）。"""
         active_count = len(self.active_processes) + len(self.active_direct_tasks)
         pending_count = len(self.pending_approvals)
-        return f'W/"{self.event_bus.seq_counter}-{active_count}-{pending_count}-{agent_filter}-{limit}"'
+        return self.etag_negotiator.get_sessions_etag(
+            seq_counter=self.event_bus.seq_counter,
+            active_count=active_count,
+            pending_count=pending_count,
+            agent_filter=agent_filter,
+            limit=limit,
+        )
 
     def check_session_messages_etag_matches(
         self,
@@ -259,44 +259,18 @@ class AgentOrchestrator:
         since_step: Optional[int] = None,
     ) -> tuple[bool, Optional[str]]:
         """快速预检会话消息 ETag 是否命中客户端 If-None-Match（毫秒级短路，直接 304）。"""
-        if not if_none_match or ":" not in unified_id:
-            return False, None
-        cache_key = f"{unified_id}-{limit}-{before_step}-{since_step}"
-        cached = self._messages_etag_cache.get(cache_key)
-        if not cached:
-            return False, None
-
-        agent_type, raw_id = unified_id.split(":", 1)
+        agent_type = unified_id.split(":", 1)[0] if ":" in unified_id else ""
         adapter = self.adapters.get(agent_type)
-        if not adapter:
-            return False, None
-
-        fpath = adapter.get_session_transcript_path(raw_id)
-        current_mtime = 0
-        current_size = 0
-        if fpath and fpath.exists():
-            try:
-                st = fpath.stat()
-                current_mtime = st.st_mtime_ns
-                current_size = st.st_size
-            except OSError:
-                pass
-
-        current_running = 1 if self.is_session_active(unified_id) else 0
-        current_pa = 1 if unified_id in self.pending_approvals else 0
-
-        if (
-            current_mtime == cached.mtime_ns
-            and current_size == cached.fsize
-            and current_running == cached.is_running
-            and current_pa == cached.pa_flag
-        ):
-            inm = if_none_match.strip()
-            etag = cached.etag.strip()
-            if inm == etag or inm == etag.strip('"') or inm.strip('"') == etag.strip('"'):
-                return True, cached.etag
-
-        return False, None
+        return self.etag_negotiator.check_messages_etag_matches(
+            if_none_match=if_none_match,
+            unified_id=unified_id,
+            adapter=adapter,
+            is_active=self.is_session_active(unified_id),
+            is_pending=unified_id in self.pending_approvals,
+            limit=limit,
+            before_step=before_step,
+            since_step=since_step,
+        )
 
     def get_session_messages_etag(
         self,
@@ -307,55 +281,23 @@ class AgentOrchestrator:
         since_step: Optional[int] = None,
     ) -> str:
         """根据会话流最新状态、步骤序号与尾部内容指纹生成灵敏的 ETag 签名，防止流式追加时误判 304。"""
-        fp = self._extract_session_detail_fingerprint(detail)
-        etag_res = f'W/"msg-{unified_id}-{fp}-{limit}-{before_step}-{since_step}"'
-
-        cache_key = f"{unified_id}-{limit}-{before_step}-{since_step}"
-        agent_type, raw_id = unified_id.split(":", 1) if ":" in unified_id else ("", "")
+        agent_type = unified_id.split(":", 1)[0] if ":" in unified_id else ""
         adapter = self.adapters.get(agent_type)
-        fpath = adapter.get_session_transcript_path(raw_id) if adapter else None
-        mtime_ns = 0
-        fsize = 0
-        if fpath and fpath.exists():
-            try:
-                st = fpath.stat()
-                mtime_ns, fsize = st.st_mtime_ns, st.st_size
-            except OSError:
-                pass
-        is_running = 1 if self.is_session_active(unified_id) else 0
-        pa = 1 if unified_id in self.pending_approvals else 0
-        entry = SessionMessagesEtagEntry(
-            mtime_ns=mtime_ns,
-            fsize=fsize,
-            is_running=is_running,
-            pa_flag=pa,
-            etag=etag_res,
+        return self.etag_negotiator.generate_and_cache_messages_etag(
+            detail=detail,
+            unified_id=unified_id,
+            adapter=adapter,
+            is_active=self.is_session_active(unified_id),
+            is_pending=unified_id in self.pending_approvals,
+            limit=limit,
+            before_step=before_step,
+            since_step=since_step,
         )
-        self._messages_etag_cache[cache_key] = entry
-        if len(self._messages_etag_cache) > 200:
-            try:
-                self._messages_etag_cache.popitem(last=False)
-            except (KeyError, RuntimeError):
-                pass
-        return etag_res
 
     @staticmethod
     def _extract_session_detail_fingerprint(detail: dict[str, Any]) -> str:
         """内聚解析会话详情对象的尾部状态与内容指纹，消除跨层深层探测。"""
-        msgs = detail.get("messages", [])
-        last_step = msgs[-1].get("step_index", 0) if msgs else 0
-        is_running = 1 if detail.get("is_running") else 0
-        pa = detail.get("pending_approval")
-        pa_id = pa.get("approval_id", "0") if isinstance(pa, dict) else "0"
-        last_msg = msgs[-1] if msgs else {}
-        content_len = len(last_msg.get("content") or "")
-        thinking_len = len(last_msg.get("thinking") or "")
-        tool_calls = last_msg.get("tool_calls") or []
-        last_tc = tool_calls[-1] if tool_calls else {}
-        return (
-            f"{last_step}-{len(msgs)}-{content_len}-{thinking_len}-"
-            f"{len(tool_calls)}-{last_tc.get('status') or ''}-{len(last_tc.get('output') or '')}-{is_running}-{pa_id}"
-        )
+        return EtagNegotiator.extract_session_detail_fingerprint(detail)
 
     def normalize_execution_mode(self, agent_type: str, mode: Optional[str]) -> str:
         """
@@ -379,8 +321,18 @@ class AgentOrchestrator:
         return m
 
     def is_session_active(self, unified_id: str) -> bool:
-        """判定指定统一会话当前是否处于活跃执行态（覆盖子进程树与直连任务）。"""
-        return unified_id in self.active_processes or unified_id in self.active_direct_tasks
+        """判定指定统一会话当前是否处于活跃执行态（覆盖内部子进程树、直连任务与四大 Agent 外部原生执行态）。"""
+        if unified_id in self.active_processes or unified_id in self.active_direct_tasks:
+            return True
+        if ":" in unified_id:
+            agent_type, raw_id = unified_id.split(":", 1)
+            adapter = self.adapters.get(agent_type)
+            if adapter:
+                try:
+                    return adapter.is_external_session_active(raw_id)
+                except Exception as exc:
+                    logger.error(f"检查外部会话活跃态异常 ({unified_id}): {exc}")
+        return False
 
     def register_ws_subscriber(
         self, callback: Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
@@ -400,11 +352,16 @@ class AgentOrchestrator:
         """
         生成 `SESSION_STATE_SNAPSHOT` 状态机快照（用于手机端首次连接或切后台断线重连时 0 延迟恢复）。
         """
-        active_ids = list(set(self.active_processes.keys()) | set(self.active_direct_tasks.keys()))
-        approvals = [pa.to_dict() for pa in self.pending_approvals.values()]
+        active_ids_set = set(self.active_processes.keys()) | set(self.active_direct_tasks.keys())
+        for agent_type, adapter in self.adapters.items():
+            try:
+                active_ids_set.update(adapter.get_active_session_ids())
+            except Exception as exc:
+                logger.error(f"快照收集外部活跃会话异常 ({agent_type}): {exc}")
+        approvals = self.approval_coordinator.get_snapshot_list()
         return self.event_bus.get_snapshot(
             since_seq_id=since_seq_id,
-            active_session_ids=active_ids,
+            active_session_ids=list(active_ids_set),
             pending_approvals=approvals,
         )
 
@@ -739,16 +696,15 @@ class AgentOrchestrator:
 
     async def start_background_services(self) -> None:
         """启动实时文件变更监听任务与 10 分钟空闲子进程 TTL 回收器。"""
-        if self._watcher_task is None:
-            self._watcher_task = asyncio.create_task(self._storage_watch_loop())
+        self.storage_watcher.start()
         if self._ttl_task is None:
             self._ttl_task = asyncio.create_task(self._idle_process_ttl_loop())
 
     async def stop_background_services(self) -> None:
         """停止后台监听并递归清理所有活跃子进程树与直连任务。"""
-        for task in (self._watcher_task, self._ttl_task):
-            if task:
-                task.cancel()
+        self.storage_watcher.stop()
+        if self._ttl_task:
+            self._ttl_task.cancel()
         for uid in list(self.active_direct_tasks.keys()):
             d_task = self.active_direct_tasks.pop(uid, None)
             if d_task and not d_task.done():
@@ -770,87 +726,6 @@ class AgentOrchestrator:
                 if now - last_ts > 600 and uid not in self.pending_approvals:
                     logger.info(f"会话 {uid} 已空闲满 10 分钟，触发 TTL 自动回收进程树")
                     await self.abort_session(uid, reason="10分钟空闲TTL自动回收")
-
-    async def _storage_watch_loop(self) -> None:
-        """使用 watchfiles (Rust notify 内核) 监听 4 大 Agent 的会话文件变动并实时推送（含自愈重启机制）。"""
-        watch_dirs: list[Path] = []
-        for adapter in self.adapters.values():
-            for p in adapter.get_watch_paths():
-                if p.exists() and p not in watch_dirs:
-                    watch_dirs.append(p)
-
-        if not watch_dirs:
-            return
-
-        logger.info(f"已启动 SafeStorageWatcher 实时文件监听，监控目录数: {len(watch_dirs)}")
-        retry_delay = 2.0
-        while True:
-            try:
-                async for changes in watchfiles.awatch(*watch_dirs, debounce=600, step=250):
-                    changed_files: list[str] = []
-                    affected_agents: set[str] = set()
-                    affected_session_ids: set[str] = set()
-
-                    for _, raw_p in changes:
-                        p_str = str(raw_p).replace("\\", "/")
-                        if "tmp_snapshots" in p_str:
-                            continue
-                        p_obj = Path(raw_p)
-                        changed_files.append(p_obj.name)
-
-                        lower_p = p_str.lower()
-                        if "antigravity-cli" in lower_p:
-                            affected_agents.add("agy_cli")
-                            if "/brain/" in lower_p:
-                                parts = p_str.split("/")
-                                for i, seg in enumerate(parts):
-                                    if seg.lower() == "brain" and i + 1 < len(parts):
-                                        affected_session_ids.add(f"agy_cli:{parts[i + 1]}")
-                                        break
-                        elif "antigravity" in lower_p:
-                            affected_agents.add("agy_ide")
-                            if "/brain/" in lower_p:
-                                parts = p_str.split("/")
-                                for i, seg in enumerate(parts):
-                                    if seg.lower() == "brain" and i + 1 < len(parts):
-                                        affected_session_ids.add(f"agy_ide:{parts[i + 1]}")
-                                        break
-                        elif ".claude" in lower_p:
-                            affected_agents.add("claude_code")
-                            if p_obj.suffix.lower() == ".jsonl" and not p_obj.name.startswith("agent-"):
-                                affected_session_ids.add(f"claude_code:{p_obj.stem}")
-                        elif "opencode" in lower_p:
-                            affected_agents.add("opencode")
-
-                    if not changed_files:
-                        continue
-
-                    # 多态重置受影响适配器的内部短效扫描缓存，消除类型特判坏味道
-                    for ag_key in affected_agents:
-                        ad = self.adapters.get(ag_key)
-                        if ad:
-                            ad.invalidate_cache()
-
-                    await self.broadcast_event(
-                        "STORAGE_UPDATED",
-                        {
-                            "changed_files": changed_files[:10],
-                            "affected_agents": list(affected_agents),
-                            "affected_session_ids": list(affected_session_ids)[:20],
-                        },
-                    )
-                    retry_delay = 2.0
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                log_structured_error(
-                    problem="实时文件监听器异常中断，正在尝试自愈重启",
-                    cause=str(exc),
-                    fix=f"{retry_delay}秒后自动重新连接文件系统监听器。",
-                    exc=exc,
-                )
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2.0, 30.0)
 
     async def abort_session(self, unified_id: str, reason: str = "用户手动点击立即中断") -> bool:
         """
@@ -1396,128 +1271,57 @@ class AgentOrchestrator:
         挂起当前工具调用，向手机端推送 `WAITING_APPROVAL` 弹窗与震动唤醒信号，
         并阻塞等待手机端返回 `approved` 或 `denied`！
         """
-        if approval_obj is not None:
-            approval = approval_obj
-            unified_id = approval.unified_id
-            agent_type = approval.agent_type
-            raw_session_id = approval.raw_session_id
-            tool_call_id = approval.tool_call_id
-            tool_name = approval.tool_name
-        else:
-            approval = PendingApproval(
-                approval_id=f"apr_{uuid.uuid4().hex[:10]}",
-                unified_id=unified_id,
-                agent_type=agent_type,
-                raw_session_id=raw_session_id,
-                tool_call_id=tool_call_id,
-                tool_name=tool_name,
-                args_summary=args_summary,
-                diff_text=diff_text,
-                risk_level=risk_level,
-                prompt_context=prompt_context,
-                project_path=project_path,
-                created_at=utc_now_iso(),
-            )
-        self.pending_approvals[unified_id] = approval
-
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
-        self._approval_futures[unified_id] = fut
-
-        await self.broadcast_event(
-            "APPROVAL_REQUIRED",
-            approval.to_dict(),
-        )
-
-        try:
-            result = await fut
-            decision = str(result.get("decision") or "denied")
-            feedback_msg = str(result.get("feedback") or "").strip()
-            if decision == "denied":
-                stdin_notified = False
-                if proc and proc.stdin and not proc.stdin.is_closing():
-                    try:
-                        deny_frame = json.dumps(
-                            {
-                                "type": "control_response",
-                                "tool_use_id": tool_call_id,
-                                "behavior": "deny",
-                                "message": feedback_msg or "用户拒绝执行该操作",
-                            },
-                            ensure_ascii=False,
-                        )
-                        proc.stdin.write((deny_frame + "\n").encode("utf-8"))
-                        await proc.stdin.drain()
-                        stdin_notified = True
-                    except Exception as exc:
-                        log_structured_error(
-                            problem=f"向子进程 stdin 发送拒绝帧失败 ({unified_id})",
-                            cause=str(exc),
-                            fix="子进程标准输入可能已提前关闭，系统将直接终止子进程树。",
-                            exc=exc,
-                        )
-
-                # 若子进程不支持控制帧写入或已断开，采用安全终止并由后续逻辑推进
-                if not stdin_notified:
-                    if proc and proc.pid:
-                        kill_windows_process_tree(proc.pid)
-                        try:
-                            await asyncio.wait_for(proc.wait(), timeout=2.0)
-                        except Exception as exc:
-                            log_structured_error(
-                                problem=f"等待旧子进程退出超时 ({unified_id})",
-                                cause=str(exc),
-                                fix="系统将强制移除进程并继续执行。",
-                                exc=exc,
-                            )
-                    self.active_processes.pop(unified_id, None)
-                    self.process_last_active.pop(unified_id, None)
-
-                    # 用户在拒绝时若填写了替代指导意见，自动将指导意见发给会话继续执行
-                    if feedback_msg:
-                        followup = f"[已拒绝工具 {tool_name}] 请勿执行刚才的操作，按以下要求调整方案：{feedback_msg}"
-
-                        async def _send_followup_prompt() -> None:
-                            try:
-                                await self.send_prompt_to_session(
-                                    unified_id=unified_id,
-                                    prompt=followup,
-                                    project_path=project_path,
-                                )
-                            except Exception as exc:
-                                log_structured_error(
-                                    problem=f"拒绝工具后发送替代方案失败 ({unified_id})",
-                                    cause=str(exc),
-                                    fix="请检查该会话进程状态或手动在输入框重新发送。",
-                                    exc=exc,
-                                )
-
-                        f_task = asyncio.create_task(_send_followup_prompt())
-                        self.background_tasks.add(f_task)
-                        f_task.add_done_callback(self.background_tasks.discard)
-            elif decision == "approved" and proc and proc.stdin:
-                # 尝试向支持 stdio 审批帧的进程 stdin 写回确认
+        async def _cleanup_proc(uid: str) -> None:
+            if proc and proc.pid:
+                kill_windows_process_tree(proc.pid)
                 try:
-                    resp_frame = json.dumps(
-                        {
-                            "type": "control_response",
-                            "tool_use_id": tool_call_id,
-                            "behavior": "allow",
-                        }
-                    )
-                    proc.stdin.write((resp_frame + "\n").encode("utf-8"))
-                    await proc.stdin.drain()
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
                 except Exception as exc:
                     log_structured_error(
-                        problem=f"向子进程 stdin 写回权限审批帧失败 ({unified_id})",
+                        problem=f"等待旧子进程退出超时 ({uid})",
                         cause=str(exc),
-                        fix="子进程管道可能已关闭，系统已记录审计状态。",
+                        fix="系统将强制移除进程并继续执行。",
                         exc=exc,
                     )
-            return result
-        finally:
-            self.pending_approvals.pop(unified_id, None)
-            self._approval_futures.pop(unified_id, None)
+            self.active_processes.pop(uid, None)
+            self.process_last_active.pop(uid, None)
+
+        async def _send_followup(uid: str, followup_prompt: str, p_path: str) -> None:
+            async def _send_task() -> None:
+                try:
+                    await self.send_prompt_to_session(
+                        unified_id=uid,
+                        prompt=followup_prompt,
+                        project_path=p_path,
+                    )
+                except Exception as exc:
+                    log_structured_error(
+                        problem=f"拒绝工具后发送替代方案失败 ({uid})",
+                        cause=str(exc),
+                        fix="请检查该会话进程状态或手动在输入框重新发送。",
+                        exc=exc,
+                    )
+
+            f_task = asyncio.create_task(_send_task())
+            self.background_tasks.add(f_task)
+            f_task.add_done_callback(self.background_tasks.discard)
+
+        return await self.approval_coordinator.register_and_wait(
+            approval_obj=approval_obj,
+            unified_id=unified_id,
+            agent_type=agent_type,
+            raw_session_id=raw_session_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            args_summary=args_summary,
+            diff_text=diff_text,
+            risk_level=risk_level,
+            prompt_context=prompt_context,
+            project_path=project_path,
+            proc=proc,
+            on_cleanup_proc=_cleanup_proc,
+            on_followup_prompt=_send_followup,
+        )
 
     async def resolve_tool_approval(
         self,
@@ -1526,59 +1330,11 @@ class AgentOrchestrator:
         feedback: str = "",
     ) -> dict[str, Any]:
         """处理手机端用户点击「允许」或「拒绝」工具调用的决策，并记录审计日志。"""
-        pa = self.pending_approvals.get(unified_id)
-        if not pa:
-            return {"ok": False, "message": "该审批请求已处理或已过期"}
-
-        normalized_decision = "approved" if decision.startswith("approve") else "denied"
-        self.meta_db.record_approval_log(
+        return await self.approval_coordinator.resolve(
             unified_id=unified_id,
-            tool_call_id=pa.tool_call_id,
-            tool_name=pa.tool_name,
-            tool_args_summary=pa.args_summary,
-            risk_level=pa.risk_level,
-            decision=normalized_decision,
+            decision=decision,
+            feedback=feedback,
         )
-
-        if decision == "approve_session_edits":
-            self.meta_db.upsert_session_meta(
-                unified_id=unified_id,
-                agent_type=pa.agent_type,
-                raw_session_id=pa.raw_session_id,
-                execution_mode=ExecutionMode.ACCEPT_EDITS.value,
-            )
-
-        # 多态通知适配器响应原生权限通道（如 OpenCode HTTP Bridge）
-        adapter = self.adapters.get(pa.agent_type)
-        if adapter:
-            adapter.respond_permission(
-                raw_session_id=pa.raw_session_id,
-                tool_call_id=pa.tool_call_id,
-                decision=normalized_decision,
-            )
-
-
-        fut = self._approval_futures.get(unified_id)
-        if fut and not fut.done():
-            fut.set_result({"decision": normalized_decision, "feedback": feedback})
-
-        self.pending_approvals.pop(unified_id, None)
-        await self.broadcast_event(
-            "APPROVAL_RESOLVED",
-            {
-                "unified_id": unified_id,
-                "approval_id": pa.approval_id,
-                "tool_call_id": pa.tool_call_id,
-                "decision": normalized_decision,
-                "feedback": feedback,
-            },
-        )
-        return {
-            "ok": True,
-            "unified_id": unified_id,
-            "decision": normalized_decision,
-            "feedback": feedback.strip(),
-        }
 
 
 # 向后兼容别名导出

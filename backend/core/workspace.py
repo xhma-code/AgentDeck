@@ -532,3 +532,67 @@ def get_git_workspace_diff(raw_project_path: str, file_path: str = "") -> dict[s
         }
     except Exception as exc:
         return {"ok": False, "diff": "", "error": str(exc)}
+
+
+class WorkspaceDocumentReader:
+    """工作区本地文档与源码安全读取器深模块。"""
+
+    MAX_BYTES: int = 256 * 1024
+    BLOCKED_DIR_NAMES = {
+        ".ssh", ".aws", ".azure", ".kube", ".gnupg", ".git", ".docker", "credentials"
+    }
+    BLOCKED_NAMES = {
+        ".env", ".env.local", ".env.production", ".env.staging", ".env.test",
+        "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "known_hosts", "authorized_keys",
+        ".npmrc", ".pypirc", ".netrc", ".bash_history", ".zsh_history",
+    }
+    BLOCKED_EXTS = {
+        ".exe", ".dll", ".so", ".dylib", ".db", ".sqlite", ".sqlite3",
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".tar", ".gz",
+        ".pem", ".key", ".pfx", ".crt",
+    }
+
+    @classmethod
+    def read_document(cls, raw_path: str, max_bytes: int = MAX_BYTES) -> dict[str, Any]:
+        """
+        安全读取指定文件内容。
+        若路径无效抛出 ValueError；文件不存在抛出 FileNotFoundError；敏感文件拦截抛出 PermissionError。
+        """
+        raw_clean = (raw_path or "").split("#")[0].split("?")[0].strip()
+        norm_path = decode_workspace_uri(raw_clean)
+        if not norm_path:
+            raise ValueError("无效的文件路径")
+
+        file_obj = Path(norm_path).resolve()
+        if not file_obj.exists() or not file_obj.is_file():
+            raise FileNotFoundError(f"文件不存在: {file_obj.name}")
+
+        lower_name = file_obj.name.lower()
+        ext = file_obj.suffix.lower()
+        parts_lower = {p.lower() for p in file_obj.parts}
+        if any(bd in parts_lower for bd in cls.BLOCKED_DIR_NAMES):
+            raise PermissionError(f"禁止读取系统敏感配置目录文件 ({file_obj.name})")
+
+        if lower_name in cls.BLOCKED_NAMES or ext in cls.BLOCKED_EXTS or lower_name.startswith(".env"):
+            raise PermissionError(f"暂不支持直接文本预览该类型文件 ({file_obj.name})")
+
+        stat = file_obj.stat()
+        raw_bytes = file_obj.read_bytes()
+        is_truncated = len(raw_bytes) > max_bytes
+        if is_truncated:
+            raw_bytes = raw_bytes[:max_bytes]
+
+        content = raw_bytes.decode("utf-8", errors="replace")
+        if is_truncated:
+            content += f"\n\n> [!NOTE]\n> 文档较大（共 {stat.st_size} 字节），手机端已截取前 256KB 展示。"
+
+        return {
+            "ok": True,
+            "path": norm_path,
+            "filename": file_obj.name,
+            "ext": ext,
+            "is_markdown": ext in (".md", ".markdown", ".mdx", ".txt"),
+            "size_bytes": stat.st_size,
+            "content": content,
+        }
+

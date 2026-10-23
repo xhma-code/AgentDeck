@@ -143,6 +143,23 @@ def is_read_only_tool(tool_name: str) -> bool:
     )
 
 
+def is_transient_probe_session(title: str = "", preview: str = "") -> bool:
+    """
+    判断会话是否为自动化测试探针或临时残留会话（如 cmem/flag.txt/marker.txt 探针测试记录）。
+    统一供各大 Agent 适配器在扫描与投影时过滤，避免污染移动端用户会话列表。
+    """
+    check_text = (str(title or "") + " " + str(preview or "")).lower()
+    return any(
+        probe in check_text
+        for probe in (
+            "flag.txt",
+            "marker.txt",
+            "reading flag file",
+            "read flag file",
+        )
+    )
+
+
 def count_diff_lines(diff_text: str) -> tuple[int, int]:
     """计算 Unified Diff 的新增行数和删除行数 (+N, -M)。"""
     if not diff_text:
@@ -535,6 +552,10 @@ class BaseAgentAdapter(ABC):
     def is_external_session_active(self, raw_session_id: str) -> bool:
         """轻量探测指定会话是否处于外部运行/活跃态（子类可优化重写以避免调用 list_sessions 全量扫描）。"""
         return False
+
+    def get_active_session_ids(self) -> list[str]:
+        """返回当前适配器下处于外部原生运行/活跃态的 unified_id 列表（子类可多态实现以供毫秒级快照聚合）。"""
+        return []
 
     def get_session_transcript_path(self, raw_session_id: str) -> Optional[Path]:
         """返回指定会话底层日志或数据库文件的本地路径（供 ETag 协商与文件监控快速定位，子类实现）。"""

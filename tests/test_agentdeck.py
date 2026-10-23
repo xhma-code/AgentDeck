@@ -12,6 +12,7 @@ AgentDeck 完整单元测试与集成测试套件。
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import subprocess
@@ -30,6 +31,7 @@ from backend.adapters.base import (
     UnifiedToolCall,
     build_unified_diff,
     classify_tool_risk,
+    is_transient_probe_session,
     truncate_large_output,
 )
 from backend.adapters.claude_adapter import ClaudeCodeAdapter
@@ -38,7 +40,11 @@ from backend.app import create_app
 from backend.core.database import MetaDatabase, safe_query_external_sqlite
 from backend.core.logger import ERROR_LOG_FILE, log_structured_error
 from backend.core.tailscale_auth import PairingAuthManager
-from backend.core.workspace import get_git_workspace_diff
+from backend.core.workspace import WorkspaceDocumentReader, get_git_workspace_diff
+from backend.engines.approval import ApprovalCoordinator, PendingApproval
+from backend.engines.cache import EtagNegotiator
+from backend.engines.event_bus import RealtimeEventBus
+from backend.engines.watcher import SafeStorageWatcher
 
 
 def test_structured_error_logging_to_error_log():
@@ -2295,6 +2301,183 @@ def test_clean_denied_tool_instruction_and_title_sanitization():
 
     # 5. 空文本安全兜底
     assert clean_denied_tool_instruction("") == ""
+
+
+def test_etag_negotiator_caching_and_304():
+    """测试 EtagNegotiator 深模块：ETag 生成、指纹提取与 304 快速比对。"""
+    negotiator = EtagNegotiator(maxsize=10)
+    sessions_etag = negotiator.get_sessions_etag(
+        seq_counter=42, active_count=2, pending_count=1, agent_filter="all", limit=40
+    )
+    assert 'W/"42-2-1-all-40"' == sessions_etag
+
+    detail = {
+        "is_running": True,
+        "messages": [
+            {
+                "step_index": 5,
+                "content": "hello world",
+                "thinking": "analyzing...",
+                "tool_calls": [{"name": "bash", "status": "DONE", "output": "ok"}],
+            }
+        ],
+        "pending_approval": {"approval_id": "apr_123"},
+    }
+    fp = negotiator.extract_session_detail_fingerprint(detail)
+    assert "apr_123" in fp
+    assert "5" in fp
+
+    msg_etag = negotiator.generate_and_cache_messages_etag(
+        detail=detail,
+        unified_id="claude_code:s1",
+        adapter=None,
+        is_active=True,
+        is_pending=True,
+        limit=30,
+    )
+    assert msg_etag.startswith('W/"msg-claude_code:s1-')
+
+    matched, hit_etag = negotiator.check_messages_etag_matches(
+        if_none_match=msg_etag,
+        unified_id="claude_code:s1",
+        adapter=None,
+        is_active=True,
+        is_pending=True,
+        limit=30,
+    )
+    assert matched is True
+    assert hit_etag == msg_etag
+
+    # 状态变动后应判定不匹配（如从 running 变为 idle）
+    matched_changed, _ = negotiator.check_messages_etag_matches(
+        if_none_match=msg_etag,
+        unified_id="claude_code:s1",
+        adapter=None,
+        is_active=False,
+        is_pending=True,
+        limit=30,
+    )
+    assert matched_changed is False
+
+
+@pytest.mark.asyncio
+async def test_approval_coordinator_lifecycle(tmp_path: Path):
+    """测试 ApprovalCoordinator 深模块：待审批挂起、异步唤醒与决策落库。"""
+    db_file = tmp_path / "test_approval_meta.db"
+    db = MetaDatabase(db_path=db_file)
+    bus = RealtimeEventBus()
+    coordinator = ApprovalCoordinator(meta_db=db, event_bus=bus)
+
+    pa = PendingApproval(
+        approval_id="apr_test01",
+        unified_id="claude_code:test_session",
+        agent_type="claude_code",
+        raw_session_id="test_session",
+        tool_call_id="call_999",
+        tool_name="bash",
+        args_summary="rm -rf /tmp/data",
+        diff_text="",
+        risk_level="high",
+        prompt_context="清理临时缓存",
+        project_path=str(tmp_path),
+        created_at="2026-10-24T00:00:00Z",
+    )
+
+    async def _simulate_user_approval():
+        await asyncio.sleep(0.05)
+        assert coordinator.is_pending("claude_code:test_session") is True
+        snap = coordinator.get_snapshot_list()
+        assert len(snap) == 1
+        assert snap[0]["approval_id"] == "apr_test01"
+        res = await coordinator.resolve(
+            unified_id="claude_code:test_session",
+            decision="approved",
+            feedback="确认清理",
+        )
+        assert res["ok"] is True
+        assert res["decision"] == "approved"
+
+    task = asyncio.create_task(_simulate_user_approval())
+    result = await coordinator.register_and_wait(approval_obj=pa)
+    await task
+
+    assert result["decision"] == "approved"
+    assert coordinator.is_pending("claude_code:test_session") is False
+
+    # 验证审计日志已自动持久化写入数据库
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM t_tool_approval_log WHERE tool_call_id = 'call_999'"
+        ).fetchone()
+        assert row is not None
+        assert row["tool_name"] == "bash"
+        assert row["decision"] == "approved"
+        assert row["risk_level"] == "high"
+
+
+def test_workspace_document_reader_security(tmp_path: Path):
+    """测试 WorkspaceDocumentReader 安全深度校验：敏感拦截、大文件截断与正常 Markdown 读取。"""
+    # 1. 正常 Markdown 文件读取
+    md_file = tmp_path / "spec.md"
+    md_file.write_text("# 架构设计说明\n\n- 深度模块\n- 局部性", encoding="utf-8")
+    res = WorkspaceDocumentReader.read_document(str(md_file))
+    assert res["ok"] is True
+    assert res["is_markdown"] is True
+    assert res["filename"] == "spec.md"
+    assert "架构设计说明" in res["content"]
+
+    # 2. 拦截系统敏感目录 (.ssh)
+    ssh_dir = tmp_path / ".ssh"
+    ssh_dir.mkdir()
+    key_file = ssh_dir / "id_rsa.pub"
+    key_file.write_text("ssh-rsa AAAAB3...", encoding="utf-8")
+    with pytest.raises(PermissionError) as exc_info:
+        WorkspaceDocumentReader.read_document(str(key_file))
+    assert "禁止读取系统敏感配置目录文件" in str(exc_info.value)
+
+    # 3. 拦截敏感密钥文件名 (.env)
+    env_file = tmp_path / ".env"
+    env_file.write_text("SECRET_KEY=123456", encoding="utf-8")
+    with pytest.raises(PermissionError) as exc_info2:
+        WorkspaceDocumentReader.read_document(str(env_file))
+    assert "暂不支持直接文本预览该类型文件" in str(exc_info2.value)
+
+    # 4. 文件不存在抛出 FileNotFoundError
+    with pytest.raises(FileNotFoundError):
+        WorkspaceDocumentReader.read_document(str(tmp_path / "not_exist.md"))
+
+    # 5. 超大文件截断 (超过 256KB)
+    large_file = tmp_path / "large.log"
+    large_file.write_bytes(b"A" * (300 * 1024))
+    large_res = WorkspaceDocumentReader.read_document(str(large_file))
+    assert large_res["ok"] is True
+    assert "文档较大" in large_res["content"]
+
+
+def test_is_transient_probe_session():
+    """测试通用临时探针会话判定规则。"""
+    assert is_transient_probe_session("reading flag.txt", "") is True
+    assert is_transient_probe_session("", "marker.txt check") is True
+    assert is_transient_probe_session("read flag file for testing", "") is True
+    assert is_transient_probe_session("normal session", "fixing ui styles") is False
+    assert is_transient_probe_session("", "") is False
+
+
+@pytest.mark.asyncio
+async def test_safe_storage_watcher_lifecycle(tmp_path: Path):
+    """测试 SafeStorageWatcher 深模块：启停生命周期与空目录安全待命。"""
+    bus = RealtimeEventBus()
+    watcher = SafeStorageWatcher(adapters_getter=lambda: {}, event_bus=bus)
+    assert watcher.is_running is False
+
+    watcher.start()
+    assert watcher.is_running is True
+
+    # 停止应干净退出协程
+    watcher.stop()
+    assert watcher.is_running is False
+
+
 
 
 

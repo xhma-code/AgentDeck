@@ -4723,8 +4723,20 @@ window.appActions = {
           "px-2.5 py-1.5 sm:py-1 rounded-lg bg-zinc-900 text-zinc-300 hover:bg-zinc-800 text-[11px] shrink-0 transition active:scale-95";
       }
     });
-    // 0ms 纯前端内存过滤，不发同步阻塞请求、不跳走当前正在查看的对话
+    // 0ms 纯前端内存过滤
     renderSessionList();
+    // 若当前选中的会话与新选定的 Agent Tab 互斥，自动顺滑切换到该 Agent 标签下的首选会话，避免中间对话区内容滞留
+    if (f !== "all" && state.selectedSessionId) {
+      const curAgent = state.selectedSessionId.split(":")[0];
+      if (curAgent !== f) {
+        const rawList = state.allSessions.length > 0 ? state.allSessions : state.sessions;
+        const matchSessions = rawList.filter((s) => s.agent_type === f);
+        const nextSess = pickDefaultSession(matchSessions);
+        if (nextSess) {
+          selectSession(nextSess.unified_id);
+        }
+      }
+    }
     // 后台静默同步最新列表
     loadSessions(true);
   },

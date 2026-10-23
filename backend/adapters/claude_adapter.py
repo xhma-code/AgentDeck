@@ -182,9 +182,14 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 mtime = fpath.stat().st_mtime
                 if time.time() - mtime < 20:
                     return True
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug(f"检查 Claude 会话文件 mtime 异常: {exc}")
         return False
+
+    def get_active_session_ids(self) -> list[str]:
+        """返回当前处于外部原生活跃态的 Claude Code unified_id 列表。"""
+        active_map = self.get_active_sessions()
+        return [f"{self.agent_type}:{sid}" for sid, st in active_map.items() if st in ("running", "desktop_active")]
 
     def invalidate_cache(self) -> None:
         """重置目录扫描短效缓存（多态实现 BaseAgentAdapter 契约）。"""

@@ -42,7 +42,105 @@ from backend.adapters.base import (
 )
 from backend.core.database import safe_query_external_sqlite, utc_now_iso
 from backend.core.logger import log_structured_error, logger
+from datetime import datetime, timezone
 from backend.core.workspace import decode_workspace_uri
+
+# 会话被认定为持续活跃的最大文件写入时间窗口（秒）
+RECENT_ACTIVE_WINDOW_SECONDS: float = 60.0
+# 处于思考中 (CoT) 或末尾为 RUNNING/USER_INPUT 态的会话最大容忍活跃窗口（秒，平滑消解深度思考状态抖动）
+EXTENDED_ACTIVE_WINDOW_SECONDS: float = 300.0
+# 明确 DONE 且工具全部完成后的闲置判定平滑缓冲时间（秒，避免假活感知迟钝）
+SHORT_IDLE_GRACE_SECONDS: float = 15.0
+
+
+def inspect_transcript_tail_status(tp: Path) -> tuple[bool, str]:
+    """
+    极速从 transcript.jsonl 末尾探测会话真实活跃态与状态机（耗时 < 1ms）：
+    1. 从文件末尾倒读最多 8KB 快速定位末尾非空记录行，避免全量读大文件。
+    2. 若末尾 step 正在运行 (status in ('RUNNING', 'PENDING') 或含有未完成工具调用)，或处于用户提问等待响应态 (USER_INPUT)，
+       在 EXTENDED_ACTIVE_WINDOW_SECONDS (300s) 内均判定为活跃，平滑消解深度思考 (CoT) 超过 60s 时的状态抖动。
+    3. 若末尾 step 明确为 DONE 且工具全部完成，在最后写入超过 SHORT_IDLE_GRACE_SECONDS (15s) 后立即转入闲置，避免假活迟钝。
+    """
+    if not tp.is_file():
+        return False, "idle"
+    try:
+        st = tp.stat()
+        file_mtime = st.st_mtime
+        age = time.time() - file_mtime
+    except OSError:
+        return False, "idle"
+
+    # 超出最大容忍窗口（5 分钟无任何改动），必定为闲置
+    if age > EXTENDED_ACTIVE_WINDOW_SECONDS:
+        return False, "idle"
+
+    # 读取尾部内容以快速解析末行状态
+    tail_bytes = b""
+    try:
+        with open(tp, "rb") as f:
+            if st.st_size > 8192:
+                f.seek(-8192, os.SEEK_END)
+            tail_bytes = f.read()
+    except OSError:
+        # 文件若暂时被独占，以 45 秒 mtime 为保底
+        return age < 45.0, "running" if age < 45.0 else "idle"
+
+    lines = [ln.strip() for ln in tail_bytes.split(b"\n") if ln.strip()]
+    if not lines:
+        return age < RECENT_ACTIVE_WINDOW_SECONDS, "running" if age < RECENT_ACTIVE_WINDOW_SECONDS else "idle"
+
+    # 倒序寻找最后一个可合法解析的 JSON step 对象
+    last_step: Optional[dict[str, Any]] = None
+    has_incomplete_tail = False
+    for raw_ln in reversed(lines):
+        try:
+            obj = json.loads(raw_ln.decode("utf-8", errors="replace"))
+            if isinstance(obj, dict):
+                last_step = obj
+                break
+        except Exception:
+            has_incomplete_tail = True
+
+    # 若最末尾行解析失败且在 60 秒内有文件写入，说明当前外部进程正在流式写盘
+    if has_incomplete_tail and age < RECENT_ACTIVE_WINDOW_SECONDS:
+        return True, "running"
+
+    if not last_step:
+        return age < RECENT_ACTIVE_WINDOW_SECONDS, "running" if age < RECENT_ACTIVE_WINDOW_SECONDS else "idle"
+
+    step_type = str(last_step.get("type") or "")
+    source = str(last_step.get("source") or "")
+    status = str(last_step.get("status") or "").upper()
+    tool_calls = last_step.get("tool_calls") or []
+
+    # 1. 用户提问后等待模型规划，或者模型/工具处于明确运行中态
+    is_user_waiting = step_type == "USER_INPUT" or source == "USER_EXPLICIT"
+    is_running_step = status in ("RUNNING", "PENDING") or any(
+        isinstance(tc, dict) and str(tc.get("status") or "").upper() in ("RUNNING", "PENDING")
+        for tc in tool_calls
+    )
+
+    if (is_user_waiting or is_running_step) and age < EXTENDED_ACTIVE_WINDOW_SECONDS:
+        return True, "running"
+
+    # 2. 明确 DONE 且所有工具完成
+    if status == "DONE" and not is_running_step:
+        if age > SHORT_IDLE_GRACE_SECONDS:
+            return False, "idle"
+        return True, "running"
+
+    return age < RECENT_ACTIVE_WINDOW_SECONDS, "running" if age < RECENT_ACTIVE_WINDOW_SECONDS else "idle"
+
+
+def is_temporary_probe_session(title: str, preview: str, project_path: str = "") -> bool:
+    """判定是否为外部自动化测试（如 cmem 等）在临时目录留下的探针残留会话，结合路径避免误伤真实业务项目。"""
+    proj_lower = (project_path or "").lower()
+    is_temp_dir = any(t in proj_lower for t in ("temp", "tmp", "cmem-")) or not proj_lower
+    if not is_temp_dir:
+        return False
+    check_text = f"{title} {preview}".lower()
+    probe_keywords = ("flag.txt", "marker.txt", "reading flag file", "read flag file")
+    return any(p in check_text for p in probe_keywords)
 
 USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
 
@@ -244,6 +342,11 @@ class AntigravityAdapter(BaseAgentAdapter):
 
         return None
 
+    def invalidate_cache(self) -> None:
+        """重置适配器内部短效缓存（供外部 watchfiles 事件或手动触发时多态调用）。"""
+        self._summary_db_cache.clear()
+        self._brain_scan_cache = (0.0, {})
+
     def is_external_session_active(self, raw_session_id: str) -> bool:
         """极速单行探测指定 Antigravity 会话是否处于外部运行/活跃态（耗时 < 2ms，避免调用 list_sessions 全量扫描）。"""
         if self.summary_db_path.exists():
@@ -257,7 +360,33 @@ class AntigravityAdapter(BaseAgentAdapter):
                     return True
                 if not_idle or "RUNNING" in raw_status.upper():
                     return True
+
+        tp = self.get_session_transcript_path(raw_session_id)
+        if tp and tp.exists():
+            try:
+                is_active, _ = inspect_transcript_tail_status(tp)
+                if is_active:
+                    return True
+            except Exception as exc:
+                logger.debug(f"探测 transcript 状态异常 ({raw_session_id[:8]}): {exc}")
         return False
+
+    def get_active_session_ids(self) -> list[str]:
+        """极速多态返回 Antigravity 当前处于原生活跃态的 unified_id 列表（耗时 < 3ms）。"""
+        active_ids: list[str] = []
+        if self.summary_db_path.exists():
+            sql = """
+                SELECT conversation_id
+                FROM conversation_summaries
+                WHERE killed = 0 AND (not_fully_idle = 1 OR status LIKE '%RUNNING%')
+                LIMIT 5
+            """
+            rows = safe_query_external_sqlite(self.summary_db_path, sql)
+            for r in rows:
+                cid = r.get("conversation_id")
+                if cid:
+                    active_ids.append(f"{self.agent_type}:{cid}")
+        return active_ids
 
     def get_session_transcript_path(self, raw_session_id: str) -> Optional[Path]:
         """返回 Antigravity 会话对应的本地 transcript.jsonl 路径。"""
@@ -343,17 +472,22 @@ class AntigravityAdapter(BaseAgentAdapter):
 
                     raw_title = clean_denied_tool_instruction(re.sub(r"\s+", " ", (r.get("title") or "").strip()))
                     raw_preview = clean_denied_tool_instruction(re.sub(r"\s+", " ", (r.get("preview") or "").strip()).strip("│ "))
+                    project_path = decode_workspace_uri(str(r.get("workspace_uris") or ""))
+
+                    # 过滤自动化探针/临时测试残留会话（如 cmem 探针生成的 flag.txt / marker.txt 测试记录，结合路径防误伤）
+                    if is_temporary_probe_session(raw_title, raw_preview, project_path):
+                        continue
 
                     # 过滤无真实 transcript 对话文件的孤儿异常会话（如无标题且以 [已拒绝工具 开头的异常记录）
-                    tp = self.brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+                    tp = self.get_session_transcript_path(cid)
                     raw_prev_str = str(r.get("preview") or "").strip()
                     raw_title_str = str(r.get("title") or "").strip()
-                    if not tp.exists() and not raw_title_str and (raw_prev_str.startswith("[已拒绝工具") or not raw_prev_str):
+                    if (not tp or not tp.exists()) and not raw_title_str and (raw_prev_str.startswith("[已拒绝工具") or not raw_prev_str):
                         continue
 
                     # 过滤无标题且无预览的内部 Subagent 会话（首条消息为 SYSTEM_MESSAGE 而非用户输入）
                     if not raw_title and not raw_preview:
-                        if tp.exists():
+                        if tp and tp.exists():
                             try:
                                 with open(tp, "r", encoding="utf-8", errors="replace") as tf:
                                     first_ln = tf.readline().strip()
@@ -364,7 +498,6 @@ class AntigravityAdapter(BaseAgentAdapter):
 
                     title = raw_title or (raw_preview[:48] if raw_preview else f"会话 {cid[:8]}")
                     preview = raw_preview or title
-                    project_path = decode_workspace_uri(str(r.get("workspace_uris") or ""))
                     updated_at = str(r.get("last_modified_time") or utc_now_iso()).replace(" ", "T")
 
                     model_name = self.get_session_model(cid) or ""
@@ -416,15 +549,17 @@ class AntigravityAdapter(BaseAgentAdapter):
                                             r"\s+", " ", clean_agy_user_content(str(first_obj["content"]))
                                         ).strip()
                                         if cleaned_first:
+                                            if is_temporary_probe_session(cleaned_first, cleaned_first, ""):
+                                                continue
                                             fallback_title = cleaned_first[:48]
                             except Exception as exc:
                                 logger.debug(f"提取活跃会话标题异常 ({cid[:8]}): {exc}")
 
                             stat = transcript.stat()
-                            from datetime import datetime, timezone
-
                             mtime_iso = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
                             model_name = self.get_session_model(cid) or ""
+                            is_recent = (time.time() - stat.st_mtime) < RECENT_ACTIVE_WINDOW_SECONDS
+                            new_status = ("desktop_active" if self.agent_type == "agy_ide" else "running") if is_recent else "idle"
                             new_brain_map[cid] = UnifiedSession(
                                 unified_id=f"{self.agent_type}:{cid}",
                                 agent_type=self.agent_type,
@@ -433,10 +568,11 @@ class AntigravityAdapter(BaseAgentAdapter):
                                 title=fallback_title,
                                 preview=fallback_title,
                                 project_path="",
-                                status="idle",
+                                status=new_status,
                                 step_count=0,
                                 updated_at=mtime_iso,
                                 model_name=model_name,
+                                desktop_locked=(self.agent_type == "agy_ide" and is_recent),
                             )
                 except Exception as exc:
                     log_structured_error(
@@ -451,6 +587,27 @@ class AntigravityAdapter(BaseAgentAdapter):
             for cid, b_sess in cached_brain_map.items():
                 if cid not in sessions_map:
                     sessions_map[cid] = copy.copy(b_sess)
+
+        # 实时联动：轻量级检查前 30 个最近会话的真实 transcript.jsonl 修改时间与活跃态（消解 IDE 流式输出未落库 DB 时的感知延迟）
+        now_ts = time.time()
+        for cid, sess in list(sessions_map.items())[:30]:
+            tp = self.get_session_transcript_path(cid)
+            if tp and tp.exists():
+                try:
+                    st = tp.stat()
+                    file_mtime = st.st_mtime
+                    file_iso = datetime.fromtimestamp(file_mtime, tz=timezone.utc).isoformat()
+                    if file_iso > sess.updated_at:
+                        sess.updated_at = file_iso
+                    # 窗口时间内有文件写入，直接动态标记为运行/桌面活跃态
+                    if (now_ts - file_mtime) < RECENT_ACTIVE_WINDOW_SECONDS:
+                        if self.agent_type == "agy_ide":
+                            sess.status = "desktop_active"
+                            sess.desktop_locked = True
+                        else:
+                            sess.status = "running"
+                except OSError as exc:
+                    logger.debug(f"联动活跃会话时间戳异常 ({cid[:8]}): {exc}")
 
         sorted_list = sorted(sessions_map.values(), key=lambda s: s.updated_at, reverse=True)
         return sorted_list[:limit]

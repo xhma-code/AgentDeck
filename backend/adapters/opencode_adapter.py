@@ -411,6 +411,13 @@ class OpenCodeAdapter(BaseAgentAdapter):
             return raw_session_id in active_map
         return False
 
+    def get_active_session_ids(self) -> list[str]:
+        """返回当前处于外部原生活跃态的 OpenCode unified_id 列表。"""
+        if self.http_bridge.is_server_running():
+            active_map = self.http_bridge.get_active_sessions()
+            return [f"{self.agent_type}:{sid}" for sid in active_map.keys()]
+        return []
+
     def get_session_transcript_path(self, raw_session_id: str) -> Optional[Path]:
         """返回 OpenCode 会话对应的本地 SQLite 数据库文件路径。"""
         return self.db_path if self.db_path.exists() else None
