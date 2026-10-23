@@ -1201,6 +1201,8 @@ async function loadSessions(silent = false) {
     const initialSessionId = targetSession ? targetSession.unified_id : null;
     const isMobileDrawerActive = state.drawerOpen && window.innerWidth < 768;
 
+    syncUnreadSessions(state.allSessions);
+
     if (!silent || newSig !== state.lastSessionsSig || needsInitialSelect) {
       state.lastSessionsSig = newSig;
       // 手机端抽屉展开浏览或用户正在滚动列表/搜索输入时，静默更新不销毁重构侧边栏 DOM，避免打断用户的滑动操作与视口跳动
@@ -1249,6 +1251,9 @@ function updateSelectedSessionHighlight(prevId, nextId) {
 async function selectSession(unifiedId) {
   const prevId = state.selectedSessionId;
   const wasMobileDrawerOpen = state.drawerOpen && window.innerWidth < 768;
+  const wasUnread = state.unreadCompletedSessionIds.has(unifiedId);
+  markSessionViewed(unifiedId);
+
   state.selectedSessionId = unifiedId;
   if (prevId !== unifiedId) {
     state.codeBlockStore = {};
@@ -1260,7 +1265,7 @@ async function selectSession(unifiedId) {
 
   // 自动展开当前选中会话所在的项目分组
   const sess = state.allSessions.find((s) => s.unified_id === unifiedId);
-  let needFullSidebarRender = false;
+  let needFullSidebarRender = wasUnread;
   if (sess && sess.project_path) {
     const pKey = getProjectInfo(sess.project_path).key;
     if (pKey && !state.expandedProjects[pKey]) {
@@ -1278,6 +1283,9 @@ async function selectSession(unifiedId) {
   } else {
     updateSelectedSessionHighlight(prevId, unifiedId);
   }
+  renderCurrentSessionHeader();
+  renderApprovalBanners();
+  renderOtherRunningPill();
   renderCurrentSessionHeader();
   renderApprovalBanners();
   updateGitStatusBadge();
