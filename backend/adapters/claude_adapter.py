@@ -102,9 +102,23 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
     agent_type = "claude_code"
     agent_label = "Claude Code"
 
-    def __init__(self, projects_dir: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        projects_dir: Optional[Path] = None,
+        sessions_dir: Optional[Path] = None,
+    ) -> None:
         super().__init__()
-        self.projects_dir = projects_dir or Path(os.path.expanduser("~/.claude/projects"))
+        default_projects = Path(os.path.expanduser("~/.claude/projects"))
+        default_sessions = Path(os.path.expanduser("~/.claude/sessions"))
+        self.projects_dir = projects_dir or default_projects
+        if sessions_dir:
+            self.sessions_dir = sessions_dir
+        elif projects_dir and projects_dir != default_projects:
+            # 隔离测试环境自动绑定独立目录，杜绝读取全局会话文件
+            self.sessions_dir = projects_dir.parent / "sessions"
+        else:
+            self.sessions_dir = default_sessions
+
         self.cli_bin = (
             shutil.which("claude")
             or os.path.expanduser(r"~\.local\bin\claude.exe")
@@ -119,6 +133,54 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         self._token_usage_cache: BoundedLRUCache = BoundedLRUCache(maxsize=100)
         # 扫描文件候选路径短效缓存 (monotonic_ts, list[Path])，防高频 rglob 磁盘遍历风暴
         self._dir_scan_cache: tuple[float, list[Path]] = (0.0, [])
+
+    def get_active_sessions(self) -> dict[str, str]:
+        """获取当前由外部运行的 Claude Code 进程活跃状态字典（读取 ~/.claude/sessions/*.json）。"""
+        active_map: dict[str, str] = {}
+        if not self.sessions_dir.exists():
+            return active_map
+
+        import psutil
+        try:
+            for p in self.sessions_dir.glob("*.json"):
+                try:
+                    raw = p.read_text(encoding="utf-8", errors="replace")
+                    doc = json.loads(raw)
+                    pid = doc.get("pid")
+                    sid = str(doc.get("sessionId") or "")
+                    if not sid:
+                        continue
+                    # 校验进程存活
+                    if pid and not psutil.pid_exists(pid):
+                        continue
+                    raw_st = str(doc.get("status") or "").lower()
+                    if raw_st in ("busy", "running"):
+                        active_map[sid] = "running"
+                    elif raw_st == "idle":
+                        active_map[sid] = "desktop_active"
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.debug(f"扫描 Claude 活跃状态会话异常: {exc}")
+        return active_map
+
+    def is_external_session_active(self, raw_session_id: str) -> bool:
+        """轻量探测指定 Claude Code 会话是否处于外部运行/活跃态。"""
+        active_map = self.get_active_sessions()
+        st = active_map.get(raw_session_id)
+        if st in ("running", "desktop_active"):
+            return True
+
+        # 双保险：检查会话文件修改时间（最近 20 秒内在持续写入）
+        fpath = self._find_session_file(raw_session_id)
+        if fpath and fpath.exists():
+            try:
+                mtime = fpath.stat().st_mtime
+                if time.time() - mtime < 20:
+                    return True
+            except OSError:
+                pass
+        return False
 
     def invalidate_cache(self) -> None:
         """重置目录扫描短效缓存（多态实现 BaseAgentAdapter 契约）。"""
@@ -145,7 +207,12 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         return False, "未检测到 claude.exe 或 ~/.claude/projects 目录"
 
     def get_watch_paths(self) -> list[Path]:
-        return [self.projects_dir] if self.projects_dir.exists() else []
+        paths = []
+        if self.projects_dir.exists():
+            paths.append(self.projects_dir)
+        if self.sessions_dir.exists():
+            paths.append(self.sessions_dir)
+        return paths
 
     def _find_session_file(self, raw_session_id: str) -> Optional[Path]:
         """在 ~/.claude/projects/*/<raw_session_id>.jsonl 中定位会话文件（优先命中内存路径索引）。"""
@@ -194,12 +261,20 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
 
         files.sort(key=lambda x: x[0], reverse=True)
         sessions: list[UnifiedSession] = []
+        active_map = self.get_active_sessions()
+        now_epoch = time.time()
 
         for mtime, mtime_ns, fsize, fpath in files[:limit]:
             f_key = str(fpath)
             cached = self._session_meta_cache.get(f_key)
             if cached and cached[0] == mtime_ns and cached[1] == fsize:
-                sessions.append(copy.copy(cached[2]))
+                s_copy = copy.copy(cached[2])
+                sid_cached = s_copy.raw_session_id
+                if sid_cached in active_map:
+                    s_copy.status = active_map[sid_cached]
+                elif s_copy.status in ("running", "desktop_active") and sid_cached not in active_map:
+                    s_copy.status = "idle"
+                sessions.append(s_copy)
                 continue
 
             sid = fpath.stem
@@ -250,6 +325,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             if not preview:
                 preview = title
 
+            status = active_map.get(sid, "idle")
+            if status == "idle" and (now_epoch - mtime < 15):
+                status = "running"
+
             sess_obj = UnifiedSession(
                 unified_id=f"{self.agent_type}:{sid}",
                 agent_type=self.agent_type,
@@ -258,7 +337,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 title=title,
                 preview=preview,
                 project_path=cwd or fpath.parent.name,
-                status="idle",
+                status=status,
                 step_count=step_count,
                 updated_at=last_ts,
             )

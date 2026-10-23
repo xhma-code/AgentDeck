@@ -500,7 +500,17 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         if_none_match: Optional[str] = Header(default=None, alias="if-none-match"),
         _auth: bool = Depends(verify_request_auth),
     ) -> Response:
-        """获取单个会话的结构化对话流（带 ETag 304 协商缓存、增量更新 since_step 与首屏分页）。"""
+        """获取单个会话的结构化对话流（带毫秒级 ETag 304 快速预检、增量更新 since_step 与首屏分页）。"""
+        matched, quick_etag = orchestrator.check_session_messages_etag_matches(
+            if_none_match=if_none_match,
+            unified_id=unified_id,
+            limit=limit,
+            before_step=before_step,
+            since_step=since_step,
+        )
+        if matched and quick_etag:
+            return Response(status_code=304, headers={"ETag": quick_etag, "Cache-Control": "no-cache"})
+
         detail = orchestrator.get_session_detail(
             unified_id, limit=limit, before_step=before_step, since_step=since_step
         )

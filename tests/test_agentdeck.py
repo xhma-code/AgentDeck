@@ -278,6 +278,22 @@ def test_claude_and_opencode_adapters(tmp_path: Path):
     assert len(c_msgs) == 2
     assert c_msgs[1].tool_calls[0].risk_level == "high"
 
+    # 验证 Claude 外部进程运行状态探测 (busy -> running)
+    import os
+    c_sessions_dir = tmp_path / "claude_sessions"
+    c_sessions_dir.mkdir(parents=True)
+    (c_sessions_dir / f"{os.getpid()}.json").write_text(
+        json.dumps({"pid": os.getpid(), "sessionId": "sess-claude-1", "status": "busy"}),
+        encoding="utf-8",
+    )
+    c_adapter_with_sess = ClaudeCodeAdapter(
+        projects_dir=tmp_path / "claude_projects",
+        sessions_dir=c_sessions_dir,
+    )
+    assert c_adapter_with_sess.is_external_session_active("sess-claude-1") is True
+    active_c_sessions = c_adapter_with_sess.list_sessions()
+    assert active_c_sessions[0].status == "running"
+
     # 2. OpenCode
     oc_dir = tmp_path / "opencode"
     oc_dir.mkdir(parents=True)
@@ -325,6 +341,93 @@ def test_claude_and_opencode_adapters(tmp_path: Path):
     assert has_more is False
     assert len(page_msgs) == 1
     assert page_msgs[0].step_index == 1
+
+    # 3. OpenCode 2.x (session_v2 + session_message)
+    oc2_dir = tmp_path / "opencode2"
+    oc2_dir.mkdir(parents=True)
+    oc2_db = oc2_dir / "opencode.db"
+    conn2 = sqlite3.connect(str(oc2_db))
+    conn2.executescript(
+        """
+        CREATE TABLE session_v2 (
+            id TEXT PRIMARY KEY,
+            directory TEXT,
+            title TEXT,
+            time_updated INTEGER,
+            time_archived INTEGER,
+            tokens_input INTEGER,
+            tokens_output INTEGER,
+            tokens_reasoning INTEGER,
+            tokens_cache_read INTEGER,
+            cost REAL
+        );
+        CREATE TABLE session_message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT,
+            type TEXT,
+            seq INTEGER,
+            time_created INTEGER,
+            time_updated INTEGER,
+            data TEXT
+        );
+        INSERT INTO session_v2 VALUES (
+            'ses_v2_1', 'd:/oc2_proj', NULL, 1792783941084, NULL, 500, 200, 50, 1000, 0.01
+        );
+        INSERT INTO session_message VALUES (
+            'msg_u1', 'ses_v2_1', 'user', 1, 1792783941084, 1792783941084,
+            '{"text":"修复 OpenCode 2 接入问题"}'
+        );
+        INSERT INTO session_message VALUES (
+            'msg_a1', 'ses_v2_1', 'assistant', 2, 1792783942000, 1792783945000,
+            '{"content":[{"type":"reasoning","text":"思考中..."},{"type":"tool","name":"shell","state":{"status":"completed","input":{"command":"git status"},"content":[{"type":"text","text":"clean"}]}},{"type":"text","text":"操作完成"}]}'
+        );
+        """
+    )
+    conn2.commit()
+    conn2.close()
+
+    # 模拟 service.json 状态目录
+    state_dir = oc2_dir / "state"
+    state_dir.mkdir(parents=True)
+    service_json = state_dir / "service.json"
+    service_json.write_text(
+        json.dumps({"url": "http://127.0.0.1:28894", "password": "mock_secret_token"}),
+        encoding="utf-8",
+    )
+
+    oc2_adapter = OpenCodeAdapter(data_dir=oc2_dir, state_dir=state_dir)
+    assert oc2_adapter.is_available()[0] is True
+    assert "OpenCode 2" in oc2_adapter.is_available()[1]
+
+    oc2_sessions = oc2_adapter.list_sessions()
+    assert len(oc2_sessions) == 1
+    # 标题为 NULL 时自动提取首条 user 文本
+    assert oc2_sessions[0].title == "修复 OpenCode 2 接入问题"
+    assert oc2_sessions[0].step_count == 2
+
+    oc2_msgs = oc2_adapter.get_session_messages("ses_v2_1")
+    assert len(oc2_msgs) == 2
+    assert oc2_msgs[0].role == "user"
+    assert oc2_msgs[0].content == "修复 OpenCode 2 接入问题"
+    assert oc2_msgs[1].role == "assistant"
+    assert oc2_msgs[1].content == "操作完成"
+    assert oc2_msgs[1].thinking == "思考中..."
+    assert len(oc2_msgs[1].tool_calls) == 1
+    assert oc2_msgs[1].tool_calls[0].name == "shell"
+    assert oc2_msgs[1].tool_calls[0].status == "DONE"
+    assert oc2_msgs[1].tool_calls[0].output == "clean"
+
+    # 验证 token usage
+    usage = oc2_adapter.get_session_token_usage("ses_v2_1")
+    assert usage["total_tokens"] == 700
+    assert usage["context_tokens"] == 1500  # 500 + 1000
+
+    # 验证 HTTP 桥接参数与头构造
+    assert oc2_adapter.http_bridge.base_url == "http://127.0.0.1:28894"
+    assert oc2_adapter.http_bridge.password == "mock_secret_token"
+    req = oc2_adapter.http_bridge._make_request("/api/test")
+    assert "Authorization" in req.headers
+    assert req.headers["Authorization"].startswith("Basic ")
 
 
 @pytest.mark.asyncio
@@ -1181,7 +1284,8 @@ async def test_process_stream_launch_failure_resilience(tmp_path: Path):
         execution_mode="ask",
     )
 
-    # mock _build_cli_command 返回不存在的可执行文件名
+    # mock _build_cli_command 返回不存在的可执行文件名，并显式放行测试进程启动
+    orchestrator._allow_real_process_in_test = True
     orchestrator._build_cli_command = lambda **kwargs: ["non_existent_executable_12345_xyz"]  # type: ignore
 
     # 执行应被捕获处理，绝不抛出 UnboundLocalError
@@ -2166,6 +2270,31 @@ def test_vpn_pwa_self_healing_and_session_isolation(tmp_path: Path):
     assert healed_token is not None
     assert healed_token.startswith("agd_")
     assert auth_mgr.verify_token(healed_token, client_ip="100.64.1.20") is True
+
+
+def test_clean_denied_tool_instruction_and_title_sanitization():
+    """验证后端工具拒绝控制指令清洗、人性化标题生成与前后端一致性。"""
+    from backend.adapters.antigravity_adapter import clean_denied_tool_instruction
+    from backend.engines.process_pool import AgentOrchestrator
+
+    # 1. 基础拒绝并附带指导意见
+    raw1 = "[已拒绝工具 run_command] 请勿执行刚才的操作，按以下要求调整方案：请改用只读查看"
+    assert clean_denied_tool_instruction(raw1) == "指导: 请改用只读查看"
+
+    # 2. 工具名带空格或特殊字符
+    raw2 = "[已拒绝工具 custom tool name] 请勿执行刚才的操作，按以下要求调整方案：不要删除数据库"
+    assert clean_denied_tool_instruction(raw2) == "指导: 不要删除数据库"
+
+    # 3. 直接拒绝无反馈文本
+    raw3 = "[已拒绝工具 run_command] 请勿执行刚才的操作，按以下要求调整方案："
+    assert clean_denied_tool_instruction(raw3) == "已拒绝执行该工具"
+
+    # 4. 普通人类文本不应被误清洗
+    normal_text = "请帮我检查代码里的错误"
+    assert clean_denied_tool_instruction(normal_text) == normal_text
+
+    # 5. 空文本安全兜底
+    assert clean_denied_tool_instruction("") == ""
 
 
 

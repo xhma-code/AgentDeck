@@ -983,6 +983,12 @@ async function loadSessions(silent = false) {
       state.sessionsETag = data._etag;
     }
     const incomingSessions = data.sessions || [];
+    for (const s of incomingSessions) {
+      if (s) {
+        s.title = cleanFriendlyTitle(s.title);
+        s.preview = cleanFriendlyText(s.preview);
+      }
+    }
     const incomingApprovals = data.pending_approvals || state.pendingApprovals || [];
     const newSig = computeSessionsSig(incomingSessions, incomingApprovals);
 
@@ -1701,10 +1707,10 @@ function renderSidebarStatus() {
   const headerIndicator = document.getElementById("header-status-indicator");
 
   if (state.hasUpdate) {
-    // 发现前端代码更新：亮蓝呼吸脉冲 + 向上箭头图标
+    // 发现前端代码更新：亮蓝呼吸脉冲 + 向上箭头图标（手机端专属更新入口）
     if (btn) {
       btn.className =
-        "h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/50 text-sky-200 flex items-center gap-1.5 text-xs transition active:scale-95 shadow-[0_0_12px_rgba(56,189,248,0.25)] animate-pulse cursor-pointer";
+        "flex md:hidden h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/50 text-sky-200 items-center gap-1.5 text-xs transition active:scale-95 shadow-[0_0_12px_rgba(56,189,248,0.25)] animate-pulse cursor-pointer";
       btn.title = "发现新版本前端代码，点击立即载入更新";
       btn.innerHTML = `
         <svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -1730,28 +1736,25 @@ function renderSidebarStatus() {
     return;
   }
 
-  // 常规连接状态：手机端日常仅保留呼吸圆点（无背景与外边框），电脑端保留胶囊样式
+  // 常规连接状态：仅手机端保留圆圈图标以供状态显示与更新，电脑网页端隐藏（与右上角扫码前圆点去重）
   if (btn) {
     btn.className =
-      "h-8 w-8 sm:w-auto p-0 sm:px-2 rounded-lg bg-transparent hover:bg-zinc-900/60 sm:bg-zinc-900 sm:hover:bg-zinc-800 border-0 sm:border sm:border-zinc-800/80 text-zinc-300 flex items-center justify-center sm:justify-start gap-0 sm:gap-1.5 text-xs transition active:scale-95 cursor-pointer";
+      "flex md:hidden h-8 w-8 rounded-lg bg-transparent hover:bg-zinc-900/60 text-zinc-300 items-center justify-center text-xs transition active:scale-95 cursor-pointer";
 
     if (state.wsConnected) {
       btn.title = "WebSocket 实时连接正常（双击可强制重载）";
       btn.innerHTML = `
         <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.7)]"></span>
-        <span class="text-[11px] font-mono text-zinc-400 hidden sm:inline">已连接</span>
       `;
     } else if (state.wsReconnecting) {
       btn.title = "正在重新连接 WebSocket 服务...";
       btn.innerHTML = `
         <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
-        <span class="text-[11px] font-mono text-amber-400 hidden sm:inline">连接中</span>
       `;
     } else {
       btn.title = "与服务端的实时连接断开（点击尝试重新载入）";
       btn.innerHTML = `
         <span class="w-2.5 h-2.5 rounded-full bg-zinc-600"></span>
-        <span class="text-[11px] font-mono text-zinc-500 hidden sm:inline">离线</span>
       `;
     }
   }

@@ -168,7 +168,7 @@ def clean_denied_tool_instruction(text: str) -> str:
     )
     if m:
         feedback = m.group(2).strip()
-        return f"指导意见: {feedback}" if feedback else "已拒绝执行该工具"
+        return f"指导: {feedback}" if feedback else "已拒绝执行该工具"
     return text
 
 
@@ -207,8 +207,10 @@ class AntigravityAdapter(BaseAgentAdapter):
         # raw_session_id -> (mtime, model_name)
         self._session_model_cache: BoundedLRUCache = BoundedLRUCache(maxsize=100)
 
+    _shared_session_model_cache: dict[str, tuple[float, Optional[str]]] = {}
+
     def get_session_model(self, raw_session_id: str) -> Optional[str]:
-        """从 conversations/<id>.db 读取该会话最近使用的真实模型 ID（带 LRU 内存缓存与只读免锁直连）。"""
+        """从 conversations/<id>.db 读取该会话最近使用的真实模型 ID（带 LRU/共享内存缓存与只读免锁直连）。"""
         db_path = self.conversations_dir / f"{raw_session_id}.db"
         if not db_path.exists():
             if self.agent_type == "agy_cli":
@@ -222,7 +224,7 @@ class AntigravityAdapter(BaseAgentAdapter):
 
         try:
             mtime = db_path.stat().st_mtime
-            cached = self._session_model_cache.get(raw_session_id)
+            cached = self._session_model_cache.get(raw_session_id) or self._shared_session_model_cache.get(raw_session_id)
             if cached and cached[0] == mtime:
                 return cached[1]
 
@@ -234,13 +236,32 @@ class AntigravityAdapter(BaseAgentAdapter):
                 if isinstance(data, bytes):
                     model_id = extract_protobuf_model_id(data)
 
-            if model_id:
-                self._session_model_cache[raw_session_id] = (mtime, model_id)
-                return model_id
+            self._session_model_cache[raw_session_id] = (mtime, model_id)
+            self.__class__._shared_session_model_cache[raw_session_id] = (mtime, model_id)
+            return model_id
         except Exception as exc:
             logger.debug(f"读取会话 {raw_session_id[:8]} 模型异常: {exc}")
 
         return None
+
+    def is_external_session_active(self, raw_session_id: str) -> bool:
+        """极速单行探测指定 Antigravity 会话是否处于外部运行/活跃态（耗时 < 2ms，避免调用 list_sessions 全量扫描）。"""
+        if self.summary_db_path.exists():
+            sql = "SELECT status, not_fully_idle FROM conversation_summaries WHERE conversation_id = ? AND killed = 0 LIMIT 1"
+            rows = safe_query_external_sqlite(self.summary_db_path, sql, (raw_session_id,))
+            if rows:
+                r = rows[0]
+                not_idle = bool(r.get("not_fully_idle"))
+                raw_status = str(r.get("status") or "")
+                if self.agent_type == "agy_ide" and not_idle:
+                    return True
+                if not_idle or "RUNNING" in raw_status.upper():
+                    return True
+        return False
+
+    def get_session_transcript_path(self, raw_session_id: str) -> Optional[Path]:
+        """返回 Antigravity 会话对应的本地 transcript.jsonl 路径。"""
+        return self.brain_dir / raw_session_id / ".system_generated" / "logs" / "transcript.jsonl"
 
     def _get_summary_db_sig(self) -> tuple[int, int, int, int]:
         m1, s1, m2, s2 = 0, 0, 0, 0
@@ -261,10 +282,16 @@ class AntigravityAdapter(BaseAgentAdapter):
             cnt = 0
             if self.summary_db_path.exists():
                 try:
-                    rows = safe_query_external_sqlite(
-                        self.summary_db_path,
-                        "SELECT count(*) as c FROM conversation_summaries WHERE killed = 0",
-                    )
+                    sql = """
+                        SELECT count(*) as c
+                        FROM conversation_summaries
+                        WHERE killed = 0
+                          AND NOT (
+                              (title IS NULL OR trim(title) = '')
+                              AND (preview IS NULL OR trim(preview) = '' OR preview LIKE '[已拒绝工具%')
+                          )
+                    """
+                    rows = safe_query_external_sqlite(self.summary_db_path, sql)
                     if rows and isinstance(rows, list):
                         cnt = int(rows[0].get("c") or 0)
                 except Exception as exc:
@@ -317,9 +344,11 @@ class AntigravityAdapter(BaseAgentAdapter):
                     raw_title = clean_denied_tool_instruction(re.sub(r"\s+", " ", (r.get("title") or "").strip()))
                     raw_preview = clean_denied_tool_instruction(re.sub(r"\s+", " ", (r.get("preview") or "").strip()).strip("│ "))
 
-                    # 过滤单测无脑拉起外部 CLI 产生且无真实 transcript 文件的幽灵残存会话
+                    # 过滤无真实 transcript 对话文件的孤儿异常会话（如无标题且以 [已拒绝工具 开头的异常记录）
                     tp = self.brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
-                    if not tp.exists() and "不允许执行危险命令" in str(r.get("preview") or ""):
+                    raw_prev_str = str(r.get("preview") or "").strip()
+                    raw_title_str = str(r.get("title") or "").strip()
+                    if not tp.exists() and not raw_title_str and (raw_prev_str.startswith("[已拒绝工具") or not raw_prev_str):
                         continue
 
                     # 过滤无标题且无预览的内部 Subagent 会话（首条消息为 SYSTEM_MESSAGE 而非用户输入）
@@ -358,17 +387,20 @@ class AntigravityAdapter(BaseAgentAdapter):
                     {k: copy.copy(v) for k, v in sessions_map.items()},
                 )
 
-        # 补充扫描 brain 目录中存在 transcript.jsonl 但尚未写入 summary 表的活跃会话（带 2s 内存缓存防高频 I/O）
+        # 补充扫描 brain 目录中存在 transcript.jsonl 但尚未写入 summary 表的活跃会话（带 3s 内存缓存防高频 I/O 与降低感知延迟）
         if self.brain_dir.exists():
             now_mono = time.monotonic()
             cached_ts, cached_brain_map = self._brain_scan_cache
-            if now_mono - cached_ts > 2.0:
+            if now_mono - cached_ts > 3.0:
                 new_brain_map: dict[str, UnifiedSession] = {}
                 try:
                     for conv_dir in self.brain_dir.iterdir():
                         if not conv_dir.is_dir():
                             continue
                         cid = conv_dir.name
+                        # 核心性能优化：若已从 summary 表加载，直接跳过昂贵的磁盘与模型解析
+                        if cid in sessions_map:
+                            continue
                         transcript = conv_dir / ".system_generated" / "logs" / "transcript.jsonl"
                         if transcript.exists():
                             fallback_title = f"活跃会话 {cid[:8]}"
@@ -1093,8 +1125,26 @@ class AntigravityLanguageServerBridge:
 
     @staticmethod
     def _scan_ls_processes() -> list[tuple[int, str]]:
-        """扫描进程表提取 (pid, csrf_token)（兼容全系 Windows 自带的 powershell.exe 与 pwsh）。"""
+        """扫描进程表提取 (pid, csrf_token)（优先使用 psutil 底层 C 扩展快速查询，未安装时安全回退至系统命令）。"""
         results: list[tuple[int, str]] = []
+        try:
+            import psutil
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    p_name = proc.info.get("name") or ""
+                    if "language_server" in p_name.lower():
+                        cmdline = " ".join(proc.info.get("cmdline") or [])
+                        m = CSRF_TOKEN_RE.search(cmdline)
+                        pid = proc.info.get("pid") or 0
+                        if pid > 0 and m:
+                            results.append((pid, m.group(1)))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            if results:
+                return results
+        except Exception as ps_exc:
+            logger.debug(f"psutil 扫描 language_server 失败，回退至命令行: {ps_exc}")
+
         try:
             if sys.platform == "win32":
                 ps_bin = (
@@ -1149,8 +1199,21 @@ class AntigravityLanguageServerBridge:
 
     @staticmethod
     def _find_listening_ports(pid: int) -> list[int]:
-        """查找指定 PID 在本机监听的 TCP 端口列表。"""
+        """查找指定 PID 在本机监听的 TCP 端口列表（优先使用 psutil 免开子进程）。"""
         ports: list[int] = []
+        try:
+            import psutil
+            p = psutil.Process(pid)
+            for conn in p.net_connections(kind="tcp"):
+                if conn.status == psutil.CONN_LISTEN and conn.laddr:
+                    port = getattr(conn.laddr, "port", None)
+                    if port and port not in ports:
+                        ports.append(port)
+            if ports:
+                return ports[:6]
+        except Exception as ps_exc:
+            logger.debug(f"psutil 查询 PID={pid} 端口失败，回退至 netstat: {ps_exc}")
+
         try:
             if sys.platform == "win32":
                 proc = subprocess.run(

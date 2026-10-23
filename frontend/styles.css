@@ -223,6 +223,11 @@ body {
 }
 
 @media (min-width: 768px) {
+  /* 电脑网页端隐藏左上角侧栏状态圆点（与右上角扫码前圆点去重） */
+  #sidebar-status-btn {
+    display: none !important;
+  }
+
   #desktop-sidebar-expand-btn {
     display: none;
   }

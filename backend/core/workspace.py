@@ -284,9 +284,31 @@ def discover_quick_workflows(project_path: str = "") -> list[dict[str, str]]:
     return items
 
 
+_GIT_STATUS_CACHE: dict[str, tuple[float, tuple[int, int, int], dict[str, Any]]] = {}
+
+
+def _get_git_repo_sig(repo_dir: Path) -> tuple[int, int, int]:
+    """获取 git 关键状态元文件 (HEAD, index 与工作区根目录) 的 mtime_ns 签名。"""
+    git_dir = repo_dir / ".git"
+    if not git_dir.exists():
+        return (0, 0, 0)
+    try:
+        if git_dir.is_file():
+            content = git_dir.read_text(encoding="utf-8", errors="replace").strip()
+            if content.startswith("gitdir:"):
+                actual_dir = (repo_dir / content.split(":", 1)[1].strip()).resolve()
+                git_dir = actual_dir
+        head_mtime = (git_dir / "HEAD").stat().st_mtime_ns if (git_dir / "HEAD").exists() else 0
+        idx_mtime = (git_dir / "index").stat().st_mtime_ns if (git_dir / "index").exists() else 0
+        repo_mtime = repo_dir.stat().st_mtime_ns
+        return (head_mtime, idx_mtime, repo_mtime)
+    except OSError:
+        return (0, 0, 0)
+
+
 def get_git_workspace_status(raw_project_path: str) -> dict[str, Any]:
     """
-    轻量只读查询指定工作区的 Git 分支与未提交变更文件列表（严格只读，绝不修改暂存区）。
+    轻量只读查询指定工作区的 Git 分支与未提交变更文件列表（带 0.8s 防抖签名缓存与单次 status -b 解析，严格只读）。
     """
     norm_path = decode_workspace_uri(raw_project_path)
     if not norm_path:
@@ -296,56 +318,64 @@ def get_git_workspace_status(raw_project_path: str) -> dict[str, Any]:
     if not repo_dir.is_dir():
         return {"ok": True, "is_git_repo": False, "branch": "", "changed_count": 0, "files": []}
 
-    try:
-        branch_proc = subprocess.run(
-            ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=3.5,
-        )
-        if branch_proc.returncode != 0:
-            return {"ok": True, "is_git_repo": False, "branch": "", "changed_count": 0, "files": []}
-        branch = branch_proc.stdout.strip() or "HEAD"
+    now_mono = time.monotonic()
+    sig = _get_git_repo_sig(repo_dir)
+    cache_key = str(repo_dir.resolve())
+    cached = _GIT_STATUS_CACHE.get(cache_key)
+    if cached and (now_mono - cached[0] < 0.8) and cached[1] == sig:
+        return cached[2]
 
+    try:
         status_proc = subprocess.run(
-            ["git", "-C", str(repo_dir), "-c", "core.quotepath=false", "status", "--porcelain", "-uall"],
+            ["git", "-C", str(repo_dir), "-c", "core.quotepath=false", "status", "-b", "--porcelain=v1", "-uall"],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=4.0,
         )
-        numstat_proc = subprocess.run(
-            ["git", "-C", str(repo_dir), "-c", "core.quotepath=false", "diff", "HEAD", "--numstat"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=4.0,
-        )
-        if numstat_proc.returncode != 0:
+        if status_proc.returncode != 0:
+            res = {"ok": True, "is_git_repo": False, "branch": "", "changed_count": 0, "files": []}
+            _GIT_STATUS_CACHE[cache_key] = (now_mono, sig, res)
+            return res
+
+        status_lines = (status_proc.stdout or "").splitlines()
+        branch = "HEAD"
+        if status_lines and status_lines[0].startswith("## "):
+            branch_info = status_lines[0][3:].strip()
+            branch = branch_info.split("...", 1)[0].split(" ", 1)[0]
+            status_lines = status_lines[1:]
+
+        stat_map: dict[str, tuple[int, int]] = {}
+        if status_lines:
             numstat_proc = subprocess.run(
-                ["git", "-C", str(repo_dir), "-c", "core.quotepath=false", "diff", "--numstat"],
+                ["git", "-C", str(repo_dir), "-c", "core.quotepath=false", "diff", "HEAD", "--numstat"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=4.0,
             )
+            if numstat_proc.returncode != 0:
+                numstat_proc = subprocess.run(
+                    ["git", "-C", str(repo_dir), "-c", "core.quotepath=false", "diff", "--numstat"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=4.0,
+                )
 
-        stat_map: dict[str, tuple[int, int]] = {}
-        for ln in (numstat_proc.stdout or "").splitlines():
-            parts = ln.split("\t")
-            if len(parts) >= 3:
-                add_s, del_s, f_rel = parts[0], parts[1], parts[2].strip().strip('"')
-                add_n = int(add_s) if add_s.isdigit() else 0
-                del_n = int(del_s) if del_s.isdigit() else 0
-                stat_map[f_rel] = (add_n, del_n)
+            for ln in (numstat_proc.stdout or "").splitlines():
+                parts = ln.split("\t")
+                if len(parts) >= 3:
+                    add_s, del_s, f_rel = parts[0], parts[1], parts[2].strip().strip('"')
+                    add_n = int(add_s) if add_s.isdigit() else 0
+                    del_n = int(del_s) if del_s.isdigit() else 0
+                    stat_map[f_rel] = (add_n, del_n)
 
         files: list[dict[str, Any]] = []
-        for raw_line in (status_proc.stdout or "").splitlines():
+        for raw_line in status_lines:
             if len(raw_line) < 4:
                 continue
             xy = raw_line[:2]
@@ -375,7 +405,7 @@ def get_git_workspace_status(raw_project_path: str) -> dict[str, Any]:
                 }
             )
 
-        return {
+        res = {
             "ok": True,
             "is_git_repo": True,
             "project_path": norm_path,
@@ -383,7 +413,15 @@ def get_git_workspace_status(raw_project_path: str) -> dict[str, Any]:
             "changed_count": len(files),
             "files": files[:80],
         }
-    except Exception:
+        _GIT_STATUS_CACHE[cache_key] = (now_mono, sig, res)
+        return res
+    except Exception as exc:
+        log_structured_error(
+            problem=f"获取工作区 Git 状态异常 ({raw_project_path})",
+            cause=str(exc),
+            fix="请检查工作区目录读取权限或是否包含有效 Git 仓库元数据。",
+            exc=exc,
+        )
         return {"ok": True, "is_git_repo": False, "branch": "", "changed_count": 0, "files": []}
 
 

@@ -532,6 +532,14 @@ class BaseAgentAdapter(ABC):
         has_more = len(filtered) > len(page_items)
         return page_items, total_count, has_more
 
+    def is_external_session_active(self, raw_session_id: str) -> bool:
+        """轻量探测指定会话是否处于外部运行/活跃态（子类可优化重写以避免调用 list_sessions 全量扫描）。"""
+        return False
+
+    def get_session_transcript_path(self, raw_session_id: str) -> Optional[Path]:
+        """返回指定会话底层日志或数据库文件的本地路径（供 ETag 协商与文件监控快速定位，子类实现）。"""
+        return None
+
     @abstractmethod
     def get_watch_paths(self) -> list[Path]:
         """返回需要被 `watchfiles` 实时监听的本地目录列表。"""

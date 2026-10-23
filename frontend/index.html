@@ -45,12 +45,11 @@
           <span class="font-bold text-base sm:text-[17px] tracking-tight text-white truncate">AgentDeck</span>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
-          <!-- 侧边栏状态指示与一键更新联动按钮：移动端日常仅保留呼吸圆点，电脑端带背景框与文字，检测到新代码时变为向上箭头并高亮呼吸 -->
+          <!-- 侧边栏状态指示与一键更新联动按钮：手机端保留圆圈图标以便更新和状态显示，电脑网页端隐藏（与右上角扫码前圆点去重） -->
           <button id="sidebar-status-btn" onclick="window.appActions.handleStatusBtnClick()"
-            class="h-8 w-8 sm:w-auto p-0 sm:px-2 rounded-lg bg-transparent hover:bg-zinc-900/60 sm:bg-zinc-900 sm:hover:bg-zinc-800 border-0 sm:border sm:border-zinc-800/80 text-zinc-300 flex items-center justify-center sm:justify-start gap-0 sm:gap-1.5 text-xs transition active:scale-95 cursor-pointer"
+            class="flex md:hidden h-8 w-8 rounded-lg bg-transparent hover:bg-zinc-900/60 text-zinc-300 items-center justify-center text-xs transition active:scale-95 cursor-pointer"
             title="连接正常（有新版本时点击更新）" aria-label="系统连接与更新状态">
             <span id="sidebar-status-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.7)]"></span>
-            <span id="sidebar-status-text" class="text-[11px] font-mono text-zinc-400 hidden sm:inline">已连接</span>
           </button>
 
           <button onclick="window.appActions.toggleSidebar()"
