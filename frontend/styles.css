@@ -1,0 +1,479 @@
+/*
+ * AgentDeck 统一设计语言与移动端安全区样式规范
+ * 遵循前端 UI/UX 设计规范：
+ * 1. 全站统一使用 CSS 变量设计 Token，严禁散落魔法色值。
+ * 2. 适配移动端 100dvh 与 iOS/Android 顶部/底部安全区 (safe-area-inset-top / bottom)，彻底消除菜单遮挡。
+ * 3. 单列 Unified Diff 与长按 0.8s 进度条动效。
+ */
+
+:root {
+  --bg-canvas: #090d16;
+  --bg-code: #060911;
+  --bg-code-card: #050811;
+  --bg-surface: #111827;
+  --bg-elevated: #1e293b;
+  --bg-glass: rgba(15, 23, 42, 0.92);
+  --border-subtle: rgba(148, 163, 184, 0.14);
+  --border-focus: rgba(56, 189, 248, 0.55);
+
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --accent-sky: #38bdf8;
+  --accent-indigo: #6366f1;
+  --accent-emerald: #10b981;
+  --accent-amber: #f59e0b;
+  --accent-rose: #f43f5e;
+  --accent-purple: #a855f7;
+
+  --diff-add-bg: rgba(16, 185, 129, 0.14);
+  --diff-add-text: #6ee7b7;
+  --diff-del-bg: rgba(244, 63, 94, 0.14);
+  --diff-del-text: #fda4af;
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+/* 移动端顶部与底部安全区适配（防刘海屏/状态栏遮挡顶部菜单） */
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-bottom {
+  padding-bottom: max(0.6rem, env(safe-area-inset-bottom, 0px));
+}
+
+.toast-safe-top {
+  top: calc(env(safe-area-inset-top, 0px) + 3.5rem);
+}
+
+/* 隐藏滚动条但保留滚动能力 */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 左侧菜单栏极简隐形细滚动条：默认完全透明，悬停时仅浮现 4px 低对比暗色细线 */
+.subtle-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.subtle-scrollbar:hover {
+  scrollbar-color: rgba(148, 163, 184, 0.18) transparent;
+}
+.subtle-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.subtle-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.subtle-scrollbar::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+}
+.subtle-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.18);
+}
+.subtle-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.32);
+}
+
+/* 桌面端左侧菜单栏收起与展开过渡 */
+@media (min-width: 768px) {
+  #sidebar-drawer {
+    transition: margin-left 200ms cubic-bezier(0.4, 0, 0.2, 1),
+      opacity 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  #sidebar-drawer.desktop-collapsed {
+    margin-left: -18rem;
+    border-right-width: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+.bg-canvas {
+  background-color: var(--bg-canvas);
+}
+
+/* 窄屏单列 Unified Diff 样式 */
+.unified-diff-box {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  background: var(--bg-code);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.unified-diff-box.word-wrap .diff-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diff-line {
+  white-space: pre;
+  padding: 1px 8px;
+}
+
+.diff-line-add {
+  background-color: var(--diff-add-bg);
+  color: var(--diff-add-text);
+}
+
+.diff-line-del {
+  background-color: var(--diff-del-bg);
+  color: var(--diff-del-text);
+}
+
+.diff-line-hunk {
+  color: var(--accent-sky);
+  background-color: rgba(56, 189, 248, 0.08);
+}
+
+/* 高危命令长按 0.8s 进度条按钮 */
+.hold-approve-btn {
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.hold-progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0%;
+  background: rgba(255, 255, 255, 0.28);
+  transition: width 80ms linear;
+  pointer-events: none;
+}
+
+/* 脉冲骨架屏 */
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.85; }
+}
+
+.skeleton-block {
+  animation: pulse-subtle 1.6s ease-in-out infinite;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+}
+
+/* ==========================================================================
+   移动端沉浸式 GFM Markdown 文档流排版 (.md-prose)
+   手机端正文字号 14.5px (0.906rem)，行高 1.72，兼顾长时间阅读舒适度与信息密度
+   ========================================================================== */
+.md-prose {
+  font-size: 0.90625rem; /* 14.5px */
+  line-height: 1.72;
+  color: #e2e8f0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 640px) {
+  .md-prose {
+    font-size: 0.9375rem; /* 15px */
+  }
+}
+
+.md-prose > *:first-child {
+  margin-top: 0 !important;
+}
+
+.md-prose > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+.md-prose p {
+  margin-top: 0.55rem;
+  margin-bottom: 0.55rem;
+}
+
+.md-prose h1,
+.md-prose h2,
+.md-prose h3,
+.md-prose h4 {
+  color: #f8fafc;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.md-prose h1 {
+  font-size: 1.2rem;
+  margin-top: 1.15rem;
+  margin-bottom: 0.55rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.md-prose h2 {
+  font-size: 1.08rem;
+  margin-top: 1rem;
+  margin-bottom: 0.45rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.md-prose h3 {
+  font-size: 0.98rem;
+  margin-top: 0.85rem;
+  margin-bottom: 0.35rem;
+  color: #f1f5f9;
+}
+
+.md-prose h4 {
+  font-size: 0.92rem;
+  margin-top: 0.7rem;
+  margin-bottom: 0.25rem;
+  color: #cbd5e1;
+}
+
+.md-prose strong {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.md-prose em {
+  color: #cbd5e1;
+  font-style: italic;
+}
+
+.md-prose ul,
+.md-prose ol {
+  margin-top: 0.45rem;
+  margin-bottom: 0.55rem;
+  padding-left: 1.25rem;
+}
+
+.md-prose ul {
+  list-style-type: disc;
+}
+
+.md-prose ol {
+  list-style-type: decimal;
+}
+
+.md-prose li {
+  margin-top: 0.22rem;
+  margin-bottom: 0.22rem;
+  padding-left: 0.15rem;
+}
+
+.md-prose li::marker {
+  color: #38bdf8;
+}
+
+.md-prose hr {
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  margin: 0.95rem 0;
+}
+
+/* 行内代码胶囊 */
+.md-inline-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+  background: rgba(30, 41, 59, 0.85);
+  color: #7dd3fc;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  padding: 0.08rem 0.36rem;
+  border-radius: 0.35rem;
+  word-break: break-word;
+}
+
+/* 本地文件点击预览胶囊链接 */
+.md-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  background: rgba(14, 165, 233, 0.14);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  padding: 0.08rem 0.45rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+  transition: var(--transition-fast);
+  text-decoration: none;
+  vertical-align: baseline;
+}
+
+.md-file-chip:hover,
+.md-file-chip:active {
+  background: rgba(14, 165, 233, 0.25);
+  border-color: rgba(56, 189, 248, 0.65);
+}
+
+/* 引用块与 GFM Alert 提示框 */
+.md-blockquote {
+  margin: 0.65rem 0;
+  padding: 0.45rem 0.75rem;
+  border-left: 3px solid #38bdf8;
+  background: rgba(15, 23, 42, 0.65);
+  border-radius: 0 0.5rem 0.5rem 0;
+  color: #cbd5e1;
+  font-size: 0.86rem;
+}
+
+.md-alert {
+  margin: 0.7rem 0;
+  padding: 0.6rem 0.8rem;
+  border-left: 3.5px solid #38bdf8;
+  background: rgba(15, 23, 42, 0.8);
+  border-radius: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.md-alert-title {
+  font-weight: 700;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.25rem;
+}
+
+.md-alert-note { border-left-color: #38bdf8; background: rgba(56, 189, 248, 0.08); }
+.md-alert-note .md-alert-title { color: #38bdf8; }
+
+.md-alert-tip { border-left-color: #10b981; background: rgba(16, 185, 129, 0.08); }
+.md-alert-tip .md-alert-title { color: #34d399; }
+
+.md-alert-important { border-left-color: #a855f7; background: rgba(168, 85, 247, 0.08); }
+.md-alert-important .md-alert-title { color: #c084fc; }
+
+.md-alert-warning { border-left-color: #f59e0b; background: rgba(245, 158, 11, 0.08); }
+.md-alert-warning .md-alert-title { color: #fbbf24; }
+
+.md-alert-caution { border-left-color: #f43f5e; background: rgba(244, 63, 94, 0.08); }
+.md-alert-caution .md-alert-title { color: #fb7185; }
+
+/* 窄屏友好的横向滚动表格 */
+.md-table-wrap {
+  margin: 0.7rem 0;
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.6rem;
+  background: rgba(9, 13, 22, 0.75);
+}
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.md-table th,
+.md-table td {
+  padding: 0.45rem 0.65rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table th {
+  background: rgba(30, 41, 59, 0.75);
+  color: #f8fafc;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.md-table tr:last-child td {
+  border-bottom: none;
+}
+
+.md-table tr:nth-child(even) td {
+  background: rgba(15, 23, 42, 0.35);
+}
+
+/* 围栏代码块与超过 15 行自动折叠 */
+.md-code-card {
+  margin: 0.7rem 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 0.65rem;
+  background: var(--bg-code-card);
+  overflow: hidden;
+}
+
+.md-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.35rem 0.7rem;
+  background: rgba(15, 23, 42, 0.95);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
+
+.md-code-body {
+  position: relative;
+  padding: 0.65rem 0.75rem;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #e2e8f0;
+  white-space: pre;
+  -webkit-overflow-scrolling: touch;
+}
+
+.md-code-body.collapsed {
+  max-height: 15.5rem;
+  overflow-y: hidden;
+}
+
+.md-code-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3.5rem;
+  background: linear-gradient(to bottom, rgba(5, 8, 17, 0), rgba(5, 8, 17, 0.96));
+  pointer-events: none;
+}
+
+/* 轻量代码语法高亮 Token 颜色 */
+.tok-kw { color: #c084fc; font-weight: 600; }
+.tok-str { color: #6ee7b7; }
+.tok-cmt { color: #64748b; font-style: italic; }
+.tok-num { color: #fbbf24; }
+.tok-fn { color: #38bdf8; }

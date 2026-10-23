@@ -1,0 +1,42 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments & local env secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Packaging & distribution
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing & linting caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# AgentDeck local runtime database & SQLite WAL snapshots (contains device tokens & local paths)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite*
+data/tmp_snapshots/
+
+# AgentDeck runtime logs
+logs/*.log
+logs/*.log.*
+
+# IDE & OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
