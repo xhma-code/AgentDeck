@@ -299,6 +299,10 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
                 fpath = FRONTEND_DIR / fname
                 if fpath.exists():
                     mtimes.append(str(int(fpath.stat().st_mtime)))
+            js_dir = FRONTEND_DIR / "js"
+            if js_dir.exists():
+                for jf in sorted(js_dir.glob("*.js")):
+                    mtimes.append(str(int(jf.stat().st_mtime)))
             res = "-".join(mtimes) if mtimes else "2.0.0"
             _fp_cache = (now, res)
             return res

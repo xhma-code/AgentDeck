@@ -1,0 +1,526 @@
+/**
+ * AgentDeck WebSocket 实时连接、断线重连、跨网络通道自愈漫游调度器
+ */
+
+import { state, markSessionCompletedUnread } from "./state.js";
+import { triggerAlertNotification } from "./utils.js";
+import { showToast, showPairingGuideModal } from "./api.js";
+import {
+  loadSessions,
+  loadSessionMessages,
+  loadSystemStatus,
+} from "./data.js";
+import {
+  renderApprovalBanners,
+  renderSessionList,
+  renderHeaderStatus,
+  renderCurrentSessionHeader,
+  renderLiveStreamOverlay,
+  renderOtherRunningPill,
+  renderQrModalContent,
+} from "./render.js";
+
+export let wsInstance = null;
+export let wsHeartbeatTimer = null;
+export let wsPongTimeoutTimer = null;
+export let lastPongReceived = Date.now();
+export let lastWsSyncToastTime = 0;
+
+let isRoamingCheckBusy = false;
+let wsDisconnectStreak = 0;
+let silentSessionsTimer = null;
+let silentMessagesTimer = null;
+let deferredListRenderTimer = null;
+
+export function showRoamingBanner(text, isPermanent = false) {
+  const banner = document.getElementById("roaming-banner");
+  const bannerText = document.getElementById("roaming-banner-text");
+  if (!banner || !bannerText) return;
+  bannerText.textContent = text;
+  banner.classList.remove("hidden");
+  if (!isPermanent) {
+    setTimeout(() => {
+      banner.classList.add("hidden");
+    }, 4500);
+  }
+}
+
+export function hideRoamingBanner() {
+  const banner = document.getElementById("roaming-banner");
+  if (banner) banner.classList.add("hidden");
+}
+
+
+export async function probeChannelHealth(targetBaseUrl, timeoutMs = 1800) {
+  if (!targetBaseUrl) return false;
+  const cleanUrl = targetBaseUrl.replace(/\/+$/, "");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${cleanUrl}/healthz?_probe=${Date.now()}`, {
+      method: "GET",
+      signal: ctrl.signal,
+      cache: "no-store",
+      mode: "cors",
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return data.ok === true || res.status === 200;
+    }
+    return false;
+  } catch (_) {
+    clearTimeout(timer);
+    return false;
+  }
+}
+
+export async function triggerAutoRoaming(triggerSource = "network") {
+  if (isRoamingCheckBusy) return;
+  isRoamingCheckBusy = true;
+
+  try {
+    // 1. 先探测当前所在 Origin 是否畅通（放宽至 3000ms，兼容 ZeroTier / Tailscale 虚拟私网抖动）
+    const currentOrigin = window.location.origin;
+    const currentAlive = await probeChannelHealth(currentOrigin, 3000);
+    if (currentAlive) {
+      // 当前 Origin 响应正常，通道畅通，重置断线计数
+      wsDisconnectStreak = 0;
+      hideRoamingBanner();
+      return;
+    }
+
+    // 2. 当前 Origin 不通，读取已持久化的聚合通道列表
+    let cachedChannels = [];
+    try {
+      cachedChannels = JSON.parse(localStorage.getItem("agentdeck_channels") || "[]");
+    } catch (_) {
+      cachedChannels = [];
+    }
+
+    // 过滤出除当前 Origin 之外的其他通道
+    const candidates = (cachedChannels || []).filter((c) => {
+      if (!c.url) return false;
+      try {
+        const u = new URL(c.url);
+        return u.origin !== currentOrigin;
+      } catch (_) {
+        return false;
+      }
+    });
+
+    if (candidates.length === 0) {
+      console.warn("未发现可漫游的备用网络通道");
+      showRoamingBanner("网络通道不可达，请检查 VPN 网络连接", false);
+      return;
+    }
+
+    showRoamingBanner("检测到网络通道变动，正在自动漫游探活...", true);
+
+    // 3. 并发探测所有候选通道，取最先响应成功者
+    const probePromises = candidates.map(async (c) => {
+      const ok = await probeChannelHealth(c.url, 3500);
+      if (ok) return c;
+      throw new Error("channel offline");
+    });
+
+    let winner = null;
+    try {
+      winner = await Promise.any(probePromises);
+    } catch (_) {
+      showRoamingBanner("所有通道暂不可达，请检查 VPN 网络连接", false);
+      return;
+    }
+
+    if (winner && winner.url) {
+      showRoamingBanner(`已切换至更优通道：${winner.label}（无感热切中）`, true);
+      try {
+        const targetUrlObj = new URL(winner.url);
+        if (targetUrlObj.host !== window.location.host) {
+          state.activeBaseUrl = winner.url.replace(/\/+$/, "");
+        } else {
+          state.activeBaseUrl = "";
+        }
+        wsDisconnectStreak = 0;
+        connectWebSocket();
+        await Promise.all([loadSystemStatus(), loadSessions(true)]);
+        setTimeout(hideRoamingBanner, 1600);
+        return;
+      } catch (hotSwapErr) {
+        console.warn("无感热切换失败，降级为页面重定向:", hotSwapErr);
+        const token = state.token || localStorage.getItem("agentdeck_token") || "";
+        const target = new URL(winner.url);
+        if (token) {
+          target.searchParams.set("token", token);
+        }
+        target.hash = window.location.hash || "";
+        setTimeout(() => {
+          window.location.replace(target.toString());
+        }, 200);
+      }
+    }
+  } catch (err) {
+    console.error("自动漫游探活异常:", err);
+  } finally {
+    isRoamingCheckBusy = false;
+  }
+}
+
+
+
+export function clearWsHeartbeat() {
+  if (wsHeartbeatTimer) {
+    clearInterval(wsHeartbeatTimer);
+    wsHeartbeatTimer = null;
+  }
+  if (wsPongTimeoutTimer) {
+    clearTimeout(wsPongTimeoutTimer);
+    wsPongTimeoutTimer = null;
+  }
+}
+
+export function startWsHeartbeat() {
+  clearWsHeartbeat();
+  lastPongReceived = Date.now();
+  wsHeartbeatTimer = setInterval(() => {
+    if (!wsInstance || wsInstance.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    try {
+      wsInstance.send(JSON.stringify({ action: "ping" }));
+      if (wsPongTimeoutTimer) clearTimeout(wsPongTimeoutTimer);
+      wsPongTimeoutTimer = setTimeout(() => {
+        const elapsed = Date.now() - lastPongReceived;
+        if (elapsed >= 18000 && wsInstance) {
+          console.warn(`[AgentDeck WS] 心跳 Pong 超时 (${elapsed}ms)，判定网络半开假死，触发强制重连`);
+          try {
+            wsInstance.close();
+          } catch (_) {}
+        }
+      }, 8000);
+    } catch (e) {
+      console.warn("[AgentDeck WS] 发送 Ping 心跳异常:", e);
+    }
+  }, 15000);
+}
+
+
+export function connectWebSocket() {
+  clearWsHeartbeat();
+  if (wsInstance) {
+    try {
+      wsInstance.onclose = null;
+      wsInstance.onerror = null;
+      wsInstance.onmessage = null;
+      wsInstance.onopen = null;
+      wsInstance.close();
+    } catch (_) {}
+    wsInstance = null;
+  }
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const qs = new URLSearchParams({
+    since_seq: String(state.lastSeqId || 0),
+    token: state.token || "",
+  });
+  let host = window.location.host;
+  if (state.activeBaseUrl) {
+    try {
+      host = new URL(state.activeBaseUrl).host;
+    } catch (_) {}
+  }
+  const wsUrl = `${proto}//${host}/ws/stream?${qs.toString()}`;
+
+  wsInstance = new WebSocket(wsUrl);
+
+  wsInstance.onopen = () => {
+    wsDisconnectStreak = 0;
+    hideRoamingBanner();
+    startWsHeartbeat();
+    const wasReconnecting = state.wsReconnecting;
+    state.wsConnected = true;
+    state.wsReconnecting = false;
+    renderHeaderStatus();
+    if (wasReconnecting) {
+      const now = Date.now();
+      if (now - lastWsSyncToastTime > 8000) {
+        lastWsSyncToastTime = now;
+        showToast("已恢复同步", "success");
+      }
+      loadSessions(true);
+      if (state.selectedSessionId) {
+        loadSessionMessages(state.selectedSessionId, true);
+      }
+    }
+  };
+
+  wsInstance.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "PONG") {
+        lastPongReceived = Date.now();
+        if (wsPongTimeoutTimer) {
+          clearTimeout(wsPongTimeoutTimer);
+          wsPongTimeoutTimer = null;
+        }
+        return;
+      }
+      if (msg.seq_id && msg.seq_id > state.lastSeqId) {
+        state.lastSeqId = msg.seq_id;
+      }
+      handleRealtimeEvent(msg);
+    } catch (e) {
+      console.error("WS 解析失败:", e);
+    }
+  };
+
+  wsInstance.onclose = (ev) => {
+    clearWsHeartbeat();
+    state.wsConnected = false;
+    state.wsReconnecting = true;
+    renderHeaderStatus();
+    if (ev && ev.code === 1008) {
+      // 鉴权未通过被服务端拒绝，先尝试通过受信虚拟私网静默自愈一次，避免冷启动瞬态误报
+      loadSystemStatus().then(() => {
+        if (state.token) {
+          console.info("[AgentDeck WS] 握手 1008 自愈成功，正在使用新 Token 重连...");
+          setTimeout(connectWebSocket, 800);
+        } else {
+          showPairingGuideModal();
+        }
+      }).catch(() => {
+        showPairingGuideModal();
+      });
+      return;
+    }
+    wsDisconnectStreak++;
+    if (wsDisconnectStreak >= 2) {
+      triggerAutoRoaming("websocket_disconnect");
+    }
+    setTimeout(connectWebSocket, 2200);
+  };
+}
+
+
+export function handleRealtimeEvent(envelope) {
+  const { type, payload } = envelope;
+
+  // 手机端扫码配对成功广播：电脑端扫码弹窗瞬间响应双向握手并优雅自动关闭
+  if (type === "DEVICE_PAIRED") {
+    state.pairedSuccessNotice = payload;
+    const qrModal = document.getElementById("qr-modal");
+    if (qrModal && !qrModal.classList.contains("hidden")) {
+      renderQrModalContent();
+      setTimeout(() => {
+        state.pairedSuccessNotice = null;
+        window.appActions.closeQrModal();
+      }, 1800);
+    }
+    showToast(`${payload.device_name || "移动设备"} 配对成功！`, "success");
+    triggerAlertNotification("设备配对成功", `${payload.device_name || "移动设备"} 已安全接入中控台`);
+    return;
+  }
+
+  if (type === "SESSION_STATE_SNAPSHOT") {
+    state.pendingApprovals = payload.pending_approvals || [];
+    renderApprovalBanners();
+    if (payload.is_overflow) {
+      console.info("[AgentDeck] 检测到事件环形缓冲区溢出 (is_overflow=true)，触发全量数据补偿同步...");
+      loadSessions(true);
+      if (state.selectedSessionId) {
+        loadSessionMessages(state.selectedSessionId, { silent: true });
+      }
+    }
+    return;
+  }
+
+  if (type === "APPROVAL_REQUIRED") {
+    const exists = state.pendingApprovals.some(
+      (p) => p.unified_id === payload.unified_id
+    );
+    if (!exists) {
+      state.pendingApprovals.push(payload);
+    } else {
+      state.pendingApprovals = state.pendingApprovals.map((p) =>
+        p.unified_id === payload.unified_id ? payload : p
+      );
+    }
+    triggerAlertNotification(
+      "待审批工具调用",
+      `[${payload.tool_name}] ${payload.args_summary}`
+    );
+    renderApprovalBanners();
+    loadSessions();
+    return;
+  }
+
+  if (type === "APPROVAL_RESOLVED") {
+    state.pendingApprovals = state.pendingApprovals.filter(
+      (p) => p.unified_id !== payload.unified_id
+    );
+    renderApprovalBanners();
+    loadSessions();
+    return;
+  }
+
+  if (type === "STREAM_DELTA") {
+    const uid = payload.unified_id;
+    state.streamingBuffer[uid] =
+      (state.streamingBuffer[uid] || "") + (payload.text || "") + "\n";
+    if (uid === state.selectedSessionId) {
+      renderLiveStreamOverlay();
+    }
+    return;
+  }
+
+  if (type === "STREAM_JSON_FRAME") {
+    const uid = payload.unified_id;
+    const frame = payload.frame || {};
+    const snippet = extractReadableSnippetFromFrame(frame);
+    if (snippet) {
+      state.streamingBuffer[uid] =
+        (state.streamingBuffer[uid] || "") + snippet + "\n";
+      if (uid === state.selectedSessionId) {
+        renderLiveStreamOverlay();
+      }
+    }
+    return;
+  }
+
+  if (type === "SESSION_TURN_STARTED") {
+    const uid = payload && payload.unified_id;
+    if (uid) {
+      if (!state.pendingTurnThinking[uid]) {
+        state.pendingTurnThinking[uid] = Date.now();
+      }
+      const sess = state.sessions.find((s) => s.unified_id === uid);
+      if (sess) {
+        sess.status = "running";
+        renderSessionList();
+      }
+      if (uid === state.selectedSessionId) {
+        renderCurrentSessionHeader();
+        renderLiveStreamOverlay();
+      }
+    }
+    loadSessions(true);
+    return;
+  }
+
+  if (type === "SESSION_TURN_FINISHED" || type === "SESSION_ABORTED") {
+    const uid = payload && payload.unified_id;
+    if (uid) {
+      delete state.pendingTurnThinking[uid];
+      delete state.streamingBuffer[uid];
+      if (state.optimisticMessages[uid]) {
+        delete state.optimisticMessages[uid];
+      }
+      const sess = (state.allSessions || state.sessions).find((s) => s.unified_id === uid);
+      if (sess && sess.status === "running") {
+        sess.status = "idle";
+      }
+      if (uid !== state.selectedSessionId) {
+        markSessionCompletedUnread(uid);
+      }
+      renderSessionList();
+      renderOtherRunningPill();
+      if (uid === state.selectedSessionId) {
+        renderCurrentSessionHeader();
+        renderLiveStreamOverlay();
+      }
+    }
+    loadSessions(true);
+    if (state.selectedSessionId && (!uid || uid === state.selectedSessionId)) {
+      loadSessionMessages(state.selectedSessionId, { silent: true });
+    }
+    return;
+  }
+
+  if (type === "STORAGE_UPDATED") {
+    const affectedIds = (payload && payload.affected_session_ids) || [];
+    const affectedAgents = (payload && payload.affected_agents) || [];
+    for (const uid of affectedIds) {
+      if (state.sessionMessagesCache[uid] && uid !== state.selectedSessionId) {
+        state.sessionMessagesCache[uid].stale = true;
+      }
+    }
+    scheduleSilentSessionsRefresh(450);
+
+    if (state.selectedSessionId) {
+      const curAgent = state.selectedSessionId.split(":")[0];
+      const isCurrentSessionAffected =
+        affectedIds.includes(state.selectedSessionId) ||
+        (affectedIds.length === 0 &&
+          (affectedAgents.length === 0 || affectedAgents.includes(curAgent)));
+      if (isCurrentSessionAffected) {
+        scheduleSilentMessagesRefresh(state.selectedSessionId, 280);
+      }
+    }
+    return;
+  }
+
+  if (type === "SESSION_ERROR") {
+    const uid = payload && payload.unified_id;
+    if (uid) {
+      delete state.pendingTurnThinking[uid];
+      delete state.streamingBuffer[uid];
+      if (state.optimisticMessages[uid]) {
+        delete state.optimisticMessages[uid];
+      }
+      if (uid === state.selectedSessionId) {
+        renderLiveStreamOverlay();
+      }
+    }
+    showToast(payload.error || "执行异常", "error");
+    loadSessions();
+    return;
+  }
+}
+
+export function extractReadableSnippetFromFrame(frame) {
+  if (!frame || typeof frame !== "object") return "";
+  if (frame.type === "assistant" && frame.message && Array.isArray(frame.message.content)) {
+    return frame.message.content
+      .map((c) => {
+        if (c.type === "text") return c.text;
+        if (c.type === "thinking") return `💭 ${c.thinking}`;
+        if (c.type === "tool_use") return `🔧 ${c.name}`;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (frame.content) return String(frame.content);
+  return "";
+}
+
+
+export function scheduleSilentSessionsRefresh(delayMs = 350) {
+  if (silentSessionsTimer) clearTimeout(silentSessionsTimer);
+  silentSessionsTimer = setTimeout(() => {
+    silentSessionsTimer = null;
+    loadSessions(true);
+  }, delayMs);
+}
+
+export function scheduleSilentMessagesRefresh(unifiedId, delayMs = 250) {
+  if (!unifiedId) return;
+  if (silentMessagesTimer) clearTimeout(silentMessagesTimer);
+  silentMessagesTimer = setTimeout(() => {
+    silentMessagesTimer = null;
+    if (state.selectedSessionId === unifiedId) {
+      loadSessionMessages(unifiedId, { silent: true });
+    }
+  }, delayMs);
+}
+
+let deferredListRenderTimer = null;
+export function scheduleDeferredSessionListRender(delayMs = 1200) {
+  if (deferredListRenderTimer) clearTimeout(deferredListRenderTimer);
+  deferredListRenderTimer = setTimeout(() => {
+    deferredListRenderTimer = null;
+    if (!state.isUserInteractingWithList) {
+      renderSessionList();
+    }
+  }, delayMs);
+}
+

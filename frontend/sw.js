@@ -1,5 +1,5 @@
 // AgentDeck PWA Service Worker — 离线 App Shell 缓存与跨网络自愈支持
-const CACHE_NAME = "agentdeck-shell-v1";
+const CACHE_NAME = "agentdeck-shell-v2";
 
 const APP_SHELL = [
   "/",
@@ -38,7 +38,8 @@ self.addEventListener("activate", (event) => {
 
 // 请求拦截策略：
 // 1. API 路由、WebSocket、健康检查均纯走网络，不作任何缓存
-// 2. 静态页面与脚本资源：Network First（优先网络以保证最新，网络不通时退回缓存离线秒开）
+// 2. 带 pair_code / token 查询参数的导航请求不缓存（鉴权一次性凭证，缓存会导致重放）
+// 3. 静态页面与脚本资源：Network First（优先网络以保证最新，网络不通时退回缓存离线秒开）
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
@@ -58,15 +59,21 @@ self.addEventListener("fetch", (event) => {
     fetch(req)
       .then((networkRes) => {
         if (networkRes && networkRes.status === 200) {
-          const clone = networkRes.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(req, clone);
-          });
+          // 带鉴权参数的导航请求不写入缓存，防止旧凭证污染离线缓存
+          const hasSensitiveParams =
+            url.searchParams.has("pair_code") ||
+            url.searchParams.has("token");
+          if (!hasSensitiveParams) {
+            const clone = networkRes.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(req, clone);
+            });
+          }
         }
         return networkRes;
       })
       .catch(() => {
-        // 网络超时/不可达时，从缓存中返回
+        // 网络超时/不可达时，从缓存中返回（降级使用无参数的干净缓存版本）
         return caches.match(req).then((cachedRes) => {
           if (cachedRes) return cachedRes;
           if (req.mode === "navigate") {
