@@ -1,10 +1,20 @@
 // AgentDeck PWA Service Worker — 离线 App Shell 缓存与跨网络自愈支持
-const CACHE_NAME = "agentdeck-shell-v1";
+const CACHE_NAME = "agentdeck-shell-v2";
 
 const APP_SHELL = [
   "/",
   "/index.html",
   "/static/app.js",
+  "/static/js/config.js",
+  "/static/js/state.js",
+  "/static/js/utils.js",
+  "/static/js/api.js",
+  "/static/js/network.js",
+  "/static/js/data.js",
+  "/static/js/markdown.js",
+  "/static/js/render.js",
+  "/static/js/modals.js",
+  "/static/js/actions.js",
   "/static/styles.css",
   "/static/tailwind.min.js",
   "/static/manifest.json",

@@ -299,6 +299,10 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
                 fpath = FRONTEND_DIR / fname
                 if fpath.exists():
                     mtimes.append(str(int(fpath.stat().st_mtime)))
+            js_dir = FRONTEND_DIR / "js"
+            if js_dir.exists():
+                for jf in sorted(js_dir.glob("*.js")):
+                    mtimes.append(str(int(jf.stat().st_mtime)))
             res = "-".join(mtimes) if mtimes else "2.0.0"
             _fp_cache = (now, res)
             return res
@@ -341,6 +345,14 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         lan_pair_url = f"http://{lan_ip}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}" if lan_ip else ""
         zt_pair_url = f"http://{zt_ip}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}" if zt_ip else ""
         channels = []
+        if lan_ip:
+            channels.append({
+                "type": "wifi",
+                "label": "Wi-Fi 直连",
+                "ip": lan_ip,
+                "url": f"http://{lan_ip}:{port}",
+                "pair_url": lan_pair_url,
+            })
         if ts_status.is_online and ts_status.tailscale_ip:
             channels.append({
                 "type": "tailscale",
@@ -356,14 +368,6 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
                 "ip": zt_ip,
                 "url": f"http://{zt_ip}:{port}",
                 "pair_url": zt_pair_url,
-            })
-        if lan_ip:
-            channels.append({
-                "type": "wifi",
-                "label": "Wi-Fi 直连",
-                "ip": lan_ip,
-                "url": f"http://{lan_ip}:{port}",
-                "pair_url": lan_pair_url,
             })
         ts_valid_pair = pair_url if ts_status.is_online else ""
         # 默认绝对优先 Tailscale（全网漫游），其次 ZeroTier，严禁在有 VPN 时优先显示 Wi-Fi
@@ -818,7 +822,6 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
                 content=content,
                 headers={
                     "Content-Type": "text/html; charset=utf-8",
-                    "Content-Disposition": "inline",
                     "X-Content-Type-Options": "nosniff",
                     "Cache-Control": "no-cache, no-store, must-revalidate",
                     "Pragma": "no-cache",
