@@ -677,9 +677,14 @@ class AntigravityAdapter(BaseAgentAdapter):
         self._token_usage_cache[cache_key] = (mtime, data)
         return data
 
+    def get_default_model_id(self) -> str:
+        """获取与电脑端 Antigravity IDE 保持实时一致的默认模型 ID。"""
+        return self.ls_bridge.get_default_model_id()
+
     def get_available_models_with_quota(self) -> list[dict[str, Any]]:
-        """将 LS 实时 quota 剩余比例合并进 AGENT_MODELS 清单。"""
+        """将 LS 实时 quota 剩余比例与默认模型合并进模型清单，严格保持与电脑端 IDE 排序一致。"""
         configs = self.ls_bridge.get_cascade_model_configs()
+        default_mid = self.get_default_model_id()
         q_map: dict[str, dict[str, Any]] = {}
         for c in configs:
             if c.get("modelId"):
@@ -702,7 +707,14 @@ class AntigravityAdapter(BaseAgentAdapter):
                     item["is_recommended"] = True
             else:
                 item["quota"] = 1.0
+            if item["id"] == default_mid:
+                item["is_default"] = True
             merged.append(item)
+
+        sort_labels = getattr(self.ls_bridge, "_cached_sort_labels", [])
+        if sort_labels:
+            label_index = {lbl.lower(): i for i, lbl in enumerate(sort_labels)}
+            merged.sort(key=lambda m: (0 if m.get("is_default") else 1, label_index.get(m["label"].lower(), 999)))
         return merged
 
 
@@ -1030,6 +1042,18 @@ class AntigravityLanguageServerBridge:
             )
         return ok
 
+    def get_default_model_id(self) -> str:
+        """从 LS 获取电脑端当前选中的默认模型 ID（例如 gemini-4-argon-medium）。"""
+        if not hasattr(self, "_cached_default_model"):
+            self.get_cascade_model_configs()
+        def_raw = getattr(self, "_cached_default_model", "")
+        if def_raw:
+            mapped = LS_MODEL_ID_MAP.get(def_raw.lower())
+            if mapped:
+                return mapped
+            return def_raw
+        return "gemini-4-argon-medium"
+
     def get_cascade_model_configs(self) -> list[dict[str, Any]]:
         """从 LS Connect-RPC 获取包含实时配额剩余比例的真实模型清单（带 10s 内存缓存）。"""
         now = time.monotonic()
@@ -1055,6 +1079,19 @@ class AntigravityLanguageServerBridge:
         results = []
         try:
             data = json.loads(raw.decode("utf-8"))
+            # 提取电脑端 IDE 当前选定的默认模型
+            default_override = data.get("defaultOverrideModelConfig") or {}
+            moa = default_override.get("modelOrAlias") or {}
+            def_mid = moa.get("model") or moa.get("alias") or ""
+            self._cached_default_model = def_mid
+
+            # 提取官方推荐排序清单
+            sort_labels: list[str] = []
+            for sort_group in (data.get("clientModelSorts") or []):
+                for g in (sort_group.get("groups") or []):
+                    sort_labels.extend(g.get("modelLabels") or [])
+            self._cached_sort_labels = sort_labels
+
             for m in (data.get("clientModelConfigs") or []):
                 if m.get("disabled") is True:
                     continue
@@ -1085,3 +1122,20 @@ class AntigravityLanguageServerBridge:
             self._cached_models = results
             self._cached_models_ts = now
         return results
+
+
+LS_MODEL_ID_MAP: dict[str, str] = {
+    "model_placeholder_m418": "gemini-4-argon-medium",
+    "model_placeholder_m417": "gemini-4-argon-high",
+    "model_placeholder_m419": "gemini-4-argon-low",
+    "model_placeholder_m318": "gemini-3.8-flash-high",
+    "model_placeholder_m319": "gemini-3.8-flash-medium",
+    "model_placeholder_m320": "gemini-3.8-flash-low",
+    "model_placeholder_m400": "claude-opus-5-5-low",
+    "model_placeholder_m401": "claude-opus-5-5-medium",
+    "model_placeholder_m402": "claude-opus-5-5-high",
+    "model_placeholder_m403": "claude-sonnet-5-5-low",
+    "model_placeholder_m404": "claude-sonnet-5-5-medium",
+    "model_placeholder_m405": "claude-sonnet-5-5-high",
+    "model_openai_gpt_oss_120b_medium": "gpt-oss-120b-medium",
+}

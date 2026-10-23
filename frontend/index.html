@@ -8,16 +8,22 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="AgentDeck" />
   <title>AgentDeck</title>
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png" />
-  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png" />
-  <link rel="shortcut icon" href="/favicon.ico" />
-  <link rel="manifest" href="/static/manifest.json" />
+  <!-- Apple Touch Icon 规范：含多规格与版本号防缓存，确保添加到主屏幕与系统钻石图标严格一致 -->
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=20261023_diamond_v4" />
+  <link rel="apple-touch-icon-precomposed" href="/static/apple-touch-icon.png?v=20261023_diamond_v4" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=20261023_diamond_v4" />
+  <link rel="apple-touch-icon-precomposed" sizes="180x180" href="/static/apple-touch-icon.png?v=20261023_diamond_v4" />
+  <link rel="apple-touch-icon" sizes="152x152" href="/static/apple-touch-icon.png?v=20261023_diamond_v4" />
+  <link rel="apple-touch-icon" sizes="120x120" href="/static/apple-touch-icon.png?v=20261023_diamond_v4" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261023_diamond_v4" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=20261023_diamond_v4" />
+  <link rel="shortcut icon" href="/favicon.ico?v=20261023_diamond_v4" />
+  <link rel="manifest" href="/static/manifest.json?v=20261023_diamond_v4" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261023_working7" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261023_status_v2" />
 </head>
 <body class="bg-black text-zinc-100 select-none sm:select-auto antialiased">
   <!-- Toast 容器（下移避开顶部导航栏，杜绝遮挡） -->
@@ -115,19 +121,17 @@
               </svg>
             </button>
             <img id="header-logo-icon" src="/static/apple-touch-icon.png" alt="AgentDeck" class="w-6 h-6 rounded-md object-cover border border-white/10 shadow-sm shrink-0" />
-            <div class="min-w-0 flex-1 flex items-center gap-2 overflow-hidden">
-              <div id="current-session-title" class="text-xs sm:text-sm font-medium text-zinc-100 truncate flex items-center gap-1.5">
-                加载中...
+            <div class="min-w-0 flex-1 flex items-center gap-1.5 sm:gap-2 overflow-hidden">
+              <div id="current-session-title" class="min-w-0 flex-1 flex items-center gap-1.5 sm:gap-2 overflow-hidden">
+                <span class="text-xs sm:text-sm font-medium text-zinc-400 truncate">加载中...</span>
               </div>
-              <div id="current-session-subtitle" class="text-[11px] text-zinc-400 truncate font-mono hidden sm:inline">
-                AgentDeck
-              </div>
+              <div id="current-session-subtitle" class="hidden"></div>
             </div>
           </div>
 
           <!-- 右侧：连接状态、会话菜单与扫码按钮 -->
           <div class="flex items-center gap-1.5 shrink-0">
-            <!-- 运行中状态浮标（当后台存在其他进行中/待审批任务时呈现） -->
+            <!-- 运行中状态浮标（当后台存在其他进行中/待审批任务时在桌面端呈现，手机端隐藏避免挤占标题栏与显示无文字绿点） -->
             <button id="other-running-pill" onclick="window.appActions.jumpToRunningSession()"
               class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs items-center gap-1.5 active:scale-95 transition"
               title="点击跳转到正在执行的会话">
@@ -197,7 +201,7 @@
       <!-- 断线重连提示 -->
       <div id="reconnect-banner"
         class="hidden px-3 py-1 bg-amber-500/15 border-b border-amber-500/30 text-amber-300 text-[11px] text-center shrink-0">
-        🟡 重连同步中...
+        <span class="inline-block w-2 h-2 rounded-full bg-amber-400 animate-ping mr-1.5 align-middle"></span>重连同步中...
       </div>
 
       <!-- 全局待审批横幅 -->
@@ -264,9 +268,16 @@
 
           <!-- 输入框与动态 发送/中断 按钮 (对齐客户端交互) -->
           <div class="flex items-end gap-1.5">
-            <textarea id="prompt-input" rows="1"
-              placeholder="发消息..."
-              class="flex-1 max-h-28 min-h-[40px] px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs sm:text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-sky-500/70 resize-none"></textarea>
+            <div class="relative flex-1 min-w-0">
+              <textarea id="prompt-input" rows="1"
+                placeholder=" "
+                class="peer w-full max-h-28 min-h-[40px] px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs sm:text-sm text-zinc-100 placeholder-transparent focus:outline-none focus:border-sky-500/70 focus-visible:ring-1 focus-visible:ring-sky-500/50 resize-none"></textarea>
+
+              <div id="prompt-input-placeholder"
+                class="pointer-events-none absolute left-3 top-2 flex items-center text-xs sm:text-sm text-zinc-500 peer-placeholder-shown:flex hidden select-none leading-normal">
+                <span>发消息给&nbsp;</span><span class="text-[10px] sm:text-xs text-zinc-400 font-mono">Agent</span><span>...</span>
+              </div>
+            </div>
 
             <button id="prompt-action-btn" type="button" onclick="window.appActions.handlePromptAction()"
               class="shrink-0 h-10 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center gap-1">
@@ -451,6 +462,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261023_working8"></script>
+  <script src="/static/app.js?v=20261023_mobile_clean_v1"></script>
 </body>
 </html>

@@ -10,6 +10,8 @@ AgentDeck FastAPI 网关与多路复用 WebSocket 路由中枢。
 from __future__ import annotations
 
 import asyncio
+import re
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,7 +28,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -220,6 +222,27 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         img.save(buf)
         return Response(content=buf.getvalue(), media_type="image/svg+xml")
 
+    _fp_cache: tuple[float, str] = (0.0, "2.0.0")
+
+    def _calc_frontend_fingerprint() -> str:
+        """基于前端静态核心文件修改时间生成版本指纹（带1秒内存缓存，避免高频请求频繁 stat 磁盘）。"""
+        nonlocal _fp_cache
+        now = time.time()
+        if now - _fp_cache[0] < 1.0:
+            return _fp_cache[1]
+        try:
+            mtimes = []
+            for fname in ("index.html", "app.js", "styles.css"):
+                fpath = FRONTEND_DIR / fname
+                if fpath.exists():
+                    mtimes.append(str(int(fpath.stat().st_mtime)))
+            res = "-".join(mtimes) if mtimes else "2.0.0"
+            _fp_cache = (now, res)
+            return res
+        except Exception as exc:
+            logger.debug(f"计算前端静态核心文件修改时间指纹异常: {exc}")
+            return "2.0.0"
+
     @app.get("/healthz")
     @app.get("/api/v1/health")
     async def get_health_check() -> dict[str, Any]:
@@ -228,7 +251,17 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
             "ok": True,
             "status": "healthy",
             "version": "2.0.0",
+            "frontend_version": _calc_frontend_fingerprint(),
             "tailscale_online": ts_status.is_online,
+        }
+
+    @app.get("/api/v1/version")
+    async def get_app_version() -> dict[str, Any]:
+        """返回服务端核心版本及当前前端静态资源指纹（非鉴权，便于客户端轮询感知代码改动）"""
+        return {
+            "ok": True,
+            "version": "2.0.0",
+            "frontend_version": _calc_frontend_fingerprint(),
         }
 
     @app.get("/api/v1/system/status")
@@ -615,14 +648,26 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
 
     @app.get("/apple-touch-icon.png")
     @app.get("/apple-touch-icon-precomposed.png")
-    async def serve_apple_touch_icon() -> Any:
-        icon_file = FRONTEND_DIR / "apple-touch-icon.png"
+    @app.get("/apple-touch-icon-180x180.png")
+    @app.get("/apple-touch-icon-180x180-precomposed.png")
+    @app.get("/apple-touch-icon-152x152.png")
+    @app.get("/apple-touch-icon-152x152-precomposed.png")
+    @app.get("/apple-touch-icon-120x120.png")
+    @app.get("/apple-touch-icon-120x120-precomposed.png")
+    async def serve_apple_touch_icon(request: Request) -> Response:
+        req_name = Path(request.url.path).name
+        target = FRONTEND_DIR / req_name
+        icon_file = target if target.exists() and target.is_file() else (FRONTEND_DIR / "apple-touch-icon.png")
         if icon_file.exists():
-            return FileResponse(icon_file, media_type="image/png")
+            return FileResponse(
+                icon_file,
+                media_type="image/png",
+                headers={"Cache-Control": "public, max-age=604800, immutable"},
+            )
         return JSONResponse({"error": "未找到指定苹果快捷图标"}, status_code=404)
 
     @app.get("/favicon.ico")
-    async def serve_favicon() -> Any:
+    async def serve_favicon() -> Response:
         fav_file = FRONTEND_DIR / "favicon.ico"
         if fav_file.exists():
             return FileResponse(fav_file)
@@ -637,6 +682,14 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         index_file = FRONTEND_DIR / "index.html"
         if index_file.exists():
             content = index_file.read_text(encoding="utf-8")
+            fp = _calc_frontend_fingerprint()
+            # 将当前服务端的前端指纹嵌入 meta，以便前端 JS 启动时确立基准版本
+            meta_tag = f'<meta name="agentdeck-build" content="{fp}">'
+            if "</head>" in content:
+                content = content.replace("</head>", f"  {meta_tag}\n</head>", 1)
+            # 自动注入版本指纹消除静态脚本与样式的浏览器强缓存
+            content = re.sub(r'(/static/app\.js\?v=)[^"\']+', rf'\g<1>{fp}', content)
+            content = re.sub(r'(/static/styles\.css\?v=)[^"\']+', rf'\g<1>{fp}', content)
             return HTMLResponse(
                 content=content,
                 headers={

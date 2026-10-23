@@ -1532,6 +1532,39 @@ def test_running_and_approval_sessions_priority_sort(tmp_path: Path):
     ]
 
 
+def test_app_version_and_dynamic_asset_fingerprint(tmp_path: Path):
+    """测试 /api/v1/version 端点及主页 HTML 动态注入前端版本指纹与静态资源防缓存穿透。"""
+    from backend.app import create_app
+    from fastapi.testclient import TestClient
+
+    db = MetaDatabase(db_path=tmp_path / "version_test.db")
+    app = create_app(meta_db=db)
+
+    with TestClient(app) as client:
+        # 1. 验证版本接口
+        v_res = client.get("/api/v1/version")
+        assert v_res.status_code == 200
+        v_data = v_res.json()
+        assert v_data["ok"] is True
+        assert v_data["version"] == "2.0.0"
+        fp = v_data.get("frontend_version")
+        assert fp and isinstance(fp, str)
+
+        # 2. 验证主页 HTML 动态注入指纹
+        index_res = client.get("/")
+        assert index_res.status_code == 200
+        html = index_res.text
+        assert f'<meta name="agentdeck-build" content="{fp}">' in html
+        assert f"/static/app.js?v={fp}" in html
+        assert f"/static/styles.css?v={fp}" in html
+
+        # 3. 验证 Apple Touch Icon 路由
+        icon_res = client.get("/apple-touch-icon.png")
+        assert icon_res.status_code == 200
+        assert icon_res.headers["content-type"] == "image/png"
+
+
+
 
 
 

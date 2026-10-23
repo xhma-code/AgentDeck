@@ -8,34 +8,34 @@
 
 const DEFAULT_MODELS_BY_AGENT = {
   agy_cli: [
-    { id: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)", tag: "推荐" },
-    { id: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)", tag: "" },
-    { id: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)", tag: "" },
-    { id: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)", tag: "深度" },
-    { id: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)", tag: "" },
-    { id: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)", tag: "" },
-    { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", tag: "旗舰" },
-    { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)", tag: "均衡" },
-    { id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)", tag: "" },
-    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速" },
-    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡" },
-    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快" },
-    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "" },
+    { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)", tag: "New", is_recommended: true },
+    { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", tag: "New", is_recommended: true },
+    { id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)", tag: "New", is_recommended: true },
+    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速", is_recommended: true },
+    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡", is_recommended: true },
+    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快", is_recommended: true },
+    { id: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)", tag: "New", is_recommended: true },
+    { id: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)", tag: "New", is_recommended: true },
+    { id: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)", tag: "深度", is_recommended: true },
+    { id: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)", tag: "New", is_recommended: true },
+    { id: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)", tag: "New", is_recommended: true },
+    { id: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)", tag: "推荐", is_recommended: true },
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "Notice", is_recommended: true },
   ],
   agy_ide: [
-    { id: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)", tag: "推荐" },
-    { id: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)", tag: "" },
-    { id: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)", tag: "" },
-    { id: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)", tag: "深度" },
-    { id: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)", tag: "" },
-    { id: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)", tag: "" },
-    { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", tag: "旗舰" },
-    { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)", tag: "均衡" },
-    { id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)", tag: "" },
-    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速" },
-    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡" },
-    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快" },
-    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "" },
+    { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)", tag: "New", is_recommended: true },
+    { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", tag: "New", is_recommended: true },
+    { id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)", tag: "New", is_recommended: true },
+    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速", is_recommended: true },
+    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡", is_recommended: true },
+    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快", is_recommended: true },
+    { id: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)", tag: "New", is_recommended: true },
+    { id: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)", tag: "New", is_recommended: true },
+    { id: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)", tag: "深度", is_recommended: true },
+    { id: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)", tag: "New", is_recommended: true },
+    { id: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)", tag: "New", is_recommended: true },
+    { id: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)", tag: "推荐", is_recommended: true },
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "Notice", is_recommended: true },
   ],
   claude_code: [
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", tag: "默认" },
@@ -98,7 +98,15 @@ const state = {
   sessionMessagesCache: {}, // unifiedId -> { messages, hasMore, totalCount, modelName, updatedAt }
   pendingApprovals: [],
   workspaces: [],
+  isAppInitialized: false, // 首次冷启动标志锁（防止后台刷新篡改用户主动选中的会话）
   expandedProjects: {}, // projectKey -> boolean
+  collapsedSections: (() => {
+    try {
+      return JSON.parse(localStorage.getItem("agentdeck_sections_collapsed") || "{}");
+    } catch (e) {
+      return {};
+    }
+  })(),
   didInitExpand: false,
   wordWrapDiff: true,
   drawerOpen: false,
@@ -135,6 +143,10 @@ const state = {
       return {};
     }
   })(),
+  frontendBuild: "",
+  hasUpdate: false,
+  remoteBuild: "",
+  lastStatusClickTime: 0,
 };
 
 const GIT_STATUS_BADGES = {
@@ -560,12 +572,13 @@ function renderOtherRunningPill() {
 
   if (otherRunning.length === 0) {
     pill.classList.add("hidden");
-    pill.classList.remove("flex");
+    pill.classList.remove("flex", "sm:flex");
     return;
   }
 
-  pill.classList.remove("hidden");
-  pill.classList.add("flex");
+  // 手机端始终保持隐藏（避免显示无文字绿色圆圈并挤压顶部标题栏），仅在 sm 屏幕及以上显示
+  pill.classList.add("hidden", "sm:flex");
+  pill.classList.remove("flex");
   const count = otherRunning.length;
   const hasApproval = otherRunning.some((s) => s.status === "waiting_approval");
   if (textEl) {
@@ -620,48 +633,75 @@ async function loadSessions(silent = false) {
     const incomingApprovals = data.pending_approvals || state.pendingApprovals || [];
     const newSig = computeSessionsSig(incomingSessions, incomingApprovals);
 
+    // 若当前已选中的会话不在新返回的 top60 内（如深度历史会话），保活其引用，防止因分页截断导致当前会话被误判失效
+    if (
+      state.selectedSessionId &&
+      !incomingSessions.some((s) => s.unified_id === state.selectedSessionId)
+    ) {
+      const prevSess =
+        state.allSessions.find((s) => s.unified_id === state.selectedSessionId) ||
+        state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+      if (prevSess) {
+        incomingSessions.push(prevSess);
+      }
+    }
+
     state.allSessions = incomingSessions;
     state.sessions = incomingSessions;
     if (data.pending_approvals) {
       state.pendingApprovals = data.pending_approvals;
     }
 
-    const hashId = getSessionIdFromHash();
-    const hashSess = hashId ? state.allSessions.find((s) => s.unified_id === hashId) : null;
-    const curSess = state.selectedSessionId
-      ? state.allSessions.find((s) => s.unified_id === state.selectedSessionId)
-      : null;
-
+    const isFirstMount = !state.isAppInitialized;
     let targetSession = null;
     let needsInitialSelect = false;
 
-    if (curSess) {
-      // 场景 A：当前内存中已有合法会话（心跳/轮询/WS重连，保持用户停留的会话不变）
-      targetSession = curSess;
-    } else if (hashSess) {
-      // 场景 B：页面加载或刷新时 URL Hash 存在指定会话，优先恢复（保持操作上下文连续性）
-      targetSession = hashSess;
-      needsInitialSelect = true;
-    } else if (state.allSessions.length > 0) {
-      // 场景 C：纯冷启动无 Hash 时，执行默认策略：运行中 > 收藏置顶 > 最近活跃
-      targetSession = pickDefaultSession(state.allSessions);
-      needsInitialSelect = true;
+    if (isFirstMount) {
+      // 仅在首屏冷启动挂载（Initial Mount）时执行一次首选会话决策，后续严禁任何后台事件抢占会话
+      const hashId = getSessionIdFromHash();
+      const hashSess = hashId ? state.allSessions.find((s) => s.unified_id === hashId) : null;
+
+      if (hashSess) {
+        // 场景 A：URL Hash 显式指定，优先恢复（保持操作与阅读连续性）
+        targetSession = hashSess;
+      } else if (state.allSessions.length > 0) {
+        // 场景 B：纯冷启动无 Hash：优先运行中（running / desktop_active） > 收藏置顶 > 最近活跃
+        targetSession = pickDefaultSession(state.allSessions);
+      }
+
+      if (targetSession) {
+        needsInitialSelect = true;
+        state.selectedSessionId = targetSession.unified_id;
+        if (targetSession.project_path) {
+          const pKey = getProjectInfo(targetSession.project_path)?.key;
+          if (pKey) {
+            state.expandedProjects[pKey] = true;
+          }
+        }
+      }
+
+      // 首屏自动展开包含运行中 / 进行中任务的项目分组
+      for (const s of state.allSessions) {
+        if ((isSessionStatusActive(s) || s.status === "waiting_approval") && s.project_path) {
+          const pKey = getProjectInfo(s.project_path)?.key;
+          if (pKey) {
+            state.expandedProjects[pKey] = true;
+          }
+        }
+      }
+
+      state.isAppInitialized = true;
     }
 
     const initialSessionId = targetSession ? targetSession.unified_id : null;
-    if (needsInitialSelect) {
-      state.selectedSessionId = initialSessionId;
-      if (targetSession && targetSession.project_path) {
-        const pKey = getProjectInfo(targetSession.project_path)?.key;
-        if (pKey) {
-          state.expandedProjects[pKey] = true;
-        }
-      }
-    }
+    const isMobileDrawerActive = state.drawerOpen && window.innerWidth < 768;
 
     if (!silent || newSig !== state.lastSessionsSig || needsInitialSelect) {
       state.lastSessionsSig = newSig;
-      renderSessionList();
+      // 手机端抽屉展开浏览时，禁止销毁重构侧边栏 DOM，避免打断用户的滑动操作与项目折叠状态
+      if (!isMobileDrawerActive) {
+        renderSessionList();
+      }
       renderCurrentSessionHeader();
       renderApprovalBanners();
       renderOtherRunningPill();
@@ -1241,7 +1281,93 @@ function getProjectInfo(rawPath) {
   return { key: clean.toLowerCase(), name, path: clean };
 }
 
+function renderSidebarStatus() {
+  const btn = document.getElementById("sidebar-status-btn");
+  if (!btn) return;
+
+  if (state.hasUpdate) {
+    // 发现前端新代码更新：亮蓝呼吸脉冲 + 向上箭头图标
+    btn.className =
+      "h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/50 text-sky-200 flex items-center gap-1.5 text-xs transition active:scale-95 shadow-[0_0_12px_rgba(56,189,248,0.25)] animate-pulse";
+    btn.title = "发现新版本前端代码，点击立即载入更新";
+    btn.innerHTML = `
+      <svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="19" x2="12" y2="5"></line>
+        <polyline points="5 12 12 5 19 12"></polyline>
+      </svg>
+      <span class="text-[11px] font-semibold text-sky-300">更新</span>
+    `;
+    return;
+  }
+
+  // 常规连接状态：仅保留纯粹呼吸圆点（完全去除外框与背景圈）
+  btn.className =
+    "p-1 rounded-full bg-transparent hover:bg-white/[0.06] border-0 flex items-center justify-center transition active:scale-95";
+
+  if (state.wsConnected) {
+    btn.title = "WebSocket 实时连接正常（双击可强制重载）";
+    btn.innerHTML = `
+      <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.7)]"></span>
+    `;
+  } else if (state.wsReconnecting) {
+    btn.title = "正在重新连接 WebSocket 服务...";
+    btn.innerHTML = `
+      <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
+    `;
+  } else {
+    btn.title = "与服务端的实时连接断开（点击尝试重新载入）";
+    btn.innerHTML = `
+      <span class="w-2.5 h-2.5 rounded-full bg-zinc-600"></span>
+    `;
+  }
+}
+
+async function checkFrontendVersion() {
+  try {
+    const res = await fetch("/api/v1/version", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.ok && data.frontend_version) {
+      if (!state.frontendBuild) {
+        state.frontendBuild = data.frontend_version;
+      } else if (state.frontendBuild !== data.frontend_version) {
+        state.hasUpdate = true;
+        state.remoteBuild = data.frontend_version;
+        renderSidebarStatus();
+      }
+    }
+  } catch (_) {}
+}
+
+function handleStatusBtnClick() {
+  if (state.hasUpdate) {
+    showToast("检测到前端改动，正在载入最新代码...", "info");
+    setTimeout(() => {
+      window.location.reload();
+    }, 150);
+    return;
+  }
+
+  const now = Date.now();
+  if (now - (state.lastStatusClickTime || 0) < 2000) {
+    showToast("正在强制重新载入...", "info");
+    setTimeout(() => {
+      window.location.reload();
+    }, 100);
+    return;
+  }
+  state.lastStatusClickTime = now;
+  showToast(
+    state.wsConnected
+      ? "服务已连接 · 再次点击可强制重载"
+      : "连接尚未就绪 · 再次点击可重载页面",
+    "info"
+  );
+  checkFrontendVersion();
+}
+
 function renderHeaderStatus() {
+  renderSidebarStatus();
   const netBadge = document.getElementById("network-status-badge");
   const reconnectBanner = document.getElementById("reconnect-banner");
   if (!netBadge) return;
@@ -1262,13 +1388,28 @@ function renderCompactSessionItem(s, showProjectTag = true) {
   const meta = AGENT_META[s.agent_type] || AGENT_META.claude_code;
   const isSelected = s.unified_id === state.selectedSessionId;
 
-  let dotCls = "bg-zinc-600";
+  // 运行/等待审批/活跃状态判定：优先在右侧原本显示时间的区域显示对应呼吸灯；未运行时显示更新时间
+  const isWorking = typeof isSessionWorking === "function" ? isSessionWorking(s.unified_id) : false;
+  let statusDotHtml = null;
   if (s.status === "waiting_approval") {
-    dotCls = "bg-amber-400 animate-ping";
-  } else if (s.status === "running") {
-    dotCls = "bg-emerald-400 animate-pulse";
+    statusDotHtml = `
+      <span class="relative flex h-2 w-2" title="等待审批">
+        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+        <span class="relative inline-flex rounded-full h-2 w-2 bg-amber-400"></span>
+      </span>
+    `;
+  } else if (s.status === "running" || isWorking) {
+    statusDotHtml = `
+      <span class="relative flex h-2 w-2" title="运行中">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]"></span>
+      </span>
+    `;
   } else if (s.status === "desktop_active") {
-    dotCls = "bg-purple-400 animate-pulse";
+    statusDotHtml = `
+      <span class="relative flex h-2 w-2" title="桌面端活跃">
+        <span class="w-2 h-2 rounded-full bg-purple-400 animate-pulse shadow-[0_0_8px_rgba(192,132,252,0.8)]"></span>
+      </span>
+    `;
   }
 
   return `
@@ -1279,13 +1420,12 @@ function renderCompactSessionItem(s, showProjectTag = true) {
           : "bg-zinc-900/45 border-transparent hover:bg-zinc-900 hover:border-zinc-800 text-zinc-300"
       }">
       <div class="flex items-center gap-1.5 min-w-0 flex-1">
-        <span class="w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}"></span>
         <span class="px-1 py-0.5 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
           ${meta.short}
         </span>
         <span class="text-xs truncate font-medium">${escapeHtml(s.title)}</span>
       </div>
-      <div class="flex items-center gap-1 shrink-0">
+      <div class="flex items-center gap-1.5 shrink-0">
         ${
           showProjectTag && s.is_project && s.project_name
             ? `<span class="text-[9px] text-zinc-500 font-mono max-w-[68px] truncate hidden sm:inline">${escapeHtml(
@@ -1293,7 +1433,11 @@ function renderCompactSessionItem(s, showProjectTag = true) {
               )}</span>`
             : ""
         }
-        <span class="text-[10px] text-zinc-500 tabular-nums">${formatRelativeTime(s.updated_at)}</span>
+        ${
+          statusDotHtml
+            ? `<span class="flex items-center justify-center min-w-[28px] py-0.5">${statusDotHtml}</span>`
+            : `<span class="text-[10px] text-zinc-500 tabular-nums">${formatRelativeTime(s.updated_at)}</span>`
+        }
         <button onclick="window.appActions.togglePin('${escapeHtml(s.unified_id)}', ${s.is_pinned ? 1 : 0}, event)"
           class="p-1 rounded hover:bg-zinc-800 text-xs transition ${
             s.is_pinned ? "text-amber-400 opacity-100" : "text-zinc-500 opacity-50 hover:opacity-100 md:opacity-0 md:group-hover:opacity-100"
@@ -1402,11 +1546,26 @@ function renderSessionList() {
     (p) => p.sessions.length > 0 || !q
   );
 
-  // 首次加载默认展开第一个有对话的项目
+  // 首次加载优先自动展开包含运行中会话或当前选中会话的项目
   if (!state.didInitExpand && projects.length > 0) {
-    const firstWithConvs = projects.find((p) => p.sessions.length > 0) || projects[0];
     state.didInitExpand = true;
-    state.expandedProjects[firstWithConvs.key] = true;
+    let expandedAny = false;
+    for (const p of projects) {
+      const hasActiveOrSelected = p.sessions.some(
+        (s) =>
+          isSessionStatusActive(s) ||
+          s.status === "waiting_approval" ||
+          s.unified_id === state.selectedSessionId
+      );
+      if (hasActiveOrSelected) {
+        state.expandedProjects[p.key] = true;
+        expandedAny = true;
+      }
+    }
+    if (!expandedAny) {
+      const firstWithConvs = projects.find((p) => p.sessions.length > 0) || projects[0];
+      state.expandedProjects[firstWithConvs.key] = true;
+    }
   }
 
   // 3. 临时与最近对话（优先展示非项目的散落临时对话 + 最近活跃对话）
@@ -1431,79 +1590,97 @@ function renderSessionList() {
   }
 
   // --- 区块 2：项目 (Projects) ---
+  const isProjectsCollapsed = !q && !!state.collapsedSections?.projects;
   html += `
     <div>
-      <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center justify-between">
-        <span>📁 项目</span>
-        <button onclick="window.appActions.openNewSessionModal()" class="text-zinc-400 hover:text-sky-400 text-xs" title="添加项目或新建对话">＋</button>
+      <div onclick="window.appActions.toggleSection('projects')"
+        class="cursor-pointer select-none px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-300 flex items-center justify-between transition-colors"
+        title="点击收纳/展开 项目">
+        <div class="flex items-center gap-1.5">
+          <span>📁 项目</span>
+          <span class="text-[10px] text-zinc-600 font-normal font-mono">(${projects.length})</span>
+        </div>
+        <div class="flex items-center gap-1" onclick="event.stopPropagation()">
+          <button onclick="window.appActions.openNewSessionModal()" class="text-zinc-400 hover:text-sky-400 text-xs px-1" title="添加项目或新建对话">＋</button>
+        </div>
       </div>
-      <div class="space-y-1">
-        ${
-          projects.length === 0
-            ? `<div class="px-2 py-2 text-[11px] text-zinc-600">暂无工程项目</div>`
-            : projects
-                .map((proj) => {
-                  const isOpen = !!state.expandedProjects[proj.key] || !!q;
-                  const visibleConvs = proj.sessions.slice(0, 8);
-                  return `
-                    <div class="group/proj rounded-lg bg-zinc-900/35 border border-zinc-900">
-                      <div onclick="window.appActions.toggleProject('${escapeHtml(proj.key)}')"
-                        class="cursor-pointer px-2 py-1.5 flex items-center justify-between gap-1.5 rounded-lg hover:bg-zinc-900 text-xs text-zinc-200">
-                        <div class="flex items-center gap-1.5 min-w-0 flex-1">
-                          <span class="text-[10px] text-zinc-500 transition-transform ${
-                            isOpen ? "rotate-90" : ""
-                          }">▸</span>
-                          <span class="text-sky-400/90 shrink-0">📂</span>
-                          <span class="truncate font-medium">${escapeHtml(proj.name)}</span>
-                        </div>
-                        <div class="flex items-center gap-1 shrink-0">
-                          <button onclick="window.appActions.newProjectSession('${escapeHtml(
-                            proj.path
-                          )}', event)"
-                            class="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-400 hover:text-sky-400 flex items-center justify-center text-xs"
-                            title="在此项目新建对话">＋</button>
-                          <button onclick="window.appActions.hideProject('${escapeHtml(
-                            proj.path
-                          )}', event, '${escapeJsSingleQuote(proj.name)}')"
-                            class="w-4 h-4 rounded hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 flex items-center justify-center text-[11px]"
-                            title="从项目列表移出 (不删对话)">×</button>
-                          <span class="text-[10px] text-zinc-500 tabular-nums min-w-[14px] text-right">${
-                            proj.sessions.length
-                          }</span>
-                        </div>
-                      </div>
-                      ${
-                        isOpen
-                          ? `<div class="pl-3 pr-1 pb-1 space-y-0.5 border-l border-zinc-800/80 ml-3 mb-1">
-                              ${
-                                visibleConvs.length === 0
-                                  ? `<div class="px-2 py-1 text-[10px] text-zinc-600 italic">无对话</div>`
-                                  : visibleConvs
-                                      .map((c) => renderCompactSessionItem(c, false))
-                                      .join("")
-                              }
-                            </div>`
-                          : ""
-                      }
-                    </div>
-                  `;
-                })
-                .join("")
-        }
-      </div>
+      ${
+        !isProjectsCollapsed
+          ? `<div class="space-y-1">
+              ${
+                projects.length === 0
+                  ? `<div class="px-2 py-2 text-[11px] text-zinc-600">暂无工程项目</div>`
+                  : projects
+                      .map((proj) => {
+                        const isOpen = !!state.expandedProjects[proj.key] || !!q;
+                        const visibleConvs = proj.sessions.slice(0, 8);
+                        return `
+                          <div class="group/proj rounded-lg bg-zinc-900/35 border border-zinc-900">
+                            <div onclick="window.appActions.toggleProject('${escapeHtml(proj.key)}')"
+                              class="cursor-pointer px-2 py-1.5 flex items-center justify-between gap-1.5 rounded-lg hover:bg-zinc-900 text-xs text-zinc-200">
+                              <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                                <span class="text-sky-400/90 shrink-0">📂</span>
+                                <span class="truncate font-medium">${escapeHtml(proj.name)}</span>
+                              </div>
+                              <div class="flex items-center gap-1 shrink-0">
+                                <button onclick="window.appActions.newProjectSession('${escapeHtml(
+                                  proj.path
+                                )}', event)"
+                                  class="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-400 hover:text-sky-400 flex items-center justify-center text-xs"
+                                  title="在此项目新建对话">＋</button>
+                                <button onclick="window.appActions.hideProject('${escapeHtml(
+                                  proj.path
+                                )}', event, '${escapeJsSingleQuote(proj.name)}')"
+                                  class="w-4 h-4 rounded hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 flex items-center justify-center text-[11px]"
+                                  title="从项目列表移出 (不删对话)">×</button>
+                                <span class="text-[10px] text-zinc-500 tabular-nums min-w-[14px] text-right">${
+                                  proj.sessions.length
+                                }</span>
+                              </div>
+                            </div>
+                            ${
+                              isOpen
+                                ? `<div class="pl-3 pr-1 pb-1 space-y-0.5 border-l border-zinc-800/80 ml-3 mb-1">
+                                    ${
+                                      visibleConvs.length === 0
+                                        ? `<div class="px-2 py-1 text-[10px] text-zinc-600 italic">无对话</div>`
+                                        : visibleConvs
+                                            .map((c) => renderCompactSessionItem(c, false))
+                                            .join("")
+                                    }
+                                  </div>`
+                                : ""
+                            }
+                          </div>
+                        `;
+                      })
+                      .join("")
+              }
+            </div>`
+          : ""
+      }
     </div>
   `;
 
-  // --- 区块 3：临时与最近对话 (Conversations) ---
+  // --- 区块 3：临时会话 ---
+  const isConversationsCollapsed = !q && !!state.collapsedSections?.conversations;
   html += `
     <div>
-      <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center justify-between">
-        <span>💬 临时与最近对话</span>
-        <span>${recentDisplayList.length}</span>
+      <div onclick="window.appActions.toggleSection('conversations')"
+        class="cursor-pointer select-none px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-300 flex items-center justify-between transition-colors"
+        title="点击收纳/展开 临时会话">
+        <div class="flex items-center gap-1.5">
+          <span>💬 临时会话</span>
+        </div>
+        <span class="text-[10px] text-zinc-500 tabular-nums">${recentDisplayList.length}</span>
       </div>
-      <div class="space-y-0.5">
-        ${recentDisplayList.map((s) => renderCompactSessionItem(s, true)).join("")}
-      </div>
+      ${
+        !isConversationsCollapsed
+          ? `<div class="space-y-0.5">
+              ${recentDisplayList.map((s) => renderCompactSessionItem(s, true)).join("")}
+            </div>`
+          : ""
+      }
     </div>
   `;
 
@@ -1547,7 +1724,8 @@ function renderModelOptionsForAgent(selectEl, agentType, selectedModelId = "") {
       ? list
       : DEFAULT_MODELS_BY_AGENT[agentType] || DEFAULT_MODELS_BY_AGENT.agy_cli;
 
-  const activeId = selectedModelId || (models[0] ? models[0].id : "");
+  const defaultModelItem = models.find((m) => m.is_default) || models[0];
+  const activeId = selectedModelId || (defaultModelItem ? defaultModelItem.id : "");
   if (selectEl.tagName === "SELECT") {
     const usage = state.currentTokenUsage;
     const currentTokens = usage ? usage.context_tokens || 0 : 0;
@@ -1612,10 +1790,11 @@ function renderModelPicker() {
       ? list
       : DEFAULT_MODELS_BY_AGENT[agentType] || DEFAULT_MODELS_BY_AGENT.agy_cli;
 
-  const activeId = sess?.model_name || (models[0] ? models[0].id : "");
+  const defaultModelItem = models.find((m) => m.is_default) || models[0];
+  const activeId = sess?.model_name || (defaultModelItem ? defaultModelItem.id : "");
   if (hiddenInput) hiddenInput.value = activeId;
 
-  const activeModel = models.find((m) => m.id === activeId) || models[0];
+  const activeModel = models.find((m) => m.id === activeId) || defaultModelItem;
   if (activeModel) {
     labelEl.textContent = activeModel.label;
   }
@@ -1668,8 +1847,8 @@ function renderModelPicker() {
                     : ""
                 }
                 ${
-                  m.is_recommended
-                    ? `<span class="text-amber-400 text-[10px] shrink-0" title="推荐">★</span>`
+                  m.is_default
+                    ? `<span class="text-[9px] px-1 py-0.2 rounded font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0" title="电脑端当前默认模型">默认</span>`
                     : ""
                 }
               </div>
@@ -1689,6 +1868,36 @@ function renderModelPicker() {
   `;
 }
 
+function getAgentDisplayName(agentType) {
+  const nameMap = {
+    claude_code: "Claude",
+    agy_ide: "Antigravity",
+    agy_cli: "AGY",
+    opencode: "OpenCode",
+  };
+  return nameMap[agentType] || AGENT_META[agentType]?.short || AGENT_META[agentType]?.label || "Agent";
+}
+
+function updatePromptInputPlaceholder(sess) {
+  const inputEl = document.getElementById("prompt-input");
+  const overlayEl = document.getElementById("prompt-input-placeholder");
+  if (!inputEl) return;
+  if (!sess) {
+    if (overlayEl) {
+      overlayEl.innerHTML = `<span>发消息...</span>`;
+    }
+    inputEl.placeholder = " ";
+    return;
+  }
+  const agentName = getAgentDisplayName(sess.agent_type);
+  if (overlayEl) {
+    overlayEl.innerHTML = `
+      <span>发消息给&nbsp;</span><span class="text-[10px] sm:text-xs text-zinc-400 font-mono">${escapeHtml(agentName)}</span><span>...</span>
+    `;
+  }
+  inputEl.placeholder = `发消息给 ${agentName}...`;
+}
+
 function renderCurrentSessionHeader() {
   const titleEl = document.getElementById("current-session-title");
   const subtitleEl = document.getElementById("current-session-subtitle");
@@ -1697,9 +1906,12 @@ function renderCurrentSessionHeader() {
 
   const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
   if (!sess) {
-    if (titleEl) titleEl.textContent = "未选择对话";
-    if (subtitleEl) subtitleEl.textContent = "AgentDeck";
+    if (titleEl) {
+      titleEl.innerHTML = `<span class="text-xs sm:text-sm font-medium text-zinc-400 truncate">未选择对话</span>`;
+    }
+    if (subtitleEl) subtitleEl.textContent = "";
     if (headerLogo) headerLogo.classList.remove("has-session-hidden-mobile");
+    updatePromptInputPlaceholder(null);
     renderModelPicker();
     updatePromptActionBtnState();
     return;
@@ -1712,20 +1924,52 @@ function renderCurrentSessionHeader() {
 
   const meta = AGENT_META[sess.agent_type] || AGENT_META.claude_code;
 
+  // 获取项目名称（非工程会话回退至会话 ID 短码）
+  const rawProjectName =
+    sess.is_project && sess.project_name
+      ? sess.project_name
+      : (sess.project_name || (sess.project_path ? getProjectInfo(sess.project_path).name : ""));
+  const projectName = String(rawProjectName || "").trim();
+
+  // 桌面网页端项目展示（提升对比度与悬停反馈）
+  const desktopProjectHtml = projectName
+    ? `<span class="inline-flex items-center gap-1.5 text-xs text-zinc-300 hover:text-zinc-100 font-medium font-mono shrink-0 max-w-[200px] truncate transition-colors" title="${escapeHtml(projectName)}">
+        <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+        <span class="truncate">${escapeHtml(projectName)}</span>
+      </span>`
+    : `<span class="inline-flex items-center text-xs text-zinc-400 font-mono shrink-0" title="${escapeHtml(sess.raw_session_id || "")}">#${escapeHtml((sess.raw_session_id || "").slice(0, 8))}</span>`;
+
+  // 手机移动端项目展示（会话名称 · 项目名称）
+  const mobileProjectHtml = projectName
+    ? `<span class="text-zinc-500 text-[11px] shrink-0 select-none">·</span>
+       <span class="text-[11px] text-zinc-400 font-mono shrink-0 max-w-[100px] truncate" title="${escapeHtml(projectName)}">${escapeHtml(projectName)}</span>`
+    : (sess.raw_session_id
+        ? `<span class="text-zinc-500 text-[11px] shrink-0 select-none">·</span>
+           <span class="text-[11px] text-zinc-500 font-mono shrink-0">#${escapeHtml((sess.raw_session_id || "").slice(0, 8))}</span>`
+        : "");
+
+  // 网页端：项目名称 · 会话名称
+  // 手机端：只显示 会话名称 · 项目名称
   if (titleEl) {
     titleEl.innerHTML = `
-      <span class="px-1.5 py-0.5 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
-        ${meta.short}
-      </span>
-      <span class="truncate font-medium">${escapeHtml(sess.title)}</span>
+      <!-- 网页端（sm及以上显示）：项目名称 · 会话名称 -->
+      <div class="hidden sm:flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+        ${desktopProjectHtml}
+        <span class="text-zinc-500 text-xs shrink-0 select-none">·</span>
+        <span class="truncate font-medium text-sm text-zinc-100 min-w-0" title="${escapeHtml(sess.title)}">${escapeHtml(sess.title)}</span>
+      </div>
+
+      <!-- 手机端（sm以下显示）：会话名称 · 项目名称 -->
+      <div class="flex sm:hidden items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+        <span class="truncate font-medium text-xs text-zinc-100 min-w-0 shrink" title="${escapeHtml(sess.title)}">${escapeHtml(sess.title)}</span>
+        ${mobileProjectHtml}
+      </div>
     `;
   }
   if (subtitleEl) {
-    subtitleEl.textContent =
-      sess.is_project && sess.project_name
-        ? `· 📁 ${sess.project_name}`
-        : `· #${sess.raw_session_id.slice(0, 8)}`;
+    subtitleEl.textContent = "";
   }
+  updatePromptInputPlaceholder(sess);
   if (modeSelect) {
     const activeMode = renderModeOptionsForAgent(modeSelect, sess.agent_type, sess.execution_mode || "ask", true);
     // 若原存储的模式不受该 Agent 支持且发生了自动回退，静默同步更新后端元数据持久化
@@ -2898,10 +3142,19 @@ function updatePromptActionBtnState() {
   const btn = document.getElementById("prompt-action-btn");
   const btnText = document.getElementById("prompt-action-btn-text");
   const inputEl = document.getElementById("prompt-input");
+  const overlayEl = document.getElementById("prompt-input-placeholder");
   if (!btn) return;
 
   const isWorking = isSessionWorking(state.selectedSessionId);
   const hasText = Boolean(inputEl && inputEl.value.trim().length > 0);
+
+  if (overlayEl) {
+    if (hasText) {
+      overlayEl.classList.add("!hidden");
+    } else {
+      overlayEl.classList.remove("!hidden");
+    }
+  }
 
   // 运行中的会话：如果无输入内容显示「中断」，如果有输入内容显示「发送」（跟客户端交互完全一致）
   if (isWorking && !hasText) {
@@ -3449,6 +3702,7 @@ function showToast(message, type = "info") {
 
 // --- 暴露给模板的事件动作集 ---
 window.appActions = {
+  handleStatusBtnClick,
   selectSession,
   jumpToRunningSession() {
     const otherRunning = (state.allSessions || []).filter(
@@ -3466,6 +3720,14 @@ window.appActions = {
   togglePin: handleTogglePin,
   toggleProject(projectKey) {
     state.expandedProjects[projectKey] = !state.expandedProjects[projectKey];
+    renderSessionList();
+  },
+  toggleSection(sectionKey) {
+    if (!state.collapsedSections) state.collapsedSections = {};
+    state.collapsedSections[sectionKey] = !state.collapsedSections[sectionKey];
+    try {
+      localStorage.setItem("agentdeck_sections_collapsed", JSON.stringify(state.collapsedSections));
+    } catch (e) {}
     renderSessionList();
   },
   newProjectSession(projectPath, ev) {
@@ -3606,8 +3868,12 @@ window.appActions = {
     }
   },
   toggleDrawer(open) {
-    state.drawerOpen = open !== undefined ? open : !state.drawerOpen;
+    const nextOpen = open !== undefined ? open : !state.drawerOpen;
+    state.drawerOpen = nextOpen;
     updateDrawerVisibility();
+    if (nextOpen) {
+      renderSessionList();
+    }
   },
   toggleSidebar(collapsed) {
     state.sidebarCollapsed =
@@ -4423,11 +4689,26 @@ function renderGitStatusBody(data) {
 
 // --- 初始化入口 ---
 window.addEventListener("DOMContentLoaded", async () => {
+  // 读取服务端注入的前端基准版本指纹
+  const metaBuild = document.querySelector('meta[name="agentdeck-build"]')?.content;
+  if (metaBuild) state.frontendBuild = metaBuild;
+  renderSidebarStatus();
+
   updateDrawerVisibility();
   initDrawerSwipeGestures();
   await checkAndExchangePairCode();
   await Promise.all([loadSystemStatus(), loadWorkspaces(), loadSessions()]);
   connectWebSocket();
+  checkFrontendVersion();
+
+  // 手机锁屏唤醒或切回主屏幕应用时立即检测一次版本
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      checkFrontendVersion();
+    }
+  });
+  // 保持周期性轻量巡检
+  setInterval(checkFrontendVersion, 25000);
 
   window.addEventListener("hashchange", () => {
     const hashId = getSessionIdFromHash();

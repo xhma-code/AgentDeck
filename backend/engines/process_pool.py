@@ -45,34 +45,34 @@ from backend.core.workspace import evaluate_project_dir
 # 四大 Agent 可选模型目录（严格对齐本机 agy models 官方完整清单与 Claude Code / OpenCode）
 AGENT_MODELS: dict[str, list[dict[str, Any]]] = {
     "agy_cli": [
-        {"id": "claude-sonnet-5-5-high", "label": "Claude Sonnet 5.5 (High)", "tag": "推荐"},
-        {"id": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Medium)", "tag": ""},
-        {"id": "claude-sonnet-5-5-low", "label": "Claude Sonnet 5.5 (Low)", "tag": ""},
-        {"id": "claude-opus-5-5-high", "label": "Claude Opus 5.5 (High)", "tag": "深度"},
-        {"id": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 (Medium)", "tag": ""},
-        {"id": "claude-opus-5-5-low", "label": "Claude Opus 5.5 (Low)", "tag": ""},
-        {"id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)", "tag": "旗舰"},
-        {"id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)", "tag": "均衡"},
-        {"id": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)", "tag": ""},
-        {"id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)", "tag": "极速"},
-        {"id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)", "tag": "均衡"},
-        {"id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)", "tag": "超快"},
-        {"id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)", "tag": ""},
+        {"id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)", "tag": "New", "is_recommended": True},
+        {"id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)", "tag": "New", "is_recommended": True},
+        {"id": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)", "tag": "New", "is_recommended": True},
+        {"id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)", "tag": "极速", "is_recommended": True},
+        {"id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)", "tag": "均衡", "is_recommended": True},
+        {"id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)", "tag": "超快", "is_recommended": True},
+        {"id": "claude-opus-5-5-low", "label": "Claude Opus 5.5 (Low)", "tag": "New", "is_recommended": True},
+        {"id": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 (Medium)", "tag": "New", "is_recommended": True},
+        {"id": "claude-opus-5-5-high", "label": "Claude Opus 5.5 (High)", "tag": "深度", "is_recommended": True},
+        {"id": "claude-sonnet-5-5-low", "label": "Claude Sonnet 5.5 (Low)", "tag": "New", "is_recommended": True},
+        {"id": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Medium)", "tag": "New", "is_recommended": True},
+        {"id": "claude-sonnet-5-5-high", "label": "Claude Sonnet 5.5 (High)", "tag": "推荐", "is_recommended": True},
+        {"id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)", "tag": "Notice", "is_recommended": True},
     ],
     "agy_ide": [
-        {"id": "claude-sonnet-5-5-high", "label": "Claude Sonnet 5.5 (High)", "tag": "推荐"},
-        {"id": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Medium)", "tag": ""},
-        {"id": "claude-sonnet-5-5-low", "label": "Claude Sonnet 5.5 (Low)", "tag": ""},
-        {"id": "claude-opus-5-5-high", "label": "Claude Opus 5.5 (High)", "tag": "深度"},
-        {"id": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 (Medium)", "tag": ""},
-        {"id": "claude-opus-5-5-low", "label": "Claude Opus 5.5 (Low)", "tag": ""},
-        {"id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)", "tag": "旗舰"},
-        {"id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)", "tag": "均衡"},
-        {"id": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)", "tag": ""},
-        {"id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)", "tag": "极速"},
-        {"id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)", "tag": "均衡"},
-        {"id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)", "tag": "超快"},
-        {"id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)", "tag": ""},
+        {"id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)", "tag": "New", "is_recommended": True},
+        {"id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)", "tag": "New", "is_recommended": True},
+        {"id": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)", "tag": "New", "is_recommended": True},
+        {"id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)", "tag": "极速", "is_recommended": True},
+        {"id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)", "tag": "均衡", "is_recommended": True},
+        {"id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)", "tag": "超快", "is_recommended": True},
+        {"id": "claude-opus-5-5-low", "label": "Claude Opus 5.5 (Low)", "tag": "New", "is_recommended": True},
+        {"id": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 (Medium)", "tag": "New", "is_recommended": True},
+        {"id": "claude-opus-5-5-high", "label": "Claude Opus 5.5 (High)", "tag": "深度", "is_recommended": True},
+        {"id": "claude-sonnet-5-5-low", "label": "Claude Sonnet 5.5 (Low)", "tag": "New", "is_recommended": True},
+        {"id": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Medium)", "tag": "New", "is_recommended": True},
+        {"id": "claude-sonnet-5-5-high", "label": "Claude Sonnet 5.5 (High)", "tag": "推荐", "is_recommended": True},
+        {"id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)", "tag": "Notice", "is_recommended": True},
     ],
     "claude_code": [
         {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "tag": "默认"},
@@ -318,6 +318,19 @@ class AgentOrchestrator:
             res[k] = AGENT_MODELS.get(k, [])
         return res
 
+    def _resolve_default_model(self, agent_type: str) -> str:
+        """获取指定 Agent 类型的默认模型 ID（优先从底层 Bridge/LS 动态获取电脑端实时默认模型）。"""
+        adapter_obj = self.adapters.get(agent_type)
+        if adapter_obj and hasattr(adapter_obj, "get_default_model_id"):
+            try:
+                def_mid = adapter_obj.get_default_model_id()
+                if def_mid:
+                    return def_mid
+            except Exception:
+                pass
+        models = AGENT_MODELS.get(agent_type, [])
+        return models[0]["id"] if models else ""
+
     def list_all_sessions(
         self, agent_filter: Optional[str] = None, limit_per_agent: int = 40
     ) -> list[dict[str, Any]]:
@@ -382,8 +395,7 @@ class AgentOrchestrator:
                 sess.parent_unified_id = ov.get("parent_unified_id")
 
             if not sess.model_name:
-                models = AGENT_MODELS.get(sess.agent_type, [])
-                sess.model_name = models[0]["id"] if models else ""
+                sess.model_name = self._resolve_default_model(sess.agent_type)
 
             is_proj, norm_path, proj_name = resolve_proj(sess.project_path)
             sess.project_path = norm_path
@@ -413,8 +425,7 @@ class AgentOrchestrator:
                     else ("running" if self.is_session_active(uid) else "idle")
                 )
 
-                default_models = AGENT_MODELS.get(atype, [])
-                default_mid = default_models[0]["id"] if default_models else ""
+                default_mid = self._resolve_default_model(atype)
                 raw_p = str(ov.get("project_path") or str(PROJECT_ROOT))
                 is_proj, norm_path, proj_name = resolve_proj(raw_p)
                 merged.append(
@@ -483,8 +494,7 @@ class AgentOrchestrator:
 
         pa = self.pending_approvals.get(unified_id)
         overrides = self.meta_db.get_session_overrides().get(unified_id, {})
-        default_models = AGENT_MODELS.get(agent_type, [])
-        default_mid = default_models[0]["id"] if default_models else ""
+        default_mid = self._resolve_default_model(agent_type)
         chosen_model = overrides.get("model_name") or default_mid
         token_usage = (
             adapter.get_session_token_usage(raw_id, model_name=chosen_model)
@@ -719,8 +729,7 @@ class AgentOrchestrator:
         overrides = self.meta_db.get_session_overrides().get(unified_id, {})
         raw_mode = execution_mode or overrides.get("execution_mode") or ExecutionMode.ASK.value
         mode = self.normalize_execution_mode(agent_type, raw_mode)
-        default_models = AGENT_MODELS.get(agent_type, [])
-        default_mid = default_models[0]["id"] if default_models else ""
+        default_mid = self._resolve_default_model(agent_type)
         chosen_model = model_name or overrides.get("model_name") or default_mid
 
         target_adapter = self.adapters.get(agent_type)
