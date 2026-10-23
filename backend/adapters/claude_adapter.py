@@ -223,6 +223,18 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             paths.append(self.sessions_dir)
         return paths
 
+    @classmethod
+    def is_meaningful_storage_change(cls, path_str: str, filename: str) -> bool:
+        """多态判定变动是否属于 Claude Code 会话日志（*.jsonl 排除 agent-*，或 sessions/*.json）。"""
+        s = path_str.lower().replace("\\", "/")
+        n = filename.lower()
+        if ".claude" not in s:
+            return False
+        return (
+            (n.endswith(".jsonl") and not n.startswith("agent-"))
+            or (n.endswith(".json") and "/sessions/" in s)
+        )
+
     def _find_session_file(self, raw_session_id: str) -> Optional[Path]:
         """在 ~/.claude/projects/*/<raw_session_id>.jsonl 中定位会话文件（优先命中内存路径索引）。"""
         cached_path = self._session_file_map.get(raw_session_id)
@@ -386,21 +398,16 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             return cleaned
         return raw_text
 
-    def _parse_claude_record_line(
+    def _parse_claude_record_dict(
         self,
-        line: str,
+        rec: dict[str, Any],
         raw_session_id: str,
         items: list[UnifiedMessageItem],
         tool_id_map: dict[str, UnifiedToolCall],
         step_idx_container: list[int],
     ) -> bool:
-        """解析单行 Claude Code JSONL 记录并更新 items 和 tool_id_map。"""
-        line = line.strip()
-        if not line:
-            return False
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
+        """根据已解析的 Claude Code 记录字典映射并更新 items 和 tool_id_map。"""
+        if not isinstance(rec, dict):
             return False
 
         rec_type = rec.get("type")
@@ -552,6 +559,30 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 return True
         return False
 
+    def _parse_claude_record_line(
+        self,
+        line: str,
+        raw_session_id: str,
+        items: list[UnifiedMessageItem],
+        tool_id_map: dict[str, UnifiedToolCall],
+        step_idx_container: list[int],
+    ) -> bool:
+        """解析单行 Claude Code JSONL 记录并更新 items 和 tool_id_map（向后兼容）。"""
+        line = line.strip()
+        if not line:
+            return False
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+        return self._parse_claude_record_dict(
+            rec=rec,
+            raw_session_id=raw_session_id,
+            items=items,
+            tool_id_map=tool_id_map,
+            step_idx_container=step_idx_container,
+        )
+
     def get_session_messages(
         self, raw_session_id: str, limit: int = 120
     ) -> list[UnifiedMessageItem]:
@@ -581,34 +612,38 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 items = list(cached[2])
                 step_idx_container = [int(cached[4])]
                 tool_id_map = dict(cached[5])
-                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                with open(fpath, "rb") as f:
                     f.seek(cached[3])
-                    inc_lines = f.readlines()
-                    new_offset = f.tell()
+                    inc_raw = f.read()
 
-                if inc_lines and not inc_lines[-1].endswith(("\n", "\r")):
-                    incomplete_len = len(inc_lines[-1].encode("utf-8", errors="replace"))
+                inc_lines = inc_raw.splitlines(keepends=True)
+                if inc_lines and not inc_lines[-1].endswith((b"\n", b"\r")):
                     inc_lines = inc_lines[:-1]
-                    new_offset = max(cached[3], new_offset - incomplete_len)
 
                 consumed_offset = cached[3]
-                for idx_offset, ln in enumerate(inc_lines):
-                    line_bytes = len(ln.encode("utf-8", errors="replace"))
-                    parsed_ok = self._parse_claude_record_line(
-                        line=ln,
+                for idx_offset, b_line in enumerate(inc_lines):
+                    u_line = b_line.decode("utf-8", errors="replace").strip()
+                    if not u_line:
+                        consumed_offset += len(b_line)
+                        continue
+
+                    try:
+                        rec_obj = json.loads(u_line)
+                    except json.JSONDecodeError:
+                        if idx_offset == len(inc_lines) - 1:
+                            logger.debug(f"增量读取时 Claude Code 末行并发写入中 ({raw_session_id[:8]})，游标保留在行首")
+                            break
+                        consumed_offset += len(b_line)
+                        continue
+
+                    consumed_offset += len(b_line)
+                    self._parse_claude_record_dict(
+                        rec=rec_obj,
                         raw_session_id=raw_session_id,
                         items=items,
                         tool_id_map=tool_id_map,
                         step_idx_container=step_idx_container,
                     )
-                    if parsed_ok:
-                        consumed_offset += line_bytes
-                    else:
-                        if idx_offset == len(inc_lines) - 1 and ln.strip():
-                            logger.debug(f"增量读取时 Claude Code 末行并发写入中 ({raw_session_id[:8]})，游标保留在行首")
-                            break
-                        if not ln.strip():
-                            consumed_offset += line_bytes
 
                 self._messages_cache[raw_session_id] = (
                     mtime_ns,
@@ -626,16 +661,14 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         items: list[UnifiedMessageItem] = []
         tool_id_map: dict[str, UnifiedToolCall] = {}
         step_idx_container = [0]
-        byte_offset = 0
+        raw_b_lines: list[bytes] = []
 
         try:
-            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-                byte_offset = f.tell()
-            if lines and not lines[-1].endswith(("\n", "\r")):
-                incomplete_len = len(lines[-1].encode("utf-8", errors="replace"))
-                lines = lines[:-1]
-                byte_offset = max(0, byte_offset - incomplete_len)
+            with open(fpath, "rb") as f:
+                all_raw = f.read()
+            raw_b_lines = all_raw.splitlines(keepends=True)
+            if raw_b_lines and not raw_b_lines[-1].endswith((b"\n", b"\r")):
+                raw_b_lines = raw_b_lines[:-1]
         except Exception as exc:
             log_structured_error(
                 problem=f"读取 Claude Code 会话文件失败 ({raw_session_id[:8]})",
@@ -646,23 +679,29 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             return []
 
         consumed_offset = 0
-        for idx, line in enumerate(lines):
-            line_bytes = len(line.encode("utf-8", errors="replace"))
-            parsed_ok = self._parse_claude_record_line(
-                line=line,
+        for idx, b_line in enumerate(raw_b_lines):
+            u_line = b_line.decode("utf-8", errors="replace").strip()
+            if not u_line:
+                consumed_offset += len(b_line)
+                continue
+
+            try:
+                rec_obj = json.loads(u_line)
+            except json.JSONDecodeError:
+                if idx == len(raw_b_lines) - 1:
+                    logger.debug(f"全量读取时 Claude Code 末行并发写入中 ({raw_session_id[:8]})，游标保留在行首")
+                    break
+                consumed_offset += len(b_line)
+                continue
+
+            consumed_offset += len(b_line)
+            self._parse_claude_record_dict(
+                rec=rec_obj,
                 raw_session_id=raw_session_id,
                 items=items,
                 tool_id_map=tool_id_map,
                 step_idx_container=step_idx_container,
             )
-            if parsed_ok:
-                consumed_offset += line_bytes
-            else:
-                if idx == len(lines) - 1 and line.strip():
-                    logger.debug(f"全量读取时 Claude Code 末行并发写入中 ({raw_session_id[:8]})，游标保留在行首")
-                    break
-                if not line.strip():
-                    consumed_offset += line_bytes
 
         self._messages_cache[raw_session_id] = (
             mtime_ns,

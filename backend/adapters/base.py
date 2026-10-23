@@ -565,6 +565,11 @@ class BaseAgentAdapter(ABC):
     def get_watch_paths(self) -> list[Path]:
         """返回需要被 `watchfiles` 实时监听的本地目录列表。"""
 
+    @classmethod
+    def is_meaningful_storage_change(cls, path_str: str, filename: str) -> bool:
+        """多态判定指定文件变动是否属于该适配器关心的核心会话载体（消除中心化硬编码依恋）。"""
+        return False
+
     def get_full_step_output(self, raw_session_id: str, step_index: int) -> str:
         """按需读取被 4KB 截断的单步完整原始输出（子类可重写以读取底层未截断数据）。"""
         return ""

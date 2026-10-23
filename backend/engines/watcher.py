@@ -22,57 +22,49 @@ from backend.core.logger import log_structured_error, logger
 from backend.engines.event_bus import RealtimeEventBus
 
 
-def is_meaningful_session_storage_change(p_str: str, p_name: str) -> bool:
+# 过滤噪声目录与临时文件特征
+IGNORED_PATH_SEGMENTS: tuple[str, ...] = (
+    "tmp_snapshots",
+    ".db-shm",
+    ".git",
+    "__pycache__",
+    ".pytest_cache",
+    "/scratch/",
+    "\\.scratch\\",
+)
+IGNORED_EXTENSIONS: tuple[str, ...] = (".tmp", ".lock", ".swp", ".bak")
+
+
+def is_meaningful_session_storage_change(
+    p_str: str,
+    p_name: str,
+    adapters: Optional[list[BaseAgentAdapter] | dict[str, BaseAgentAdapter]] = None,
+) -> bool:
     """
     白名单谓词：收敛过滤无效临时文件与高频共享内存变动，阻断广播风暴。
-    仅当变动命中核心会话存储（如 transcript.jsonl, summaries.db, *.jsonl）时放行。
+    多态委托各适配器的 `is_meaningful_storage_change` 判定核心会话存储变动，杜绝中心化特征依恋。
     """
     lower_name = p_name.lower()
     lower_str = p_str.lower()
 
     # 1. 严格黑名单排除（临时快照、SQLite 共享内存、锁文件、版本控制与 Python 缓存）
-    if any(
-        noise in lower_str
-        for noise in (
-            "tmp_snapshots",
-            ".db-shm",
-            ".git",
-            "__pycache__",
-            ".pytest_cache",
-            "/scratch/",
-            "\\.scratch\\",
-        )
-    ):
+    if any(noise in lower_str for noise in IGNORED_PATH_SEGMENTS):
         return False
 
-    if lower_name.endswith((".tmp", ".lock", ".swp", ".bak")):
+    if lower_name.endswith(IGNORED_EXTENSIONS):
         return False
 
-    # 2. Antigravity 核心会话载体白名单
-    if "antigravity" in lower_str:
-        if lower_name == "transcript.jsonl":
-            return True
-        if "conversation_summaries.db" in lower_name:
-            return True
-        if lower_name.endswith(".db") and "/conversations/" in lower_str:
-            return True
-        return False
+    # 2. 多态派发判定：优先使用注入的适配器实例，缺省回退至各适配器类的静态判定
+    if adapters is not None:
+        adapter_iter = adapters.values() if isinstance(adapters, dict) else adapters
+        return any(a.is_meaningful_storage_change(p_str, p_name) for a in adapter_iter)
 
-    # 3. Claude Code 核心会话载体白名单
-    if ".claude" in lower_str:
-        if lower_name.endswith(".jsonl") and not lower_name.startswith("agent-"):
-            return True
-        if lower_name.endswith(".json") and "/sessions/" in lower_str:
-            return True
-        return False
+    from backend.adapters.antigravity_adapter import AntigravityAdapter
+    from backend.adapters.claude_adapter import ClaudeCodeAdapter
+    from backend.adapters.opencode_adapter import OpenCodeAdapter
 
-    # 4. OpenCode 核心会话载体白名单
-    if "opencode" in lower_str:
-        if lower_name.endswith((".json", ".jsonl", ".sqlite", ".db")):
-            return True
-        return False
-
-    return False
+    default_adapters = (AntigravityAdapter, ClaudeCodeAdapter, OpenCodeAdapter)
+    return any(cls.is_meaningful_storage_change(p_str, p_name) for cls in default_adapters)
 
 
 class SafeStorageWatcher:
@@ -137,7 +129,7 @@ class SafeStorageWatcher:
                         p_obj = Path(raw_p)
 
                         # 使用白名单收敛过滤，阻断临时文件、SQLite 共享内存与无关日志导致的广播风暴
-                        if not is_meaningful_session_storage_change(p_str, p_obj.name):
+                        if not is_meaningful_session_storage_change(p_str, p_obj.name, adapters):
                             continue
 
                         changed_files.append(p_obj.name)

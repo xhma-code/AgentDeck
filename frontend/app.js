@@ -991,33 +991,44 @@ function isSessionStatusActive(s) {
   return st === "running" || st === "desktop_active";
 }
 
-function getPendingAttentionSessions() {
-  const all = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
-  const list = all.filter(
-    (s) =>
-      s &&
-      s.unified_id !== state.selectedSessionId &&
-      (s.status === "waiting_approval" ||
-        isSessionStatusActive(s) ||
-        (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id)) ||
-        isSessionCompletedUnread(s))
-  );
+const SESSION_PRIORITY = Object.freeze({
+  WAITING_APPROVAL: 3,
+  COMPLETED_UNREAD: 2,
+  ACTIVE: 1,
+  DEFAULT: 0,
+});
 
-  const getWeight = (s) => {
-    if (s.status === "waiting_approval") return 3;
-    if (isSessionCompletedUnread(s)) return 2;
-    if (isSessionStatusActive(s) || (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id))) return 1;
-    return 0;
-  };
+function getSessionPriorityWeight(s) {
+  if (!s) return SESSION_PRIORITY.DEFAULT;
+  const st = String(s.status || "").toLowerCase();
+  if (st === "waiting_approval") return SESSION_PRIORITY.WAITING_APPROVAL;
+  if (isSessionCompletedUnread(s)) return SESSION_PRIORITY.COMPLETED_UNREAD;
+  if (st === "running" || st === "desktop_active" || (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id))) {
+    return SESSION_PRIORITY.ACTIVE;
+  }
+  return SESSION_PRIORITY.DEFAULT;
+}
+
+function isSessionAttentionNeeded(s) {
+  return Boolean(s) && getSessionPriorityWeight(s) > SESSION_PRIORITY.DEFAULT;
+}
+
+function getAllAttentionSessions() {
+  const all = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  const list = all.filter((s) => isSessionAttentionNeeded(s));
 
   return list.sort((a, b) => {
-    const wa = getWeight(a);
-    const wb = getWeight(b);
+    const wa = getSessionPriorityWeight(a);
+    const wb = getSessionPriorityWeight(b);
     if (wa !== wb) return wb - wa;
     const ta = new Date(a.updated_at || 0).getTime();
     const tb = new Date(b.updated_at || 0).getTime();
     return tb - ta;
   });
+}
+
+function getPendingAttentionSessions() {
+  return getAllAttentionSessions().filter((s) => s.unified_id !== state.selectedSessionId);
 }
 
 function renderOtherRunningPill() {
@@ -1043,24 +1054,35 @@ function renderOtherRunningPill() {
   pill.classList.remove("hidden");
   pill.classList.add("flex");
 
-  const hasApproval = attentionList.some((s) => s.status === "waiting_approval");
-  const hasUnread = attentionList.some((s) => isSessionCompletedUnread(s));
+  const approvalCount = attentionList.filter((s) => s.status === "waiting_approval").length;
+  const unreadCount = attentionList.filter((s) => isSessionCompletedUnread(s)).length;
+  const runningCount = attentionList.filter(
+    (s) => isSessionStatusActive(s) || (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id))
+  ).length;
 
   let dotColorClass = "bg-emerald-400 animate-pulse";
   let pillColorClass = "border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300";
   let textDesc = `${count} 个后台运行中`;
 
-  if (hasApproval) {
+  if (approvalCount > 0) {
     dotColorClass = "bg-amber-400 animate-ping";
     pillColorClass = "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300";
-    textDesc = `${count} 个待审批任务`;
-  } else if (hasUnread) {
-    dotColorClass = "bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.8)]";
+    if (runningCount === 0 && unreadCount === 0) {
+      textDesc = `${approvalCount} 个待审批任务`;
+    } else {
+      textDesc = `${approvalCount} 待审批 · ${runningCount + unreadCount} 活跃`;
+    }
+  } else if (unreadCount > 0) {
+    dotColorClass = "bg-sky-400 glow-sky";
     pillColorClass = "border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300";
-    textDesc = `${count} 个完成待查看`;
+    if (runningCount === 0) {
+      textDesc = `${unreadCount} 个完成待查看`;
+    } else {
+      textDesc = `${unreadCount} 待查看 · ${runningCount} 运行中`;
+    }
   }
 
-  pill.className = `h-9 min-h-[36px] sm:h-8 sm:min-h-0 px-2 sm:px-2.5 rounded-lg border text-xs flex items-center gap-1.5 active:scale-95 transition cursor-pointer select-none ${pillColorClass}`;
+  pill.className = `h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg border text-xs flex items-center gap-1.5 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none ${pillColorClass}`;
   if (dotEl) {
     dotEl.className = `w-2 h-2 rounded-full shrink-0 ${dotColorClass}`;
   }
@@ -1216,9 +1238,11 @@ async function loadSessions(silent = false) {
           renderSessionList();
         }
       }
-      renderCurrentSessionHeader();
-      renderApprovalBanners();
-      renderOtherRunningPill();
+      if (!needsInitialSelect) {
+        renderCurrentSessionHeader();
+        renderApprovalBanners();
+        renderOtherRunningPill();
+      }
     }
 
     if (needsInitialSelect && initialSessionId) {
@@ -1286,8 +1310,6 @@ async function selectSession(unifiedId) {
   renderCurrentSessionHeader();
   renderApprovalBanners();
   renderOtherRunningPill();
-  renderCurrentSessionHeader();
-  renderApprovalBanners();
   updateGitStatusBadge();
   renderLiveStreamOverlay();
 
@@ -2057,27 +2079,34 @@ function renderAgentsHealthModal() {
 function renderCompactSessionItem(s, showProjectTag = true) {
   const meta = AGENT_META[s.agent_type] || AGENT_META.claude_code;
   const isSelected = s.unified_id === state.selectedSessionId;
+  const isUnread = isSessionCompletedUnread(s);
 
-  // 运行/等待审批/活跃状态判定：优先在右侧原本显示时间的区域显示对应呼吸灯；未运行时显示更新时间
+  // 运行/等待审批/活跃/完成未看状态判定：优先在右侧显示对应状态徽标
   const isWorking = typeof isSessionWorking === "function" ? isSessionWorking(s.unified_id) : false;
   let statusDotHtml = null;
   if (s.status === "waiting_approval") {
     statusDotHtml = `
-      <span class="relative flex h-2 w-2" title="等待审批">
+      <span class="relative flex h-2 w-2" title="等待审批" aria-label="等待审批">
         <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
         <span class="relative inline-flex rounded-full h-2 w-2 bg-amber-400"></span>
       </span>
     `;
   } else if (s.status === "running" || isWorking) {
     statusDotHtml = `
-      <span class="relative flex h-2 w-2" title="运行中">
-        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]"></span>
+      <span class="relative flex h-2 w-2" title="运行中" aria-label="运行中">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_var(--accent-emerald,#10b981)]"></span>
+      </span>
+    `;
+  } else if (isUnread) {
+    statusDotHtml = `
+      <span class="relative flex h-2 w-2 items-center justify-center" title="运行完成（未查看）" aria-label="未读完成">
+        <span class="w-2 h-2 rounded-full bg-sky-400 shadow-[0_0_8px_var(--accent-sky,#38bdf8)]"></span>
       </span>
     `;
   } else if (s.status === "desktop_active") {
     statusDotHtml = `
-      <span class="relative flex h-2 w-2" title="桌面端活跃">
-        <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_rgba(34,211,238,0.8)]"></span>
+      <span class="relative flex h-2 w-2" title="桌面端活跃" aria-label="桌面端活跃">
+        <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_var(--accent-cyan,#22d3ee)]"></span>
       </span>
     `;
   }
@@ -2087,25 +2116,27 @@ function renderCompactSessionItem(s, showProjectTag = true) {
       class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 ${
         isSelected
           ? "bg-zinc-800/95 border-sky-500/50 text-zinc-100"
+          : isUnread
+          ? "bg-sky-950/20 border-sky-500/30 hover:bg-sky-950/30 text-zinc-200"
           : "bg-zinc-900/45 border-transparent hover:bg-zinc-900 hover:border-zinc-800 text-zinc-300"
       }">
       <div class="flex items-center gap-1.5 min-w-0 flex-1">
         <span class="px-1 py-0.5 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
           ${meta.short}
         </span>
-        <span class="text-xs truncate font-medium">${escapeHtml(cleanFriendlyTitle(s.title))}</span>
+        ${
+          showProjectTag && s.is_project && s.project_name
+            ? `<span class="px-1 py-0.5 text-[9px] font-mono text-zinc-400 bg-zinc-800/80 rounded border border-white/[0.06] shrink-0 max-w-[84px] truncate" title="${escapeHtml(
+                s.project_name
+              )}">${escapeHtml(s.project_name)}</span>`
+            : ""
+        }
+        <span class="text-xs truncate font-medium ${isUnread ? "text-sky-200" : ""}">${escapeHtml(cleanFriendlyTitle(s.title))}</span>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
         ${
-          showProjectTag && s.is_project && s.project_name
-            ? `<span class="text-[9px] text-zinc-500 font-mono max-w-[68px] truncate hidden sm:inline">${escapeHtml(
-                s.project_name
-              )}</span>`
-            : ""
-        }
-        ${
           statusDotHtml
-            ? `<span class="flex items-center justify-center min-w-[28px] py-0.5">${statusDotHtml}</span>`
+            ? `<span class="flex items-center justify-center min-w-[24px] py-0.5">${statusDotHtml}</span>`
             : `<span class="text-[10px] text-zinc-500 tabular-nums">${formatRelativeTime(s.updated_at)}</span>`
         }
         <button onclick="window.appActions.togglePin('${escapeHtml(s.unified_id)}', ${s.is_pinned ? 1 : 0}, event)"
@@ -2119,29 +2150,16 @@ function renderCompactSessionItem(s, showProjectTag = true) {
   `;
 }
 
-/**
- * 参照 Antigravity-Deck (app-sidebar.tsx & project-group.tsx) 及 /grill-me 共识：
- * 左侧边栏分为：
- * 1. ★ 置顶 (Pinned)
- * 2. 📁 项目 (Projects) —— 仅收录含 .git/pyproject.toml/pom.xml 等工程特征或手动添加的真正项目，支持「＋ 新建」与「× 移出项目」
- * 3. 💬 临时与最近对话 (Conversations) —— 收纳 Home/System32/Downloads 等散落临时会话与最近对话，自动隐藏无意义噪音目录名
- */
 function sortSessions(list) {
   if (!Array.isArray(list)) return [];
   return [...list].sort((a, b) => {
+    const swA = getSessionPriorityWeight(a);
+    const swB = getSessionPriorityWeight(b);
+    if (swA !== swB) return swB - swA;
+
     const pinA = Number(a.is_pinned || 0);
     const pinB = Number(b.is_pinned || 0);
     if (pinA !== pinB) return pinB - pinA;
-
-    const getStatusWeight = (s) => {
-      const st = String(s?.status || "").toLowerCase();
-      if (st === "waiting_approval") return 2;
-      if (st === "running" || st === "desktop_active") return 1;
-      return 0;
-    };
-    const swA = getStatusWeight(a);
-    const swB = getStatusWeight(b);
-    if (swA !== swB) return swB - swA;
 
     const ta = new Date(a.updated_at || 0).getTime();
     const tb = new Date(b.updated_at || 0).getTime();
@@ -2182,8 +2200,29 @@ function renderSessionList() {
     return;
   }
 
-  // 1. 置顶对话
-  const pinnedList = filtered.filter((s) => s.is_pinned);
+  // 1. 动态提升会话（运行中 / 待审批 / 刚完成未查看）
+  const activeUnreadList = filtered.filter(
+    (s) =>
+      s.status === "waiting_approval" ||
+      isSessionStatusActive(s) ||
+      (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id)) ||
+      isSessionCompletedUnread(s)
+  );
+
+  activeUnreadList.sort((a, b) => {
+    const wa = getSessionPriorityWeight(a);
+    const wb = getSessionPriorityWeight(b);
+    if (wa !== wb) return wb - wa;
+    const ta = new Date(a.updated_at || 0).getTime();
+    const tb = new Date(b.updated_at || 0).getTime();
+    return tb - ta;
+  });
+
+  const activeIds = new Set(activeUnreadList.map((s) => s.unified_id));
+
+  // 常驻手动置顶（排除已经在动态列表里的会话，避免重复）
+  const manualPinnedList = filtered.filter((s) => s.is_pinned && !activeIds.has(s.unified_id));
+  const totalTopCount = activeUnreadList.length + manualPinnedList.length;
 
   // 2. 按真正工程项目 (is_project === true) 聚合
   const projectMap = new Map();
@@ -2245,16 +2284,30 @@ function renderSessionList() {
 
   let html = "";
 
-  // --- 区块 1：置顶 ---
-  if (pinnedList.length > 0) {
+  // --- 区块 1：置顶与动态活动 ---
+  if (totalTopCount > 0) {
+    const sectionTitle = activeUnreadList.length > 0 ? "★ 置顶与活动" : "★ 置顶";
     html += `
       <div>
         <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center justify-between">
-          <span>★ 置顶</span>
-          <span>${pinnedList.length}</span>
+          <div class="flex items-center gap-1.5">
+            <span>${sectionTitle}</span>
+            ${
+              activeUnreadList.length > 0
+                ? `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>`
+                : ""
+            }
+          </div>
+          <span class="text-[10px] text-zinc-500 font-mono tabular-nums">${totalTopCount}</span>
         </div>
         <div class="space-y-0.5">
-          ${pinnedList.map((s) => renderCompactSessionItem(s, true)).join("")}
+          ${activeUnreadList.map((s) => renderCompactSessionItem(s, true)).join("")}
+          ${
+            activeUnreadList.length > 0 && manualPinnedList.length > 0
+              ? `<div class="my-1 border-t border-white/[0.06]"></div>`
+              : ""
+          }
+          ${manualPinnedList.map((s) => renderCompactSessionItem(s, true)).join("")}
         </div>
       </div>
     `;
@@ -2515,14 +2568,14 @@ function renderModelPicker() {
                 <span class="truncate font-medium text-zinc-100 ${isSelected ? "text-white font-semibold" : ""}">${escapeHtml(m.label)}</span>
                 ${
                   m.tag
-                    ? `<span class="text-[9px] px-1 py-0.2 rounded font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30 shrink-0">${escapeHtml(
+                    ? `<span class="text-[9px] px-1 py-0.5 rounded font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30 shrink-0">${escapeHtml(
                         m.tag
                       )}</span>`
                     : ""
                 }
                 ${
                   m.is_default
-                    ? `<span class="text-[9px] px-1 py-0.2 rounded font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0" title="电脑端当前默认模型">默认</span>`
+                    ? `<span class="text-[9px] px-1 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0" title="电脑端当前默认模型">默认</span>`
                     : ""
                 }
               </div>
@@ -3449,7 +3502,7 @@ function renderTurnProcessBar(turn) {
                     </span>
                     <button type="button" onclick="window.appActions.copyThinkingText('${escapeJsSingleQuote(
                       thinkDetailId
-                    )}', this, event)" class="min-h-[30px] px-2 py-0.5 rounded text-[11px] text-zinc-400 hover:text-sky-300 hover:bg-zinc-800/80 transition active:scale-95 flex items-center gap-1" title="复制思考内容">
+                    )}', this, event)" class="min-h-[36px] min-w-[50px] px-2.5 py-1 rounded-md text-[11px] text-zinc-400 hover:text-sky-300 hover:bg-zinc-800/80 transition active:scale-95 flex items-center justify-center gap-1" title="复制思考内容">
                       <svg class="w-3 h-3 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                       <span>复制</span>
                     </button>
@@ -3631,7 +3684,7 @@ function renderTurnProcessBar(turn) {
                                 tc.is_truncated
                                   ? `<button onclick="window.appActions.loadFullOutput('${escapeHtml(
                                       state.selectedSessionId
-                                    )}', ${rec.step_index}, this, event)" class="min-h-[28px] px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-[10px] shrink-0">加载完整输出</button>`
+                                    )}', ${rec.step_index}, this, event)" class="min-h-[34px] sm:min-h-[28px] px-2.5 py-1 rounded-md bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-[10px] shrink-0">加载完整输出</button>`
                                   : ""
                               }
                             </summary>
@@ -3661,7 +3714,7 @@ function renderTurnProcessBar(turn) {
     : "";
 
   return `
-    <div id="turn-process-wrap-${escapeHtml(turnKey)}" class="mb-2.5 rounded-xl bg-zinc-900/50 hover:bg-zinc-900/70 border border-zinc-800/80 px-2.5 sm:px-3 py-1.5 transition-colors">
+    <div id="turn-process-wrap-${escapeHtml(turnKey)}" class="mb-2 rounded-xl bg-zinc-900/50 hover:bg-zinc-900/70 border border-zinc-800/80 px-2.5 sm:px-3 py-1 transition-colors">
       <div onclick="window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}')"
         class="cursor-pointer select-none min-h-[34px] flex items-center justify-between gap-1.5 sm:gap-2 active:opacity-75">
         <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
@@ -4377,7 +4430,7 @@ function renderQrModalContent() {
   }
 
   const { pair_url, lan_pair_url, zt_pair_url, channels } = state.systemStatus;
-  const orderWeight = { tailscale: 1, zerotier: 2, wifi: 3 };
+  const orderWeight = { wifi: 1, tailscale: 2, zerotier: 3 };
   const channelList = (channels || []).slice().sort((a, b) => (orderWeight[a.type] || 9) - (orderWeight[b.type] || 9));
 
   if (!state.selectedQrNet) {
@@ -4410,10 +4463,17 @@ function renderQrModalContent() {
     wifi: `<svg class="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line></svg>`,
   };
 
+  const gridColsClass =
+    channelList.length === 1
+      ? "grid-cols-1"
+      : channelList.length === 2
+      ? "grid-cols-2"
+      : "grid-cols-3";
+
   box.innerHTML = `
     <div class="space-y-3">
-      <!-- 极简三通道切换胶囊 (精细化矢量排版) -->
-      <div class="grid grid-cols-3 gap-1.5 w-full">
+      <!-- 极简通道切换胶囊 (Tailscale 默认居中) -->
+      <div class="grid ${gridColsClass} gap-1.5 w-full">
         ${channelList
           .map((c) => {
             const isSelected = c.type === state.selectedQrNet;
@@ -4828,16 +4888,16 @@ window.appActions = {
   handleStatusBtnClick,
   selectSession,
   jumpToRunningSession() {
-    const otherRunning = (state.allSessions || []).filter(
-      (s) =>
-        s.unified_id !== state.selectedSessionId &&
-        (isSessionStatusActive(s) || s.status === "waiting_approval")
-    );
-    if (otherRunning.length > 0) {
-      const target = getLatestSession(otherRunning);
-      if (target) {
-        selectSession(target.unified_id);
-      }
+    const list = getAllAttentionSessions();
+    if (!list || list.length === 0) return;
+    const curIdx = list.findIndex((s) => s.unified_id === state.selectedSessionId);
+    let nextIdx = 0;
+    if (curIdx >= 0) {
+      nextIdx = (curIdx + 1) % list.length;
+    }
+    const target = list[nextIdx] || list[0];
+    if (target && target.unified_id) {
+      selectSession(target.unified_id);
     }
   },
   togglePin: handleTogglePin,
@@ -5769,13 +5829,13 @@ function renderTokenUsage() {
   if (pctEl) {
     pctEl.textContent = `${pct}%`;
     if (pct < 60) {
-      pctEl.className = "text-[9px] px-1 py-0.2 rounded font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30";
+      pctEl.className = "text-[9px] px-1 py-0.5 rounded font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30";
       if (dotEl) dotEl.className = "w-1.5 h-1.5 rounded-full bg-sky-400";
     } else if (pct < 85) {
-      pctEl.className = "text-[9px] px-1 py-0.2 rounded font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30";
+      pctEl.className = "text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30";
       if (dotEl) dotEl.className = "w-1.5 h-1.5 rounded-full bg-amber-400";
     } else {
-      pctEl.className = "text-[9px] px-1 py-0.2 rounded font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse";
+      pctEl.className = "text-[9px] px-1 py-0.5 rounded font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse";
       if (dotEl) dotEl.className = "w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping";
     }
   }
@@ -6203,13 +6263,20 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  // 自适应监测底部控制舱高度（含输入框撑高、移动端键盘、审批横幅变化），动态更新浮动药丸吸附位置
+  // 自适应监测底部控制舱高度（含输入框撑高、移动端软键盘、审批横幅变化），动态更新浮动药丸吸附位置
   const updateBottomControlHeight = () => {
     const footerEl = document.querySelector("footer");
     const approvalBarEl = document.getElementById("bottom-approval-bar");
     let totalBottomHeight = footerEl ? footerEl.offsetHeight : 108;
     if (approvalBarEl && !approvalBarEl.classList.contains("hidden")) {
       totalBottomHeight += approvalBarEl.offsetHeight;
+    }
+    // 移动端软键盘弹起高度补偿 (VisualViewport)
+    if (window.visualViewport) {
+      const keyboardOffset = Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop);
+      if (keyboardOffset > 80) {
+        totalBottomHeight += keyboardOffset;
+      }
     }
     document.documentElement.style.setProperty("--bottom-control-height", `${totalBottomHeight}px`);
   };
@@ -6221,6 +6288,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     bottomObserver.observe(footerEl);
     const approvalBarEl = document.getElementById("bottom-approval-bar");
     if (approvalBarEl) bottomObserver.observe(approvalBarEl);
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", () => updateBottomControlHeight());
+    window.visualViewport.addEventListener("scroll", () => updateBottomControlHeight());
   }
   updateBottomControlHeight();
 });

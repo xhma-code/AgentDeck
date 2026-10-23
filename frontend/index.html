@@ -159,10 +159,10 @@
 
           <!-- 右侧：连接状态、会话菜单与扫码按钮 -->
           <div class="flex items-center gap-1.5 shrink-0">
-            <!-- 运行中/待审批/完成未看 快捷跳板（支持手机端紧凑胶囊与桌面端全尺寸展开） -->
+            <!-- 运行中/待审批/完成未看 快捷跳板（支持手机端紧凑胶囊与桌面端全尺寸展开，触控热区 ≥40px） -->
             <button id="other-running-pill" onclick="window.appActions.jumpToRunningSession()"
-              class="hidden h-9 min-h-[36px] sm:h-8 sm:min-h-0 px-2 sm:px-2.5 rounded-lg border text-xs items-center gap-1.5 active:scale-95 transition cursor-pointer select-none"
-              title="点击快速跳转到活跃或待查看的会话">
+              class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg border text-xs items-center gap-1.5 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+              title="点击快速跳转到活跃或待查看的会话" aria-label="后台活跃与待查看会话快捷切换">
               <span id="other-running-dot" class="w-2 h-2 rounded-full shrink-0"></span>
               <span id="other-running-text" class="text-[11px] font-medium hidden sm:inline"></span>
               <span id="other-running-count" class="text-[11px] font-mono font-bold sm:hidden"></span>

@@ -438,6 +438,19 @@ class AntigravityAdapter(BaseAgentAdapter):
             paths.append(self.brain_dir)
         return paths
 
+    @classmethod
+    def is_meaningful_storage_change(cls, path_str: str, filename: str) -> bool:
+        """多态判定变动是否属于 Antigravity 核心会话存储（transcript.jsonl 或 SQLite 数据库）。"""
+        s = path_str.lower().replace("\\", "/")
+        n = filename.lower()
+        if "antigravity" not in s and ".gemini" not in s:
+            return False
+        return (
+            n == "transcript.jsonl"
+            or "conversation_summaries.db" in n
+            or (n.endswith(".db") and "/conversations/" in s)
+        )
+
     def list_sessions(self, limit: int = 50) -> list[UnifiedSession]:
         """从 conversation_summaries.db 只读查询会话列表，并补充扫描 brain 目录（带 WAL 签名与目录扫描缓存）。"""
         sessions_map: dict[str, UnifiedSession] = {}
@@ -616,22 +629,16 @@ class AntigravityAdapter(BaseAgentAdapter):
         sorted_list = sorted(sessions_map.values(), key=lambda s: s.updated_at, reverse=True)
         return sorted_list[:limit]
 
-    def _parse_agy_step_line(
+    def _parse_agy_step_dict(
         self,
-        line: str,
+        step: dict[str, Any],
         raw_session_id: str,
         fallback_idx: int,
         items: list[UnifiedMessageItem],
         last_assistant_container: list[Optional[UnifiedMessageItem]],
     ) -> bool:
-        """解析单行 transcript.jsonl 数据并映射追加至 items 列表中。"""
-        line = line.strip()
-        if not line:
-            return False
-        try:
-            step = json.loads(line)
-        except json.JSONDecodeError:
-            # 忽略正在刷盘的末尾半截 JSON 行
+        """根据已解析的 step 字典映射并追加结构化消息卡片。"""
+        if not isinstance(step, dict):
             return False
 
         step_index = int(step.get("step_index", fallback_idx))
@@ -763,6 +770,30 @@ class AntigravityAdapter(BaseAgentAdapter):
             return True
         return False
 
+    def _parse_agy_step_line(
+        self,
+        line: str,
+        raw_session_id: str,
+        fallback_idx: int,
+        items: list[UnifiedMessageItem],
+        last_assistant_container: list[Optional[UnifiedMessageItem]],
+    ) -> bool:
+        """解析单行 transcript.jsonl 数据并映射追加至 items 列表中（向后兼容）。"""
+        line = line.strip()
+        if not line:
+            return False
+        try:
+            step = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+        return self._parse_agy_step_dict(
+            step=step,
+            raw_session_id=raw_session_id,
+            fallback_idx=fallback_idx,
+            items=items,
+            last_assistant_container=last_assistant_container,
+        )
+
     def get_session_messages(
         self, raw_session_id: str, limit: int = 120
     ) -> list[UnifiedMessageItem]:
@@ -809,23 +840,31 @@ class AntigravityAdapter(BaseAgentAdapter):
                 start_idx = len(items)
                 consumed_bytes = cached[3]
                 for idx_offset, b_line in enumerate(inc_lines):
-                    u_line = b_line.decode("utf-8", errors="replace")
-                    parsed_ok = self._parse_agy_step_line(
-                        line=u_line,
+                    u_line = b_line.decode("utf-8", errors="replace").strip()
+                    if not u_line:
+                        consumed_bytes += len(b_line)
+                        continue
+
+                    # 语法完整性检验：测试 JSON 是否完整闭合
+                    try:
+                        step_obj = json.loads(u_line)
+                    except json.JSONDecodeError:
+                        # 仅当末行非空且 JSON 语法残缺时判定为流式写入未完成，游标保留在行首等待补齐
+                        if idx_offset == len(inc_lines) - 1:
+                            logger.debug(f"增量读取时末行正在流式写入中 ({raw_session_id[:8]})，游标安全保留在行首")
+                            break
+                        consumed_bytes += len(b_line)
+                        continue
+
+                    # 只要 JSON 语法完整，物理偏移量即合法推进（杜绝系统无气泡行导致游标脱节）
+                    consumed_bytes += len(b_line)
+                    self._parse_agy_step_dict(
+                        step=step_obj,
                         raw_session_id=raw_session_id,
                         fallback_idx=start_idx + idx_offset,
                         items=items,
                         last_assistant_container=last_assistant_box,
                     )
-                    if parsed_ok:
-                        consumed_bytes += len(b_line)
-                    else:
-                        # 安全防护：若为最后一行且非空但解析失败（极可能是流式刷盘截断），游标保留在该行行首等待下一轮补齐
-                        if idx_offset == len(inc_lines) - 1 and u_line.strip():
-                            logger.debug(f"增量读取时末行正在并发写入中 ({raw_session_id[:8]})，游标安全保留在行首")
-                            break
-                        if not u_line.strip():
-                            consumed_bytes += len(b_line)
 
                 self._messages_cache[raw_session_id] = (mtime_ns, fsize, items, consumed_bytes)
                 return items[-limit:] if limit > 0 else items
@@ -853,22 +892,28 @@ class AntigravityAdapter(BaseAgentAdapter):
 
         consumed_bytes = 0
         for idx, b_line in enumerate(raw_b_lines):
-            u_line = b_line.decode("utf-8", errors="replace")
-            parsed_ok = self._parse_agy_step_line(
-                line=u_line,
+            u_line = b_line.decode("utf-8", errors="replace").strip()
+            if not u_line:
+                consumed_bytes += len(b_line)
+                continue
+
+            try:
+                step_obj = json.loads(u_line)
+            except json.JSONDecodeError:
+                if idx == len(raw_b_lines) - 1:
+                    logger.debug(f"全量读取时末行正在流式写入中 ({raw_session_id[:8]})，游标安全保留在行首")
+                    break
+                consumed_bytes += len(b_line)
+                continue
+
+            consumed_bytes += len(b_line)
+            self._parse_agy_step_dict(
+                step=step_obj,
                 raw_session_id=raw_session_id,
                 fallback_idx=idx,
                 items=items,
                 last_assistant_container=last_assistant_box,
             )
-            if parsed_ok:
-                consumed_bytes += len(b_line)
-            else:
-                if idx == len(raw_b_lines) - 1 and u_line.strip():
-                    logger.debug(f"全量读取时末行正在并发写入中 ({raw_session_id[:8]})，游标安全保留在行首")
-                    break
-                if not u_line.strip():
-                    consumed_bytes += len(b_line)
 
         self._messages_cache[raw_session_id] = (mtime_ns, fsize, items, consumed_bytes)
         return items[-limit:] if limit > 0 else items
