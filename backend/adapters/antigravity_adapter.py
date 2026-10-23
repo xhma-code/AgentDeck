@@ -25,16 +25,20 @@ from typing import Any, Optional
 
 from backend.adapters.base import (
     BaseAgentAdapter,
+    BoundedLRUCache,
     SessionTokenUsage,
     UnifiedMessageItem,
     UnifiedSession,
     UnifiedToolCall,
     classify_tool_risk,
+    count_diff_lines,
     extract_interactive_questions,
     extract_tool_file_path,
     extract_tool_summary_and_diff,
+    is_read_only_tool,
     resolve_model_context_limit,
     truncate_large_output,
+    truncate_tool_output,
 )
 from backend.core.database import safe_query_external_sqlite, utc_now_iso
 from backend.core.logger import log_structured_error, logger
@@ -59,6 +63,79 @@ AGY_TOOL_OUTPUT_TYPES = {
 }
 
 
+
+
+LS_MODEL_ID_MAP: dict[str, str] = {
+    "model_placeholder_m418": "gemini-4-argon-medium",
+    "model_placeholder_m417": "gemini-4-argon-high",
+    "model_placeholder_m419": "gemini-4-argon-low",
+    "model_placeholder_m318": "gemini-3.8-flash-high",
+    "model_placeholder_m319": "gemini-3.8-flash-medium",
+    "model_placeholder_m320": "gemini-3.8-flash-low",
+    "model_placeholder_m400": "claude-opus-5-5-low",
+    "model_placeholder_m401": "claude-opus-5-5-medium",
+    "model_placeholder_m402": "claude-opus-5-5-high",
+    "model_placeholder_m403": "claude-sonnet-5-5-low",
+    "model_placeholder_m404": "claude-sonnet-5-5-medium",
+    "model_placeholder_m405": "claude-sonnet-5-5-high",
+    "model_openai_gpt_oss_120b_medium": "gpt-oss-120b-medium",
+}
+
+MODEL_ID_TO_LS_MAP: dict[str, str] = {
+    v.lower(): k.upper() for k, v in LS_MODEL_ID_MAP.items()
+}
+
+
+def extract_protobuf_model_id(data: bytes) -> Optional[str]:
+    """
+    从 Antigravity 会话 steps / gen_metadata 二进制 payload 中稳健提取模型标识符。
+    设计特性：
+    1. 兼容单字节与多字节 varint 长度标记，消除固定单字节匹配隐患。
+    2. 优先通过 model_enum 提取并映射至标准模型 ID。
+    3. 支持嵌入的标准模型名称模式兜底（gemini-*, claude-*, gpt-*）。
+    """
+    if not data or not isinstance(data, bytes):
+        return None
+
+    # 1. 优先定位 model_enum 键值（放宽长度与前缀字节匹配，避免单字节假设）
+    pattern = rb"model_enum[\x00-\x20\x80-\xff]+([A-Za-z0-9_]{4,40})"
+    for m in re.finditer(pattern, data):
+        raw_token = m.group(1).decode("ascii", errors="ignore").lower()
+        if raw_token in LS_MODEL_ID_MAP:
+            return LS_MODEL_ID_MAP[raw_token]
+        if raw_token.startswith("model_placeholder_"):
+            return LS_MODEL_ID_MAP.get(raw_token, raw_token)
+
+    # 2. 优先精确匹配已知权威模型 ID 字节序列（按长度倒序，防止前缀碰撞）
+    lower_data = data.lower()
+    for mid in sorted(LS_MODEL_ID_MAP.values(), key=len, reverse=True):
+        if mid.encode("ascii").lower() in lower_data:
+            return mid
+
+    # 3. 匹配可能未在静态表中的新嵌入标准模型名称字符串 (gemini-*, claude-*, gpt-*)
+    fallback_pattern = rb"(?:^|[^a-zA-Z0-9.-])(gemini-[a-zA-Z0-9.-]+|claude-[a-zA-Z0-9.-]+|gpt-[a-zA-Z0-9.-]+)(?:[^a-zA-Z0-9.-]|$)"
+    m_fb = re.search(fallback_pattern, data)
+    if m_fb:
+        return m_fb.group(1).decode("ascii", errors="ignore").lower()
+
+    return None
+
+
+def parse_state_selected_model(state_file: Path) -> Optional[str]:
+    """从电脑端 antigravity_state.pbtxt 中提取用户最后选定的真实模型 ID。"""
+    if not state_file.exists():
+        return None
+    try:
+        content = state_file.read_text(encoding="utf-8", errors="ignore")
+        m = re.search(r"last_selected_agent_model:\s*([A-Za-z0-9_]+)", content)
+        if m:
+            raw_id = m.group(1).lower()
+            return LS_MODEL_ID_MAP.get(raw_id, raw_id)
+    except Exception as exc:
+        logger.debug(f"读取电脑端配置 {state_file} 异常: {exc}")
+    return None
+
+
 def clean_agy_user_content(raw_text: str) -> str:
     """剥离 Antigravity transcript.jsonl 中包裹用户输入的外层 <USER_REQUEST> 与系统元数据标签，并清理 TUI 框线冗余空格。"""
     if not raw_text:
@@ -76,7 +153,23 @@ def clean_agy_user_content(raw_text: str) -> str:
     stripped = re.sub(r"<system-reminder>.*?</system-reminder>", "", stripped, flags=re.DOTALL)
     stripped = stripped.replace("<USER_REQUEST>", "").replace("</USER_REQUEST>", "").strip()
     stripped = re.sub(r"[ \t]{6,}", "  ", stripped)
-    return stripped or "（已确认执行 / Proceed）"
+    cleaned_prompt = clean_denied_tool_instruction(stripped)
+    return cleaned_prompt or "（已确认执行 / Proceed）"
+
+
+def clean_denied_tool_instruction(text: str) -> str:
+    """清洗带有内部控制标记的工具拒绝跟进文本，呈现更人性化的指导意见。"""
+    if not text:
+        return ""
+    m = re.match(
+        r"^\[已拒绝工具\s+[^\]]+\]\s*(请勿执行刚才的操作，按以下要求调整方案：)?\s*(.*)$",
+        text.strip(),
+        re.DOTALL,
+    )
+    if m:
+        feedback = m.group(2).strip()
+        return f"指导意见: {feedback}" if feedback else "已拒绝执行该工具"
+    return text
 
 
 class AntigravityAdapter(BaseAgentAdapter):
@@ -108,9 +201,46 @@ class AntigravityAdapter(BaseAgentAdapter):
         # (last_scan_ts, dict[cid, UnifiedSession])
         self._brain_scan_cache: tuple[float, dict[str, UnifiedSession]] = (0.0, {})
         # limit -> (db_sig, dict[cid, UnifiedSession])
-        self._summary_db_cache: dict[int, tuple[tuple[int, int, int, int], dict[str, UnifiedSession]]] = {}
+        self._summary_db_cache: BoundedLRUCache = BoundedLRUCache(maxsize=20)
         # raw_session_id -> (mtime_ns, file_size, list[UnifiedMessageItem])
-        self._messages_cache: dict[str, tuple[int, int, list[UnifiedMessageItem]]] = {}
+        self._messages_cache: BoundedLRUCache = BoundedLRUCache(maxsize=50)
+        # raw_session_id -> (mtime, model_name)
+        self._session_model_cache: BoundedLRUCache = BoundedLRUCache(maxsize=100)
+
+    def get_session_model(self, raw_session_id: str) -> Optional[str]:
+        """从 conversations/<id>.db 读取该会话最近使用的真实模型 ID（带 LRU 内存缓存与只读免锁直连）。"""
+        db_path = self.conversations_dir / f"{raw_session_id}.db"
+        if not db_path.exists():
+            if self.agent_type == "agy_cli":
+                ide_db = Path(os.path.expanduser(f"~/.gemini/antigravity/conversations/{raw_session_id}.db"))
+                if ide_db.exists():
+                    db_path = ide_db
+                else:
+                    return None
+            else:
+                return None
+
+        try:
+            mtime = db_path.stat().st_mtime
+            cached = self._session_model_cache.get(raw_session_id)
+            if cached and cached[0] == mtime:
+                return cached[1]
+
+            model_id: Optional[str] = None
+            sql = "SELECT data FROM gen_metadata ORDER BY idx DESC LIMIT 1"
+            rows = safe_query_external_sqlite(db_path, sql, ())
+            if rows and rows[0].get("data"):
+                data = rows[0]["data"]
+                if isinstance(data, bytes):
+                    model_id = extract_protobuf_model_id(data)
+
+            if model_id:
+                self._session_model_cache[raw_session_id] = (mtime, model_id)
+                return model_id
+        except Exception as exc:
+            logger.debug(f"读取会话 {raw_session_id[:8]} 模型异常: {exc}")
+
+        return None
 
     def _get_summary_db_sig(self) -> tuple[int, int, int, int]:
         m1, s1, m2, s2 = 0, 0, 0, 0
@@ -122,15 +252,26 @@ class AntigravityAdapter(BaseAgentAdapter):
             if wal_p.exists():
                 st2 = wal_p.stat()
                 m2, s2 = st2.st_mtime_ns, st2.st_size
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug(f"获取 summary db 签名异常: {exc}")
         return (m1, s1, m2, s2)
 
     def is_available(self) -> tuple[bool, str]:
         if self.summary_db_path.exists() or self.brain_dir.exists():
-            sessions = self.list_sessions(limit=200)
+            cnt = 0
+            if self.summary_db_path.exists():
+                try:
+                    rows = safe_query_external_sqlite(
+                        self.summary_db_path,
+                        "SELECT count(*) as c FROM conversation_summaries WHERE killed = 0",
+                    )
+                    if rows and isinstance(rows, list):
+                        cnt = int(rows[0].get("c") or 0)
+                except Exception as exc:
+                    logger.debug(f"统计 conversation_summaries 会话数异常: {exc}")
+                    cnt = 0
             mode_note = " (只读镜像 + 安全克隆接力)" if self.agent_type == "agy_ide" else " (stream-json 双向管道)"
-            return True, f"已挂载 {self.root_dir.name}: 发现 {len(sessions)} 个会话{mode_note}"
+            return True, f"已挂载 {self.root_dir.name}: 发现 {cnt} 个会话{mode_note}"
         return False, f"未找到数据目录 {self.root_dir}"
 
     def get_watch_paths(self) -> list[Path]:
@@ -173,26 +314,31 @@ class AntigravityAdapter(BaseAgentAdapter):
                     else:
                         status = "idle"
 
-                    raw_title = re.sub(r"\s+", " ", (r.get("title") or "").strip())
-                    raw_preview = re.sub(r"\s+", " ", (r.get("preview") or "").strip()).strip("│ ")
+                    raw_title = clean_denied_tool_instruction(re.sub(r"\s+", " ", (r.get("title") or "").strip()))
+                    raw_preview = clean_denied_tool_instruction(re.sub(r"\s+", " ", (r.get("preview") or "").strip()).strip("│ "))
+
+                    # 过滤单测无脑拉起外部 CLI 产生且无真实 transcript 文件的幽灵残存会话
+                    tp = self.brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+                    if not tp.exists() and "不允许执行危险命令" in str(r.get("preview") or ""):
+                        continue
 
                     # 过滤无标题且无预览的内部 Subagent 会话（首条消息为 SYSTEM_MESSAGE 而非用户输入）
                     if not raw_title and not raw_preview:
-                        tp = self.brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
                         if tp.exists():
                             try:
                                 with open(tp, "r", encoding="utf-8", errors="replace") as tf:
                                     first_ln = tf.readline().strip()
                                 if first_ln and '"SYSTEM_MESSAGE"' in first_ln:
                                     continue
-                            except OSError:
-                                pass
+                            except OSError as exc:
+                                logger.debug(f"检查内部子会话首行跳过 ({cid[:8]}): {exc}")
 
                     title = raw_title or (raw_preview[:48] if raw_preview else f"会话 {cid[:8]}")
                     preview = raw_preview or title
                     project_path = decode_workspace_uri(str(r.get("workspace_uris") or ""))
                     updated_at = str(r.get("last_modified_time") or utc_now_iso()).replace(" ", "T")
 
+                    model_name = self.get_session_model(cid) or ""
                     sessions_map[cid] = UnifiedSession(
                         unified_id=f"{self.agent_type}:{cid}",
                         agent_type=self.agent_type,
@@ -204,6 +350,7 @@ class AntigravityAdapter(BaseAgentAdapter):
                         status=status,
                         step_count=int(r.get("step_count") or 0),
                         updated_at=updated_at,
+                        model_name=model_name,
                         desktop_locked=(self.agent_type == "agy_ide" and not_idle),
                     )
                 self._summary_db_cache[limit] = (
@@ -238,13 +385,14 @@ class AntigravityAdapter(BaseAgentAdapter):
                                         ).strip()
                                         if cleaned_first:
                                             fallback_title = cleaned_first[:48]
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.debug(f"提取活跃会话标题异常 ({cid[:8]}): {exc}")
 
                             stat = transcript.stat()
                             from datetime import datetime, timezone
 
                             mtime_iso = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+                            model_name = self.get_session_model(cid) or ""
                             new_brain_map[cid] = UnifiedSession(
                                 unified_id=f"{self.agent_type}:{cid}",
                                 agent_type=self.agent_type,
@@ -256,6 +404,7 @@ class AntigravityAdapter(BaseAgentAdapter):
                                 status="idle",
                                 step_count=0,
                                 updated_at=mtime_iso,
+                                model_name=model_name,
                             )
                 except Exception as exc:
                     log_structured_error(
@@ -274,10 +423,157 @@ class AntigravityAdapter(BaseAgentAdapter):
         sorted_list = sorted(sessions_map.values(), key=lambda s: s.updated_at, reverse=True)
         return sorted_list[:limit]
 
+    def _parse_agy_step_line(
+        self,
+        line: str,
+        raw_session_id: str,
+        fallback_idx: int,
+        items: list[UnifiedMessageItem],
+        last_assistant_container: list[Optional[UnifiedMessageItem]],
+    ) -> bool:
+        """解析单行 transcript.jsonl 数据并映射追加至 items 列表中。"""
+        line = line.strip()
+        if not line:
+            return False
+        try:
+            step = json.loads(line)
+        except json.JSONDecodeError:
+            # 忽略正在刷盘的末尾半截 JSON 行
+            return False
+
+        step_index = int(step.get("step_index", fallback_idx))
+        step_type = str(step.get("type") or "")
+        source = str(step.get("source") or "")
+        created_at = str(step.get("created_at") or "")
+        status = str(step.get("status") or "DONE")
+        content_raw = str(step.get("content") or "")
+        thinking_raw = str(step.get("thinking") or "").strip()
+        raw_tool_calls = step.get("tool_calls") or []
+
+        if step_type == "USER_INPUT" or source == "USER_EXPLICIT":
+            clean_text = clean_agy_user_content(content_raw)
+            items.append(
+                UnifiedMessageItem(
+                    item_id=f"{raw_session_id}:step:{step_index}",
+                    step_index=step_index,
+                    role="user",
+                    created_at=created_at,
+                    content=clean_text,
+                    status=status,
+                )
+            )
+            return True
+        elif step_type == "ASK_QUESTION":
+            ans_lines = [
+                ln.strip()
+                for ln in content_raw.splitlines()
+                if ln.strip() and not ln.startswith(("Created At:", "Completed At:"))
+            ]
+            ans_text = "\n".join(ans_lines).strip()
+            if ans_text:
+                items.append(
+                    UnifiedMessageItem(
+                        item_id=f"{raw_session_id}:step:{step_index}",
+                        step_index=step_index,
+                        role="user",
+                        created_at=created_at,
+                        content=ans_text,
+                        status=status,
+                    )
+                )
+            return True
+        elif step_type in AGY_TOOL_OUTPUT_TYPES or "TOOL" in step_type:
+            last_assistant_item = last_assistant_container[0]
+            if content_raw and last_assistant_item and last_assistant_item.tool_calls:
+                placed = False
+                for tc in last_assistant_item.tool_calls:
+                    if not tc.output:
+                        trunc_out, is_trunc, full_len = truncate_tool_output(tc.name, content_raw)
+                        tc.output = trunc_out
+                        tc.is_truncated = is_trunc
+                        tc.full_output_len = full_len
+                        placed = True
+                        break
+                if not placed:
+                    last_tc = last_assistant_item.tool_calls[-1]
+                    if is_read_only_tool(last_tc.name):
+                        trunc_out, is_trunc, full_len = truncate_tool_output(last_tc.name, content_raw)
+                        last_tc.output = trunc_out
+                        last_tc.full_output_len += full_len
+                    else:
+                        combined = f"{last_tc.output}\n---\n{content_raw}" if last_tc.output else content_raw
+                        c_out, c_trunc, c_len = truncate_tool_output(last_tc.name, combined)
+                        last_tc.output = c_out
+                        last_tc.is_truncated = c_trunc
+                        last_tc.full_output_len = last_tc.full_output_len + c_len
+            return True
+        elif step_type == "PLANNER_RESPONSE" or (
+            source == "MODEL" and (content_raw or thinking_raw or raw_tool_calls)
+        ):
+            parsed_tools: list[UnifiedToolCall] = []
+            extracted_question_md: list[str] = []
+            parsed_questions: list[dict[str, Any]] = []
+            for tc_idx, tc in enumerate(raw_tool_calls):
+                if not isinstance(tc, dict):
+                    continue
+                t_name = str(tc.get("name") or tc.get("tool_name") or "tool")
+                t_args = tc.get("arguments") or tc.get("args") or tc.get("input") or {}
+                if t_name == "ask_question" and isinstance(t_args, dict):
+                    q_items = extract_interactive_questions(t_name, t_args)
+                    parsed_questions.extend(q_items)
+                    first_q = q_items[0]["question"] if q_items else "交互式提问"
+                    parsed_tools.append(
+                        UnifiedToolCall(
+                            tool_id=str(tc.get("id") or f"tc_{step_index}_{tc_idx}"),
+                            name=t_name,
+                            args_summary=first_q[:120],
+                            status=status,
+                        )
+                    )
+                    continue
+                args_summary, diff_text = extract_tool_summary_and_diff(t_name, t_args)
+                add_c, del_c = count_diff_lines(diff_text)
+                f_path = extract_tool_file_path(t_args)
+                risk = classify_tool_risk(t_name, args_summary)
+                parsed_tools.append(
+                    UnifiedToolCall(
+                        tool_id=str(tc.get("id") or f"tc_{step_index}_{tc_idx}"),
+                        name=t_name,
+                        args_summary=args_summary,
+                        diff_text=diff_text,
+                        diff_add_count=add_c,
+                        diff_del_count=del_c,
+                        risk_level=risk,
+                        status=status,
+                        file_path=f_path,
+                    )
+                )
+
+            final_content = content_raw.strip()
+            if not final_content and not parsed_questions and extracted_question_md:
+                final_content = "\n\n".join(extracted_question_md)
+
+            msg_item = UnifiedMessageItem(
+                item_id=f"{raw_session_id}:step:{step_index}",
+                step_index=step_index,
+                role="assistant",
+                created_at=created_at,
+                content=final_content,
+                thinking=thinking_raw,
+                tool_calls=parsed_tools,
+                questions=parsed_questions,
+                status=status,
+            )
+            items.append(msg_item)
+            if parsed_tools:
+                last_assistant_container[0] = msg_item
+            return True
+        return False
+
     def get_session_messages(
         self, raw_session_id: str, limit: int = 120
     ) -> list[UnifiedMessageItem]:
-        """解析 brain/<id>/.system_generated/logs/transcript.jsonl 为结构化对话卡片流（带 mtime_ns 内存缓存）。"""
+        """解析 brain/<id>/.system_generated/logs/transcript.jsonl 为结构化对话卡片流（带 mtime_ns/文件游标增量缓存）。"""
         transcript_path = (
             self.brain_dir / raw_session_id / ".system_generated" / "logs" / "transcript.jsonl"
         )
@@ -294,13 +590,59 @@ class AntigravityAdapter(BaseAgentAdapter):
         if cached and cached[0] == mtime_ns and cached[1] == fsize:
             return cached[2][-limit:] if limit > 0 else list(cached[2])
 
-        items: list[UnifiedMessageItem] = []
-        # 记录最近一次 assistant 消息以便将紧随其后的 TOOL_RESPONSE 输出挂载到对应工具卡片上
-        last_assistant_item: Optional[UnifiedMessageItem] = None
+        # 增量 Seek 读取判定：文件发生追加写且先前有成功读取记录
+        if (
+            cached
+            and len(cached) >= 4
+            and fsize > cached[1]
+            and cached[3] > 0
+        ):
+            try:
+                items = list(cached[2])
+                last_assistant = next(
+                    (it for it in reversed(items) if it.role == "assistant" and it.tool_calls),
+                    None,
+                )
+                last_assistant_box: list[Optional[UnifiedMessageItem]] = [last_assistant]
+                with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(cached[3])
+                    inc_lines = f.readlines()
+                    new_offset = f.tell()
 
+                # 安全防护：若最后一行正在刷盘尚未写出换行符，丢弃半截行并回退游标至上一合法边界
+                if inc_lines and not inc_lines[-1].endswith(("\n", "\r")):
+                    incomplete_len = len(inc_lines[-1].encode("utf-8", errors="replace"))
+                    inc_lines = inc_lines[:-1]
+                    new_offset = max(cached[3], new_offset - incomplete_len)
+
+                start_idx = len(items)
+                for idx_offset, ln in enumerate(inc_lines):
+                    self._parse_agy_step_line(
+                        line=ln,
+                        raw_session_id=raw_session_id,
+                        fallback_idx=start_idx + idx_offset,
+                        items=items,
+                        last_assistant_container=last_assistant_box,
+                    )
+
+                self._messages_cache[raw_session_id] = (mtime_ns, fsize, items, new_offset)
+                return items[-limit:] if limit > 0 else items
+            except Exception as inc_exc:
+                logger.debug(f"增量读取 Antigravity 会话 {raw_session_id[:8]} 异常，回退全量解析: {inc_exc}")
+
+        # 全量冷读取
+        items: list[UnifiedMessageItem] = []
+        last_assistant_box = [None]
+        raw_lines: list[str] = []
+        byte_offset = 0
         try:
             with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
                 raw_lines = f.readlines()
+                byte_offset = f.tell()
+            if raw_lines and not raw_lines[-1].endswith(("\n", "\r")):
+                incomplete_len = len(raw_lines[-1].encode("utf-8", errors="replace"))
+                raw_lines = raw_lines[:-1]
+                byte_offset = max(0, byte_offset - incomplete_len)
         except Exception as exc:
             log_structured_error(
                 problem=f"读取 {self.agent_label} 会话日志失败 ({raw_session_id[:8]})",
@@ -311,135 +653,15 @@ class AntigravityAdapter(BaseAgentAdapter):
             return []
 
         for idx, line in enumerate(raw_lines):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                step = json.loads(line)
-            except json.JSONDecodeError:
-                # 遵循 MalformedJsonlLineError 规范：忽略正在刷盘的末尾半截 JSON 行
-                continue
+            self._parse_agy_step_line(
+                line=line,
+                raw_session_id=raw_session_id,
+                fallback_idx=idx,
+                items=items,
+                last_assistant_container=last_assistant_box,
+            )
 
-            step_index = int(step.get("step_index", idx))
-            step_type = str(step.get("type") or "")
-            source = str(step.get("source") or "")
-            created_at = str(step.get("created_at") or "")
-            status = str(step.get("status") or "DONE")
-            content_raw = str(step.get("content") or "")
-            thinking_raw = str(step.get("thinking") or "").strip()
-            raw_tool_calls = step.get("tool_calls") or []
-
-            if step_type == "USER_INPUT" or source == "USER_EXPLICIT":
-                clean_text = clean_agy_user_content(content_raw)
-                items.append(
-                    UnifiedMessageItem(
-                        item_id=f"{raw_session_id}:step:{step_index}",
-                        step_index=step_index,
-                        role="user",
-                        created_at=created_at,
-                        content=clean_text,
-                        status=status,
-                    )
-                )
-            elif step_type == "ASK_QUESTION":
-                # 用户在交互式提问模态框中选择的答案，提取 A1/A2 行展示为用户回答气泡
-                ans_lines = [
-                    ln.strip()
-                    for ln in content_raw.splitlines()
-                    if ln.strip() and not ln.startswith(("Created At:", "Completed At:"))
-                ]
-                ans_text = "\n".join(ans_lines).strip()
-                if ans_text:
-                    items.append(
-                        UnifiedMessageItem(
-                            item_id=f"{raw_session_id}:step:{step_index}",
-                            step_index=step_index,
-                            role="user",
-                            created_at=created_at,
-                            content=ans_text,
-                            status=status,
-                        )
-                    )
-            elif step_type in AGY_TOOL_OUTPUT_TYPES or "TOOL" in step_type:
-                # 将工具执行输出回填到上一条 Assistant 消息的对应工具调用卡片上，严禁作为普通聊天气泡刷屏
-                if content_raw and last_assistant_item and last_assistant_item.tool_calls:
-                    trunc_out, is_trunc, full_len = truncate_large_output(content_raw)
-                    placed = False
-                    for tc in last_assistant_item.tool_calls:
-                        if not tc.output:
-                            tc.output = trunc_out
-                            tc.is_truncated = is_trunc
-                            tc.full_output_len = full_len
-                            placed = True
-                            break
-                    if not placed:
-                        last_tc = last_assistant_item.tool_calls[-1]
-                        combined = f"{last_tc.output}\n---\n{trunc_out}" if last_tc.output else trunc_out
-                        c_out, c_trunc, c_len = truncate_large_output(combined)
-                        last_tc.output = c_out
-                        last_tc.is_truncated = c_trunc or is_trunc
-                        last_tc.full_output_len = last_tc.full_output_len + full_len
-            elif step_type == "PLANNER_RESPONSE" or (
-                source == "MODEL" and (content_raw or thinking_raw or raw_tool_calls)
-            ):
-                parsed_tools: list[UnifiedToolCall] = []
-                extracted_question_md: list[str] = []
-                parsed_questions: list[dict[str, Any]] = []
-                for tc_idx, tc in enumerate(raw_tool_calls):
-                    if not isinstance(tc, dict):
-                        continue
-                    t_name = str(tc.get("name") or tc.get("tool_name") or "tool")
-                    t_args = tc.get("arguments") or tc.get("args") or tc.get("input") or {}
-                    if t_name == "ask_question" and isinstance(t_args, dict):
-                        q_items = extract_interactive_questions(t_name, t_args)
-                        parsed_questions.extend(q_items)
-                        first_q = q_items[0]["question"] if q_items else "交互式提问"
-                        # 记录为正规工具调用，避免收纳栏工具计数为 0
-                        parsed_tools.append(
-                            UnifiedToolCall(
-                                tool_id=str(tc.get("id") or f"tc_{step_index}_{tc_idx}"),
-                                name=t_name,
-                                args_summary=first_q[:120],
-                                status=status,
-                            )
-                        )
-                        continue
-                    args_summary, diff_text = extract_tool_summary_and_diff(t_name, t_args)
-                    f_path = extract_tool_file_path(t_args)
-                    risk = classify_tool_risk(t_name, args_summary)
-                    parsed_tools.append(
-                        UnifiedToolCall(
-                            tool_id=str(tc.get("id") or f"tc_{step_index}_{tc_idx}"),
-                            name=t_name,
-                            args_summary=args_summary,
-                            diff_text=diff_text,
-                            risk_level=risk,
-                            status=status,
-                            file_path=f_path,
-                        )
-                    )
-
-                final_content = content_raw.strip()
-                # 仅在既无正文且无结构化 questions 交互卡片时才回退拼接 Markdown，避免同一问题重复展示双份
-                if not final_content and not parsed_questions and extracted_question_md:
-                    final_content = "\n\n".join(extracted_question_md)
-
-                msg_item = UnifiedMessageItem(
-                    item_id=f"{raw_session_id}:step:{step_index}",
-                    step_index=step_index,
-                    role="assistant",
-                    created_at=created_at,
-                    content=final_content,
-                    thinking=thinking_raw,
-                    tool_calls=parsed_tools,
-                    questions=parsed_questions,
-                    status=status,
-                )
-                items.append(msg_item)
-                if parsed_tools:
-                    last_assistant_item = msg_item
-
-        self._messages_cache[raw_session_id] = (mtime_ns, fsize, items)
+        self._messages_cache[raw_session_id] = (mtime_ns, fsize, items, byte_offset)
         return items[-limit:] if limit > 0 else items
 
     def send_prompt_via_ls(
@@ -451,25 +673,6 @@ class AntigravityAdapter(BaseAgentAdapter):
     def cancel_via_ls(self, raw_session_id: str) -> bool:
         """封装下沉：尝试通过桌面端 Language Server Connect-RPC 取消会话。"""
         return self.ls_bridge.cancel_cascade(raw_session_id)
-
-    def get_session_messages_page(
-        self,
-        raw_session_id: str,
-        limit: int = 30,
-        before_step: Optional[int] = None,
-    ) -> tuple[list[UnifiedMessageItem], int, bool]:
-        """
-        利用内存态缓存结构直接进行增量/历史切片，大幅降低轮询时的 transcript.jsonl 重复解析开销。
-        """
-        all_items = self.get_session_messages(raw_session_id, limit=0)
-        total_count = len(all_items)
-        if before_step is not None:
-            filtered = [it for it in all_items if it.step_index < before_step]
-        else:
-            filtered = all_items
-        page_items = filtered[-limit:] if limit > 0 else filtered
-        has_more = len(filtered) > len(page_items)
-        return page_items, total_count, has_more
 
     def get_full_step_output(self, raw_session_id: str, step_index: int) -> str:
 
@@ -678,8 +881,48 @@ class AntigravityAdapter(BaseAgentAdapter):
         return data
 
     def get_default_model_id(self) -> str:
-        """获取与电脑端 Antigravity IDE 保持实时一致的默认模型 ID。"""
-        return self.ls_bridge.get_default_model_id()
+        """获取与电脑端 Antigravity IDE / CLI 真实选定保持实时一致的默认模型 ID。"""
+        # 1. 优先从当前 root_dir 下的 antigravity_state.pbtxt 读取用户在电脑端最后选定的真实模型
+        state_file = self.root_dir / "antigravity_state.pbtxt"
+        if not state_file.exists() and self.agent_type == "agy_cli":
+            ide_state = Path(os.path.expanduser("~/.gemini/antigravity/antigravity_state.pbtxt"))
+            if ide_state.exists():
+                state_file = ide_state
+
+        parsed_model = parse_state_selected_model(state_file)
+        if parsed_model:
+            return parsed_model
+
+        # 2. 尝试从最近活跃的真实会话中推断当前电脑端正在使用的模型
+        try:
+            conv_dirs = [self.conversations_dir]
+            if self.agent_type == "agy_cli":
+                conv_dirs.append(Path(os.path.expanduser("~/.gemini/antigravity/conversations")))
+            for cdir in conv_dirs:
+                if cdir.exists():
+                    db_files = sorted(
+                        cdir.glob("*.db"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                    for dbf in db_files[:3]:
+                        recent_cid = dbf.stem
+                        m = self.get_session_model(recent_cid)
+                        if m:
+                            return m
+        except Exception as exc:
+            logger.debug(f"从最近活跃会话推断默认模型异常: {exc}")
+
+        # 3. 从 LS Bridge Connect-RPC 获取
+        ls_def = self.ls_bridge.get_default_model_id()
+        if ls_def:
+            return ls_def
+
+        # 4. 终极动态兜底：从对应 Agent 的注册模型清单中选择第 1 个推荐模型，不硬编码任何固定值
+        from backend.engines.process_pool import AGENT_MODELS
+        base_models = AGENT_MODELS.get(self.agent_type, [])
+        rec_model = next((m["id"] for m in base_models if m.get("is_recommended")), None)
+        return rec_model or (base_models[0]["id"] if base_models else "gemini-3.8-flash-medium")
 
     def get_available_models_with_quota(self) -> list[dict[str, Any]]:
         """将 LS 实时 quota 剩余比例与默认模型合并进模型清单，严格保持与电脑端 IDE 排序一致。"""
@@ -807,25 +1050,28 @@ class AntigravityLanguageServerBridge:
        实现手机与电脑桌面 IDE 窗口 100% 同步（当桌面端 IDE 未开启时自动回退至 `fork_ide_session_to_cli`）。
     """
 
+    _cached_hub: Optional[dict[str, Any]] = None
+    _last_detect_ts: float = 0.0
+
     def __init__(self, cache_ttl_sec: float = 15.0) -> None:
         self.cache_ttl_sec = cache_ttl_sec
-        self._cached_hub: Optional[dict[str, Any]] = None
-        self._last_detect_ts: float = 0.0
 
-    def get_cached_hub(self) -> Optional[dict[str, Any]]:
+    @classmethod
+    def get_cached_hub(cls) -> Optional[dict[str, Any]]:
         """非阻塞获取已缓存的 Hub LS 连接信息。"""
-        return self._cached_hub
+        return cls._cached_hub
 
     def detect_hub(self, force: bool = False) -> Optional[dict[str, Any]]:
         """探测本机运行中的 Antigravity Hub Language Server 端口与 CSRF Token。"""
+        cls = self.__class__
         now = time.monotonic()
-        if not force and self._last_detect_ts > 0 and (now - self._last_detect_ts) < self.cache_ttl_sec:
-            return self._cached_hub
+        if not force and cls._last_detect_ts > 0 and (now - cls._last_detect_ts) < self.cache_ttl_sec:
+            return cls._cached_hub
 
-        self._last_detect_ts = now
+        cls._last_detect_ts = now
         candidates = self._scan_ls_processes()
         if not candidates:
-            self._cached_hub = None
+            cls._cached_hub = None
             return None
 
         for pid, csrf_token in candidates:
@@ -833,15 +1079,16 @@ class AntigravityLanguageServerBridge:
             for port in ports:
                 scheme = self._probe_connect_port(port, csrf_token)
                 if scheme:
-                    self._cached_hub = {
+                    hub_info = {
                         "pid": pid,
                         "port": port,
                         "csrf_token": csrf_token,
                         "scheme": scheme,
                     }
-                    return self._cached_hub
+                    cls._cached_hub = hub_info
+                    return hub_info
 
-        self._cached_hub = None
+        cls._cached_hub = None
         return None
 
     @staticmethod
@@ -995,9 +1242,16 @@ class AntigravityLanguageServerBridge:
             "items": [{"text": prompt}],
         }
         if model_id and model_id != "default":
+            ls_model = MODEL_ID_TO_LS_MAP.get(model_id.lower(), model_id)
+            if ls_model.lower().startswith("model_placeholder_"):
+                ls_model = ls_model.upper()
             payload["cascadeConfig"] = {
                 "plannerConfig": {
-                    "requestedModel": {"modelOrAlias": model_id},
+                    "requestedModel": {
+                        "modelOrAlias": {
+                            "model": ls_model,
+                        }
+                    },
                 }
             }
 
@@ -1043,7 +1297,7 @@ class AntigravityLanguageServerBridge:
         return ok
 
     def get_default_model_id(self) -> str:
-        """从 LS 获取电脑端当前选中的默认模型 ID（例如 gemini-4-argon-medium）。"""
+        """从 LS Connect-RPC 获取当前服务端推荐或覆盖的默认模型 ID（由外层 Adapter 进行业务兜底）。"""
         if not hasattr(self, "_cached_default_model"):
             self.get_cascade_model_configs()
         def_raw = getattr(self, "_cached_default_model", "")
@@ -1052,7 +1306,7 @@ class AntigravityLanguageServerBridge:
             if mapped:
                 return mapped
             return def_raw
-        return "gemini-4-argon-medium"
+        return ""
 
     def get_cascade_model_configs(self) -> list[dict[str, Any]]:
         """从 LS Connect-RPC 获取包含实时配额剩余比例的真实模型清单（带 10s 内存缓存）。"""
@@ -1063,6 +1317,8 @@ class AntigravityLanguageServerBridge:
 
         hub = self.detect_hub()
         if not hub:
+            self._cached_models = []
+            self._cached_models_ts = now
             return []
 
         ok, raw = self._raw_post(
@@ -1074,6 +1330,8 @@ class AntigravityLanguageServerBridge:
             timeout=2.5,
         )
         if not ok or not raw:
+            self._cached_models = []
+            self._cached_models_ts = now
             return []
 
         results = []
@@ -1124,18 +1382,4 @@ class AntigravityLanguageServerBridge:
         return results
 
 
-LS_MODEL_ID_MAP: dict[str, str] = {
-    "model_placeholder_m418": "gemini-4-argon-medium",
-    "model_placeholder_m417": "gemini-4-argon-high",
-    "model_placeholder_m419": "gemini-4-argon-low",
-    "model_placeholder_m318": "gemini-3.8-flash-high",
-    "model_placeholder_m319": "gemini-3.8-flash-medium",
-    "model_placeholder_m320": "gemini-3.8-flash-low",
-    "model_placeholder_m400": "claude-opus-5-5-low",
-    "model_placeholder_m401": "claude-opus-5-5-medium",
-    "model_placeholder_m402": "claude-opus-5-5-high",
-    "model_placeholder_m403": "claude-sonnet-5-5-low",
-    "model_placeholder_m404": "claude-sonnet-5-5-medium",
-    "model_placeholder_m405": "claude-sonnet-5-5-high",
-    "model_openai_gpt_oss_120b_medium": "gpt-oss-120b-medium",
-}
+

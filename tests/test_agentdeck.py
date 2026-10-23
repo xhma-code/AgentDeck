@@ -16,6 +16,8 @@ import json
 import sqlite3
 import subprocess
 from pathlib import Path
+import unittest.mock
+from unittest.mock import patch, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,6 +27,7 @@ from backend.adapters.antigravity_adapter import (
     fork_ide_session_to_cli,
 )
 from backend.adapters.base import (
+    UnifiedToolCall,
     build_unified_diff,
     classify_tool_risk,
     truncate_large_output,
@@ -333,6 +336,7 @@ async def test_websocket_snapshot_and_approval_flow(tmp_path: Path):
 
     # 模拟一个挂起中的高危工具调用审批
     import asyncio
+    import unittest.mock
 
     approval_task = asyncio.create_task(
         orchestrator.request_mobile_tool_approval(
@@ -984,6 +988,7 @@ async def test_direct_dispatch_active_state_and_abort_cancellation(tmp_path: Pat
     3. background_tasks 集合强引用保护。
     """
     import asyncio
+    import unittest.mock
     from backend.core.database import MetaDatabase
     from backend.engines.process_pool import AgentOrchestrator
 
@@ -1310,6 +1315,7 @@ def test_architecture_deepening_session_token_usage_and_cache(tmp_path: Path):
 async def test_architecture_deepening_pending_approval_direct_object(tmp_path: Path):
     """测试架构深化：request_mobile_tool_approval 接收 PendingApproval 对象直接调用消除参数成群传递。"""
     import asyncio
+    import unittest.mock
     from backend.core.database import MetaDatabase
     from backend.engines.process_pool import AgentOrchestrator, PendingApproval
     from backend.core.database import utc_now_iso
@@ -1332,6 +1338,9 @@ async def test_architecture_deepening_pending_approval_direct_object(tmp_path: P
         created_at=utc_now_iso(),
     )
 
+    # Mock 发送后续指导提示，防止单测拉起真实外部宿主机进程或污染外部数据库
+    orchestrator.send_prompt_to_session = unittest.mock.AsyncMock(return_value={"ok": True})
+
     t = asyncio.create_task(orchestrator.request_mobile_tool_approval(pa))
     await asyncio.sleep(0.02)
 
@@ -1347,6 +1356,12 @@ async def test_architecture_deepening_pending_approval_direct_object(tmp_path: P
     assert res["ok"] is True
     out = await t
     assert out["decision"] == "denied"
+
+    # 验证向会话发送替代指导 prompt，且未污染宿主机真实进程
+    await asyncio.sleep(0.05)
+    orchestrator.send_prompt_to_session.assert_awaited_once()
+    call_args = orchestrator.send_prompt_to_session.await_args
+    assert "不允许执行危险命令" in call_args.kwargs.get("prompt", "")
 
 
 def test_normalize_execution_mode_per_agent(tmp_path: Path):
@@ -1415,6 +1430,7 @@ async def test_security_cswsh_and_tailscale_cgnat(tmp_path: Path):
         created_at="2026-10-23T00:00:00Z",
     )
     import asyncio
+    import unittest.mock
     fut = asyncio.get_running_loop().create_future()
     orch.pending_approvals["claude_code:sess_mock"] = pa
     orch._approval_futures["claude_code:sess_mock"] = fut
@@ -1562,6 +1578,598 @@ def test_app_version_and_dynamic_asset_fingerprint(tmp_path: Path):
         icon_res = client.get("/apple-touch-icon.png")
         assert icon_res.status_code == 200
         assert icon_res.headers["content-type"] == "image/png"
+
+
+def test_bounded_lru_cache():
+    """验证 BoundedLRUCache 容量限制、LRU 淘汰机制与访问时间刷新。"""
+    from backend.adapters.base import BoundedLRUCache
+
+    cache = BoundedLRUCache(maxsize=3)
+    cache["a"] = 1
+    cache["b"] = 2
+    cache["c"] = 3
+    assert len(cache) == 3
+
+    # 访问 "a"，使其变为最新使用
+    val_a = cache.get("a")
+    assert val_a == 1
+
+    # 插入 "d"，应淘汰最旧未访问的 "b"
+    cache["d"] = 4
+    assert len(cache) == 3
+    assert "b" not in cache
+    assert "a" in cache
+    assert "c" in cache
+    assert "d" in cache
+
+    # 通过 __getitem__ 访问 "c"，使其变为最新
+    _ = cache["c"]
+    cache["e"] = 5
+    assert "a" not in cache
+    assert "c" in cache
+    assert "d" in cache
+    assert "e" in cache
+
+    # 测试 setdefault 与 update 均遵守 maxsize 约束
+    cache.setdefault("f", 6)
+    assert len(cache) == 3
+    assert "d" not in cache
+
+    cache.update({"g": 7, "h": 8})
+    assert len(cache) == 3
+    assert list(cache.keys()) == ["f", "g", "h"]
+
+
+def test_claude_scan_cache_and_invalidation(tmp_path: Path):
+    """测试 ClaudeCodeAdapter 扫描短效缓存与 watchfiles 联动即时失效。"""
+    from backend.adapters.claude_adapter import ClaudeCodeAdapter
+
+    p_dir = tmp_path / "claude_projects"
+    proj_a = p_dir / "proj_a"
+    proj_a.mkdir(parents=True)
+    sess_file = proj_a / "sess1.jsonl"
+    sess_file.write_text('{"type": "user", "text": "hello"}\n', encoding="utf-8")
+
+    adapter = ClaudeCodeAdapter(projects_dir=p_dir)
+    res1 = adapter.list_sessions(limit=10)
+    assert len(res1) == 1
+    assert adapter._dir_scan_cache[1] == [sess_file]
+
+    # 添加新文件，但在 2.5s TTL 内直接读取应命中扫描短效缓存
+    sess_file2 = proj_a / "sess2.jsonl"
+    sess_file2.write_text('{"type": "user", "text": "world"}\n', encoding="utf-8")
+    res2 = adapter.list_sessions(limit=10)
+    # 命中缓存，仍然是 1 个会话候选
+    assert len(res2) == 1
+
+    # 手动或通过 watchfiles 触发失效
+    adapter.invalidate_scan_cache()
+    res3 = adapter.list_sessions(limit=10)
+    assert len(res3) == 2
+
+
+def test_orchestrator_process_concurrency_and_etag(tmp_path: Path):
+    """测试进程并发控制信号量与 /sessions 304 协商缓存。"""
+    from backend.app import create_app
+    from fastapi.testclient import TestClient
+
+    db = MetaDatabase(db_path=tmp_path / "etag_test.db")
+    app = create_app(meta_db=db)
+    orch = app.state.orchestrator
+
+    # 1. 验证子进程并发信号量初始配置
+    assert orch.max_concurrent_subprocesses == 3
+    assert orch.process_semaphore._value == 3
+
+    with TestClient(app) as client:
+        # 2. 初始请求获取 ETag
+        res = client.get("/api/v1/sessions?agent_type=all&limit=40")
+        assert res.status_code == 200
+        etag = res.headers.get("etag")
+        assert etag and etag.startswith('W/"')
+
+        # 3. 携带当前匹配的 ETag 请求应返回 304 Not Modified
+        current_etag = orch.get_sessions_etag("all", 40)
+        res_304 = client.get(
+            "/api/v1/sessions?agent_type=all&limit=40",
+            headers={"If-None-Match": current_etag},
+        )
+        assert res_304.status_code == 304
+        assert not res_304.text
+
+        # 4. 状态变更后（bump_version）再带旧 ETag 应重新返回 200
+        orch.bump_version()
+        res_fresh = client.get(
+            "/api/v1/sessions?agent_type=all&limit=40",
+            headers={"If-None-Match": current_etag},
+        )
+        assert res_fresh.status_code == 200
+        new_etag = res_fresh.headers.get("etag")
+        assert new_etag != current_etag
+
+        # 5. 测试 /messages 的 304 协商缓存
+        m_res = client.get("/api/v1/sessions/claude_code:dummy_session/messages?limit=30")
+        assert m_res.status_code == 200
+        m_etag = m_res.headers.get("etag")
+        assert m_etag and m_etag.startswith('W/"msg-')
+
+        m_res_304 = client.get(
+            "/api/v1/sessions/claude_code:dummy_session/messages?limit=30",
+            headers={"If-None-Match": m_etag},
+        )
+        assert m_res_304.status_code == 304
+        assert not m_res_304.text
+
+
+@pytest.mark.asyncio
+async def test_realtime_event_bus_isolated():
+    """验证解耦后的 RealtimeEventBus 环形缓冲、增量追赶与死连接剔除能力。"""
+    from backend.engines.event_bus import RealtimeEventBus
+
+    bus = RealtimeEventBus(buffer_maxlen=5)
+    assert bus.seq_counter == 0
+    assert len(bus.event_buffer) == 0
+
+    received = []
+
+    async def normal_sub(env):
+        received.append(env)
+
+    async def broken_sub(env):
+        raise ConnectionResetError("网络异常中断")
+
+    bus.register_subscriber(normal_sub)
+    bus.register_subscriber(broken_sub)
+
+    # 广播事件 1
+    ev1 = await bus.broadcast("TEST_EVENT", {"k": "v1"})
+    assert ev1["seq_id"] == 1
+    assert len(received) == 1
+    # broken_sub 应在异常后被自动移出订阅者集合
+    assert broken_sub not in bus._subscribers
+
+    # 循环广播 6 次，验证 maxlen=5 环形溢出自动轮转
+    for i in range(2, 8):
+        await bus.broadcast("TEST_EVENT", {"step": i})
+
+    assert bus.seq_counter == 7
+    assert len(bus.event_buffer) == 5
+    assert bus.event_buffer[0]["seq_id"] == 3
+    assert bus.event_buffer[-1]["seq_id"] == 7
+
+    # 测试断线追赶快照
+    snap = bus.get_snapshot(since_seq_id=4)
+    assert snap["current_seq_id"] == 7
+    # seq_id > 4 包含 5, 6, 7
+    assert len(snap["missed_events"]) == 3
+    assert [e["seq_id"] for e in snap["missed_events"]] == [5, 6, 7]
+    assert snap["is_overflow"] is False
+
+    # 测试断网过久导致最早事件被覆盖 (since_seq_id < oldest_seq_id 3)
+    snap_overflow = bus.get_snapshot(since_seq_id=1)
+    assert snap_overflow["is_overflow"] is True
+
+
+def test_incremental_seek_reading_mechanism(tmp_path: Path):
+    """验证 Antigravity 与 Claude Code 适配器在持续产生新日志时的高性能增量 Seek 读取。"""
+    from backend.adapters.antigravity_adapter import AntigravityAdapter
+
+    brain_dir = tmp_path / "brain"
+    cid = "sess-seek-test"
+    log_dir = brain_dir / cid / ".system_generated" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    transcript = log_dir / "transcript.jsonl"
+
+    adapter = AntigravityAdapter(agent_type="agy_cli", root_dir=tmp_path)
+    adapter.brain_dir = brain_dir
+
+    # 1. 写入第 1 条消息（全量冷读）
+    line1 = json.dumps({
+        "type": "USER_INPUT",
+        "step_index": 1,
+        "source": "USER_EXPLICIT",
+        "content": "<USER_REQUEST>你好 Antigravity</USER_REQUEST>",
+        "created_at": "2026-10-24T00:00:00Z",
+    }) + "\n"
+    transcript.write_text(line1, encoding="utf-8")
+
+    items1 = adapter.get_session_messages(cid)
+    assert len(items1) == 1
+    assert items1[0].content == "你好 Antigravity"
+    cached1 = adapter._messages_cache.get(cid)
+    assert cached1 is not None
+    assert len(cached1) == 4  # (mtime_ns, fsize, items, byte_offset)
+
+    # 2. 追加写第 2 条（触发增量 Seek）
+    line2 = json.dumps({
+        "type": "PLANNER_RESPONSE",
+        "step_index": 2,
+        "source": "MODEL",
+        "content": "很高兴为你服务",
+        "created_at": "2026-10-24T00:00:01Z",
+    }) + "\n"
+    with transcript.open("a", encoding="utf-8") as f:
+        f.write(line2)
+
+    items2 = adapter.get_session_messages(cid)
+    assert len(items2) == 2
+    assert items2[1].content == "很高兴为你服务"
+    cached2 = adapter._messages_cache.get(cid)
+    assert cached2[3] > cached1[3]  # 文件游标成功推进
+
+    # 2.1 模拟正在流式写入未完成的半截行（无换行符，且 JSON 不完整）
+    with transcript.open("a", encoding="utf-8") as f:
+        f.write('{"type": "PLANNER_RESPONSE", "step_index": 3, "content": "正在写...')
+    # 此时读取，半截行应当被安全忽略，且游标不被推进
+    items2_1 = adapter.get_session_messages(cid)
+    assert len(items2_1) == 2
+    cached2_1 = adapter._messages_cache.get(cid)
+    assert cached2_1[3] == cached2[3]  # 游标安全保持在上一完整换行符处
+
+    # 补全这一行并追加换行符
+    with transcript.open("a", encoding="utf-8") as f:
+        f.write('完整内容"}\n')
+    items2_2 = adapter.get_session_messages(cid)
+    assert len(items2_2) == 3
+    assert "正在写...完整内容" in items2_2[2].content
+
+    # 3. 模拟文件被重写/截断（安全回退全量解析）
+    line3 = json.dumps({
+        "type": "USER_INPUT",
+        "step_index": 1,
+        "source": "USER_EXPLICIT",
+        "content": "<USER_REQUEST>文件被截断重写</USER_REQUEST>",
+        "created_at": "2026-10-24T00:00:02Z",
+    }) + "\n"
+    transcript.write_text(line3, encoding="utf-8")
+
+    items3 = adapter.get_session_messages(cid)
+    assert len(items3) == 1
+    assert items3[0].content == "文件被截断重写"
+
+
+def test_incremental_sync_and_payload_trimming(tmp_path: Path):
+    """
+    验证会话同步增量协议与无效内容裁剪：
+    1. 只读工具(read_file/grep等)在 to_dict 下发时 output 强制置空；
+    2. since_step 仅切片返回增量步骤；
+    3. 历史已完成步骤思考文本瘦身，最新步骤完整保留。
+    """
+    # 1. 验证只读工具 output 裁剪
+    read_tc = UnifiedToolCall(
+        tool_id="tc_1",
+        name="read_file",
+        args_summary="backend/app.py",
+        output="long long file content",
+    )
+    d = read_tc.to_dict()
+    assert d["output"] == ""  # 下发给前端时 output 强制置空
+
+    # 2. 验证 since_step 增量切片与历史思考瘦身
+    ide_dir = tmp_path / "incremental_test"
+    cid = "sess-inc-01"
+    log_dir = ide_dir / "brain" / cid / ".system_generated" / "logs"
+    log_dir.mkdir(parents=True)
+    transcript = log_dir / "transcript.jsonl"
+
+    long_thinking = "思维链分析：" + "x" * 200
+    steps = [
+        {
+            "step_index": 1,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "created_at": "2026-10-24T00:00:00Z",
+            "content": "<USER_REQUEST>测试增量</USER_REQUEST>",
+        },
+        {
+            "step_index": 2,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "created_at": "2026-10-24T00:00:01Z",
+            "thinking": long_thinking,
+            "content": "中间步骤回复",
+            "tool_calls": [],
+        },
+        {
+            "step_index": 3,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "created_at": "2026-10-24T00:00:02Z",
+            "thinking": "最新实时思考",
+            "content": "最新回复",
+            "tool_calls": [],
+        },
+    ]
+    transcript.write_text(
+        "\n".join(json.dumps(s, ensure_ascii=False) for s in steps) + "\n",
+        encoding="utf-8",
+    )
+
+    adapter = AntigravityAdapter("agy_ide", "Antigravity IDE", root_dir=ide_dir)
+    # 模拟全量读取
+    items, total, has_more = adapter.get_session_messages_page(cid, limit=10)
+    assert len(items) == 3
+    assert total == 3
+
+    # 模拟 since_step=3 增量轮询
+    inc_items, inc_total, _ = adapter.get_session_messages_page(cid, limit=10, since_step=3)
+    assert len(inc_items) == 1
+    assert inc_items[0].step_index == 3
+    assert inc_total == 3
+
+
+def test_zerotier_and_tailscale_equal_vpn_auth(tmp_path: Path):
+    """验证 ZeroTier (10.0.0.0/8) 与 Tailscale (100.64.0.0/10) 虚拟私网对等受信鉴权机制。"""
+    from backend.core.tailscale_auth import is_trusted_vpn_network, PairingAuthManager
+    from backend.app import create_app
+    from fastapi.testclient import TestClient
+
+    # 1. 验证 VPN 虚拟私网段判别对等性（Tailscale CGNAT + 动态 ZeroTier 子网严格隔离）
+    assert is_trusted_vpn_network("100.127.241.101") is True  # Tailscale
+    assert is_trusted_vpn_network("8.8.8.8") is False         # 公网 IP 拒绝
+    assert is_trusted_vpn_network("") is False
+    # 未加入虚拟专网网卡的普通 10.x 局域网 IP 严禁被误判为受信 VPN
+    from unittest.mock import patch
+    import ipaddress
+    with patch("backend.core.tailscale_auth.detect_zerotier_network", return_value=None):
+        assert is_trusted_vpn_network("10.0.0.1") is False
+    with patch("backend.core.tailscale_auth.detect_zerotier_network", return_value=ipaddress.IPv4Network("10.147.20.0/24")):
+        assert is_trusted_vpn_network("10.147.20.23") is True
+        assert is_trusted_vpn_network("10.0.0.1") is False
+
+    # 2. 验证 Origin 校验对等性
+    assert PairingAuthManager.is_trusted_origin("http://10.147.20.249:8765", ["127.0.0.1"]) is True
+    assert PairingAuthManager.is_trusted_origin("http://100.127.241.101:8765", ["127.0.0.1"]) is True
+
+    # 3. 验证 ZeroTier 设备扫码配对后的 IP 白名单对等放行
+    db = MetaDatabase(db_path=tmp_path / "zt_auth.db")
+    auth_mgr = PairingAuthManager(meta_db=db, pair_code_ttl_sec=60)
+
+    zt_client_ip = "10.147.20.23"
+    # 配对前不属于已配对受信节点
+    assert auth_mgr.is_paired_trusted_vpn_ip(zt_client_ip) is False
+
+    # 模拟手机通过 ZeroTier 扫码置换 token
+    pair_code = auth_mgr.bootstrap_pair_code
+    res = auth_mgr.exchange_pair_code(pair_code, device_name="ZeroTier Phone", client_ip=zt_client_ip)
+    assert res is not None
+    assert "token" in res
+
+    # 配对后 ZeroTier IP 正式进入已受信 VPN 白名单
+    assert auth_mgr.is_paired_trusted_vpn_ip(zt_client_ip) is True
+    assert auth_mgr.is_paired_tailscale_ip(zt_client_ip) is True  # 历史别名兼容
+
+    # 4. 验证 API 层对 ZeroTier 已配对设备的只读免密放行与写操作严格 Token 防护
+    app = create_app(meta_db=db)
+    app.state.auth_mgr = auth_mgr
+
+    async def inject_zt_client_middleware(scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            scope["client"] = (zt_client_ip, 54321)
+        await app(scope, receive, send)
+
+    with TestClient(inject_zt_client_middleware) as client:
+        # 已配对 ZeroTier 客户端发起只读请求：免密放行（状态码 200）
+        r_get = client.get("/api/v1/workspaces")
+        assert r_get.status_code == 200
+
+        # 写操作（如防休眠）：未带 Token 时必须拦截，杜绝 CSRF
+        r_post_fail = client.post("/api/v1/system/awake-lock?enable=true")
+        assert r_post_fail.status_code == 401
+
+        # 5. 验证 PWA 添加到主屏幕独立沙盒自愈机制：请求 /api/v1/system/status 自动补齐已配对设备的合法 Token
+        r_status = client.get("/api/v1/system/status")
+        assert r_status.status_code == 200
+        status_data = r_status.json()
+        assert status_data["trusted_client_token"] is not None
+        restored_token = status_data["trusted_client_token"]
+        assert auth_mgr.verify_token(restored_token, client_ip=zt_client_ip) is True
+
+        # 使用自愈恢复的 Token 执行写操作（防休眠）成功通过
+        r_post_restored = client.post(
+            "/api/v1/system/awake-lock?enable=true",
+            headers={"X-AgentDeck-Token": restored_token}
+        )
+        assert r_post_restored.status_code == 200
+
+        # 6. 验证连续多次切换防休眠（开 -> 关 -> 开）与多次调用 system/status 时，已持有的合法 Token 绝不会被服务端意外轮转作废
+        # 第一次切换后前端会刷新 system/status：携带有效 token 时服务端不应重复签发新 token
+        r_status_again = client.get("/api/v1/system/status", headers={"X-AgentDeck-Token": restored_token})
+        assert r_status_again.status_code == 200
+        assert r_status_again.json()["trusted_client_token"] is None  # 不应重复轮转
+
+        # 第二次点击防休眠（关 -> 开）：依然必须 100% 成功，绝不能报 401
+        r_post_again = client.post(
+            "/api/v1/system/awake-lock?enable=false",
+            headers={"X-AgentDeck-Token": restored_token}
+        )
+        assert r_post_again.status_code == 200
+
+        # 第三次点击防休眠（开 -> 关）：继续成功
+        r_post_third = client.post(
+            "/api/v1/system/awake-lock?enable=true",
+            headers={"X-AgentDeck-Token": restored_token}
+        )
+        assert r_post_third.status_code == 200
+
+
+def test_antigravity_model_sync_with_desktop(tmp_path: Path):
+    """验证手机端连接后，默认模型与各个会话的模型均与电脑端真实的选定模型及会话历史保持一致。"""
+    import sqlite3
+    from backend.adapters.antigravity_adapter import AntigravityAdapter
+    from backend.core.database import MetaDatabase
+    from backend.engines.process_pool import AgentOrchestrator
+
+    # 1. 模拟 ~/.gemini/antigravity 数据目录
+    mock_root = tmp_path / "antigravity"
+    convs_dir = mock_root / "conversations"
+    convs_dir.mkdir(parents=True)
+
+    # 写入带有 last_selected_agent_model 的 antigravity_state.pbtxt（例如选定 Gemini 3.8 Flash Medium）
+    state_file = mock_root / "antigravity_state.pbtxt"
+    state_file.write_text("agent_onboarding_completed: AGENT_ONBOARDING_STATE_COMPLETED\nlast_selected_agent_model: MODEL_PLACEHOLDER_M319\n", encoding="utf-8")
+
+    adapter = AntigravityAdapter(agent_type="agy_ide", root_dir=mock_root)
+    # 验证全局默认模型正确读取电脑端 state 配置
+    assert adapter.get_default_model_id() == "gemini-3.8-flash-medium"
+
+    # 2. 模拟真实会话 .db，写入 gen_metadata
+    cid = "test-conv-uuid-1234"
+    conv_db = convs_dir / f"{cid}.db"
+    conn = sqlite3.connect(conv_db)
+    conn.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+    # 模拟包含 model_enum\x12\x16MODEL_PLACEHOLDER_M319 的 protobuf 二进制
+    raw_blob = b"sample_prefix\xa2\x01$\n\nmodel_enum\x12\x16MODEL_PLACEHOLDER_M319\xa2\x015sample_suffix"
+    conn.execute("INSERT INTO gen_metadata (idx, data) VALUES (1, ?)", (raw_blob,))
+    conn.commit()
+    conn.close()
+
+    # 验证 adapter.get_session_model 解析准确并命中缓存
+    assert adapter.get_session_model(cid) == "gemini-3.8-flash-medium"
+
+    # 3. 验证接入 AgentOrchestrator 后的 detail 与列表模型同步
+    meta_db = MetaDatabase(db_path=tmp_path / "meta.db")
+    orch = AgentOrchestrator(meta_db=meta_db, adapters={"agy_ide": adapter})
+
+    # detail 验证：优先返回真实会话模型
+    detail = orch.get_session_detail(f"agy_ide:{cid}")
+    assert detail["model_name"] == "gemini-3.8-flash-medium"
+
+    # available_models 验证：默认模型 is_default 为 True
+    models = orch.get_available_models().get("agy_ide", [])
+    def_item = next((m for m in models if m.get("is_default")), None)
+    assert def_item is not None
+    assert def_item["id"] == "gemini-3.8-flash-medium"
+
+    # 4. 验证 extract_protobuf_model_id 稳健解析（多字节 varint 与嵌入模型名）
+    from backend.adapters.antigravity_adapter import extract_protobuf_model_id
+    # 多字节长度标记 (如 0x85 0x03)
+    multi_byte_blob = b"\x8a\x01\x85\x03\n\x00\xa2\x01$\n\nmodel_enum\x12\x16MODEL_PLACEHOLDER_M404\xa2\x01\x14"
+    assert extract_protobuf_model_id(multi_byte_blob) == "claude-sonnet-5-5-medium"
+
+    # 嵌入标准模型串匹配
+    embed_blob = b"unknown_prefix_gemini-3.8-flash-high_unknown_suffix"
+    assert extract_protobuf_model_id(embed_blob) == "gemini-3.8-flash-high"
+
+    # 5. 验证当无任何本地 state_file 或会话 db 且 LS 未就绪时，动态兜底回退到推荐模型首项，不硬编码固定字符串
+    from unittest.mock import patch
+    empty_root = tmp_path / "empty_agy"
+    empty_root.mkdir()
+    empty_adapter = AntigravityAdapter(agent_type="agy_ide", root_dir=empty_root)
+    with patch.object(empty_adapter.ls_bridge, "get_default_model_id", return_value=""):
+        # 应取 AGENT_MODELS['agy_ide'] 的推荐首项
+        fallback_mid = empty_adapter.get_default_model_id()
+        assert bool(fallback_mid) is True
+        from backend.engines.process_pool import AGENT_MODELS
+        expected_rec = next(m["id"] for m in AGENT_MODELS["agy_ide"] if m.get("is_recommended"))
+        assert fallback_mid == expected_rec
+
+
+def test_pair_code_refresh_and_expiration_lifecycle(tmp_path: Path):
+    """验证一次性配对码滚动刷新作废机制与真实过期时间戳生命周期。"""
+    from backend.core.database import MetaDatabase
+    from backend.core.tailscale_auth import PairingAuthManager
+    from backend.app import create_app
+    from fastapi.testclient import TestClient
+    import time
+
+    db = MetaDatabase(db_path=tmp_path / "test_auth_life.db")
+    auth_mgr = PairingAuthManager(meta_db=db, pair_code_ttl_sec=600)
+
+    # 1. 验证初次生成的配对码与过期时间
+    code1 = auth_mgr.bootstrap_pair_code
+    exp1 = auth_mgr.bootstrap_pair_code_expires_at
+    assert bool(code1) is True
+    assert exp1 > time.time() + 500
+
+    # 2. 模拟客户端主动刷新配对码
+    code2, exp2 = auth_mgr.refresh_pair_code()
+    assert code2 != code1
+    assert exp2 > time.time() + 500
+
+    # 3. 核心安全验证：旧配对码 code1 必须已被立即销毁作废，杜绝历史截图重放
+    fail_res = auth_mgr.exchange_pair_code(code1, device_name="Hacker Phone")
+    assert fail_res is None
+
+    # 4. 新配对码 code2 能够正常消费置换
+    success_res = auth_mgr.exchange_pair_code(code2, device_name="Legit Phone")
+    assert success_res is not None
+    assert "token" in success_res
+
+    # 5. API 接口层集成测试：验证 /api/v1/system/status 与 /api/v1/auth/refresh_pair_code 返回 pair_code_expires_at
+    app = create_app(meta_db=db)
+    app.state.auth_mgr = auth_mgr
+
+    with TestClient(app) as client:
+        # 探测系统状态
+        status_resp = client.get("/api/v1/system/status")
+        assert status_resp.status_code == 200
+        sdata = status_resp.json()
+        assert "pair_code_expires_at" in sdata
+        assert sdata["pair_code_expires_at"] > time.time()
+
+        # 主动调用刷新接口
+        refresh_resp = client.post("/api/v1/auth/refresh_pair_code")
+        assert refresh_resp.status_code == 200
+        rdata = refresh_resp.json()
+        assert rdata["ok"] is True
+        assert "pair_code" in rdata
+        assert "pair_code_expires_at" in rdata
+        assert rdata["pair_code_expires_at"] > time.time()
+
+
+def test_vpn_pwa_self_healing_and_session_isolation(tmp_path: Path):
+    """
+    验证受信任虚拟专网 (Tailscale / ZeroTier) 设备在 PWA 沙盒下的自愈与多设备隔离安全特性：
+    1. 只有已配对过的受信任 IP 才能自愈换发 Token；
+    2. 未配对或冒充的 IP 绝不发放 Token，更不可抢占/覆写已有设备的会话；
+    3. 多 IP 漫游时 _merge_ips 能够去重合并，且 is_paired_trusted_vpn_ip 精准放行。
+    """
+    from backend.core.tailscale_auth import (
+        PairingAuthManager,
+        _parse_ips,
+        _merge_ips,
+    )
+
+    # 1. IP 解析与合并工具函数
+    assert _parse_ips("100.64.0.1, 10.147.20.5 , 100.64.0.1") == ["100.64.0.1", "10.147.20.5"]
+    assert _merge_ips("100.64.0.1", "10.147.20.5") == "100.64.0.1,10.147.20.5"
+    assert _merge_ips("100.64.0.1,10.147.20.5", "100.64.0.1") == "100.64.0.1,10.147.20.5"
+
+    db = MetaDatabase(db_path=tmp_path / "test_vpn_pwa.db")
+    auth_mgr = PairingAuthManager(meta_db=db)
+
+    # 2. 设备 A (IP: 100.64.1.10) 配对成功
+    code = auth_mgr.generate_pair_code()
+    res_a = auth_mgr.exchange_pair_code(code, device_name="Device A", client_ip="100.64.1.10")
+    assert res_a is not None
+    token_a = res_a["token"]
+
+    # 验证设备 A 在配对后已标记为受信任
+    assert auth_mgr.is_paired_trusted_vpn_ip("100.64.1.10") is True
+
+    # 3. 冒充设备 B (IP: 100.64.1.99 未配对) 试图自愈获取 Token
+    stolen_token = auth_mgr.issue_token_for_trusted_vpn_ip("100.64.1.99")
+    assert stolen_token is None  # 必须拒绝，严禁抢占 Device A 的会话
+
+    # 验证设备 A 的原始 Token 依然合法有效
+    assert auth_mgr.verify_token(token_a, client_ip="100.64.1.10") is True
+
+    # 4. 设备 A 漫游到新的 VPN IP (100.64.1.10 -> 带着 Token 访问被记录)
+    # 模拟合法设备带 Token 访问新网络
+    auth_mgr.verify_token(token_a, client_ip="100.64.1.20")
+    # 现在新 IP 也被绑定到了设备 A
+    assert auth_mgr.is_paired_trusted_vpn_ip("100.64.1.20") is True
+
+    # 5. 设备 A 在新 IP 下触发 PWA 沙盒自愈换发 Token
+    healed_token = auth_mgr.issue_token_for_trusted_vpn_ip("100.64.1.20")
+    assert healed_token is not None
+    assert healed_token.startswith("agd_")
+    assert auth_mgr.verify_token(healed_token, client_ip="100.64.1.20") is True
+
+
+
+
 
 
 

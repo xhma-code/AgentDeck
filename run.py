@@ -34,15 +34,23 @@ def print_startup_banner(app, port: int) -> str:
     orchestrator = app.state.orchestrator
 
     bind_host = ts.tailscale_ip if ts.is_online else "127.0.0.1"
+    lan_ip = getattr(ts, "lan_ip", "") or ""
+    zt_ip = getattr(ts, "zerotier_ip", "") or ""
     pair_url = f"http://{bind_host}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}"
+    lan_pair_url = f"http://{lan_ip}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}" if lan_ip else ""
+    zt_pair_url = f"http://{zt_ip}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}" if zt_ip else ""
     local_url = f"http://127.0.0.1:{port}/"
 
     print("\n" + "═" * 72)
-    print("  ⚡ AgentDeck v2.0 — 多 Agent 移动端统一中控台 (Tailscale 安全网关)")
+    print("  ⚡ AgentDeck v2.0 — 多 Agent 移动端统一中控台")
     print("═" * 72)
     ts_icon = "[✓]" if ts.is_online else "[!]"
     print(f"  {ts_icon} 网络隧道: {ts.diagnostic_msg}")
-    print(f"  [✓] 绑定策略: 严格限制于 {ts.bind_hosts} (已禁止 0.0.0.0 公网/局域网暴露)")
+    if lan_ip:
+        print(f"  [✓] Wi-Fi 网卡: {lan_ip} (可免代理直连)")
+    if zt_ip:
+        print(f"  [✓] ZeroTier 网卡: {zt_ip} (ZeroTier 虚拟隧道已就绪)")
+    print(f"  [✓] 绑定策略: 严格限制于 {ts.bind_hosts} (已禁止 0.0.0.0 公网暴露)")
 
     for item in orchestrator.get_startup_health_report():
         icon = "[✓]" if item["ready"] else "[!]"
@@ -50,8 +58,19 @@ def print_startup_banner(app, port: int) -> str:
 
     print("─" * 72)
     print(f"  💻 电脑本机控制台: {local_url} (打开可查看图形化高清配对二维码)")
+    if ts.is_online and pair_url:
+        print(f"  🌐 Tailscale 直连: {pair_url}")
+    if zt_pair_url:
+        print(f"  ⚡ ZeroTier 直连: {zt_pair_url}")
+    if lan_pair_url:
+        print(f"  🏠 Wi-Fi 直连: {lan_pair_url}")
     print("─" * 72)
-    print(render_terminal_qr_box(pair_url))
+
+    ts_pair = pair_url if ts.is_online else ""
+    primary_pair_url = ts_pair or zt_pair_url or lan_pair_url or pair_url
+    print("─" * 72)
+    print("  【手机扫码直连 (已集成 Wi-Fi / Tailscale / ZeroTier 多链路自动漫游)】:")
+    print(render_terminal_qr_box(primary_pair_url, title="AgentDeck 手机智能直连"))
     print("═" * 72 + "\n")
     return bind_host
 

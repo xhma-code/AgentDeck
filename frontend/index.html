@@ -19,11 +19,9 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=20261023_diamond_v4" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261023_diamond_v4" />
   <link rel="manifest" href="/static/manifest.json?v=20261023_diamond_v4" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261023_status_v2" />
+  <!-- 本地化无公网依赖资源，杜绝小火箭全局代理时因外网 CDN 阻塞导致白屏加载卡死 -->
+  <script src="/static/tailwind.min.js"></script>
+  <link rel="stylesheet" href="/static/styles.css?v=20261024_align_v1" />
 </head>
 <body class="bg-black text-zinc-100 select-none sm:select-auto antialiased">
   <!-- Toast 容器（下移避开顶部导航栏，杜绝遮挡） -->
@@ -46,7 +44,15 @@
           <img src="/static/apple-touch-icon.png" alt="AgentDeck" class="w-7 h-7 rounded-lg object-cover border border-white/10 shadow-sm shrink-0" />
           <span class="font-bold text-base sm:text-[17px] tracking-tight text-white truncate">AgentDeck</span>
         </div>
-        <div class="flex items-center gap-1 shrink-0">
+        <div class="flex items-center gap-1.5 shrink-0">
+          <!-- 侧边栏状态指示与一键更新联动按钮：移动端日常仅保留呼吸圆点，电脑端带背景框与文字，检测到新代码时变为向上箭头并高亮呼吸 -->
+          <button id="sidebar-status-btn" onclick="window.appActions.handleStatusBtnClick()"
+            class="h-8 w-8 sm:w-auto p-0 sm:px-2 rounded-lg bg-transparent hover:bg-zinc-900/60 sm:bg-zinc-900 sm:hover:bg-zinc-800 border-0 sm:border sm:border-zinc-800/80 text-zinc-300 flex items-center justify-center sm:justify-start gap-0 sm:gap-1.5 text-xs transition active:scale-95 cursor-pointer"
+            title="连接正常（有新版本时点击更新）" aria-label="系统连接与更新状态">
+            <span id="sidebar-status-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.7)]"></span>
+            <span id="sidebar-status-text" class="text-[11px] font-mono text-zinc-400 hidden sm:inline">已连接</span>
+          </button>
+
           <button onclick="window.appActions.toggleSidebar()"
             class="hidden md:flex p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition"
             title="收起侧边栏" aria-label="收起侧边栏">
@@ -96,6 +102,22 @@
 
       <!-- 分类滚动区（置顶 / 项目 Projects / 最近对话 Recent Conversations） -->
       <div id="session-list-container" class="flex-1 overflow-y-auto subtle-scrollbar px-2 py-1 space-y-3"></div>
+
+      <!-- 侧边栏底部常驻控制与健康体检入口 -->
+      <div class="p-2 border-t border-white/[0.06] bg-zinc-950/80 flex items-center justify-between gap-1.5 shrink-0 text-xs">
+        <button id="sidebar-awake-btn" onclick="window.appActions.toggleAwakeLockFromSidebar()"
+          class="flex-1 py-1 px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800/80 text-zinc-300 text-[11px] font-medium flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer"
+          title="点击切换 PC 防休眠锁状态">
+          <span id="sidebar-awake-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+          <span id="sidebar-awake-text">防休眠: 开</span>
+        </button>
+        <button onclick="window.appActions.openAgentsHealthModal()"
+          class="py-1 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800/80 text-zinc-400 hover:text-zinc-200 text-[11px] font-medium flex items-center gap-1 transition active:scale-95 cursor-pointer"
+          title="查看 4 大 Agent 运行体检状态">
+          <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+          <span>体检</span>
+        </button>
+      </div>
     </aside>
 
     <!-- 右侧主工作台（纯黑极简背景，参照 Antigravity-Deck） -->
@@ -125,6 +147,11 @@
               <div id="current-session-title" class="min-w-0 flex-1 flex items-center gap-1.5 sm:gap-2 overflow-hidden">
                 <span class="text-xs sm:text-sm font-medium text-zinc-400 truncate">加载中...</span>
               </div>
+              <!-- 顶部导航栏左上角标题右侧状态与更新微标 -->
+              <button id="header-status-indicator" onclick="window.appActions.handleStatusBtnClick()"
+                class="hidden shrink-0 h-6 px-1.5 rounded-md bg-transparent hover:bg-zinc-800 text-xs items-center gap-1 transition active:scale-95 cursor-pointer"
+                title="系统连接与更新状态">
+              </button>
               <div id="current-session-subtitle" class="hidden"></div>
             </div>
           </div>
@@ -187,7 +214,7 @@
 
             <button onclick="window.appActions.openQrModal()"
               class="hidden md:flex h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1.5 active:scale-95 transition"
-              title="扫码连接与状态">
+              title="扫码连接">
               <div id="network-status-badge" class="flex items-center gap-1">
                 <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
               </div>
@@ -198,9 +225,9 @@
         </div>
       </header>
 
-      <!-- 断线重连提示 -->
+      <!-- 断线重连提示（绝对定位悬浮层，杜绝挤压文档流导致主视口上下跳动抖动） -->
       <div id="reconnect-banner"
-        class="hidden px-3 py-1 bg-amber-500/15 border-b border-amber-500/30 text-amber-300 text-[11px] text-center shrink-0">
+        class="hidden absolute top-12 left-0 right-0 z-30 px-3 py-1 bg-amber-950/90 backdrop-blur-md border-b border-amber-500/40 text-amber-300 text-[11px] text-center shadow-md pointer-events-none transition-all">
         <span class="inline-block w-2 h-2 rounded-full bg-amber-400 animate-ping mr-1.5 align-middle"></span>重连同步中...
       </div>
 
@@ -210,11 +237,22 @@
       <!-- 对话卡片主视口 -->
       <div id="messages-container" class="flex-1 overflow-y-auto px-2.5 sm:px-5 py-3 scroll-smooth"></div>
 
-      <!-- 滚到底部按钮 -->
-      <button id="scroll-bottom-pill" onclick="window.appActions.scrollToBottom()"
-        class="hidden absolute bottom-32 right-3 z-20 px-2.5 py-1 rounded-full bg-sky-500 text-slate-950 font-bold text-[11px] shadow-lg">
-        ↓ 最新
-      </button>
+      <!-- 浮动快捷操作药丸组：锚定原 bottom-32 位置不往下移，收起与最新同款天蓝底色，紧凑靠拢 -->
+      <div class="absolute bottom-32 right-3 z-20 flex flex-col items-end gap-1.5 pointer-events-none">
+        <button id="collapse-steps-pill" onclick="window.appActions.collapseCurrentExpandedSteps()"
+          class="hidden pointer-events-auto px-2.5 py-1 rounded-full bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-[11px] shadow-lg flex items-center gap-1 active:scale-95 transition"
+          title="收起执行步骤">
+          <svg class="w-3.5 h-3.5 text-zinc-950" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>
+          <span>收起</span>
+        </button>
+
+        <button id="scroll-bottom-pill" onclick="window.appActions.scrollToBottom()"
+          class="hidden pointer-events-auto px-2.5 py-1 rounded-full bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-[11px] shadow-lg flex items-center gap-1 active:scale-95 transition"
+          title="滚动至最新消息">
+          <svg class="w-3.5 h-3.5 text-zinc-950" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+          <span>最新</span>
+        </button>
+      </div>
 
       <!-- 底部工具审批舱 -->
       <div id="bottom-approval-bar" class="hidden shrink-0 z-20"></div>
@@ -267,20 +305,20 @@
           <div id="slash-popover" class="hidden mb-2 rounded-xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-1 max-h-72 sm:max-h-80 overflow-y-auto subtle-scrollbar"></div>
 
           <!-- 输入框与动态 发送/中断 按钮 (对齐客户端交互) -->
-          <div class="flex items-end gap-1.5">
-            <div class="relative flex-1 min-w-0">
+          <div class="flex items-center gap-1.5">
+            <div class="relative flex-1 min-w-0 flex items-center">
               <textarea id="prompt-input" rows="1"
                 placeholder=" "
-                class="peer w-full max-h-28 min-h-[40px] px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs sm:text-sm text-zinc-100 placeholder-transparent focus:outline-none focus:border-sky-500/70 focus-visible:ring-1 focus-visible:ring-sky-500/50 resize-none"></textarea>
+                class="peer w-full h-10 max-h-28 min-h-[40px] px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs sm:text-sm text-zinc-100 placeholder-transparent focus:outline-none focus:border-sky-500/70 focus-visible:ring-1 focus-visible:ring-sky-500/50 resize-none block m-0"></textarea>
 
               <div id="prompt-input-placeholder"
-                class="pointer-events-none absolute left-3 top-2 flex items-center text-xs sm:text-sm text-zinc-500 peer-placeholder-shown:flex hidden select-none leading-normal">
+                class="pointer-events-none absolute left-3 inset-y-0 flex items-center text-xs sm:text-sm text-zinc-500 peer-placeholder-shown:flex hidden select-none leading-normal">
                 <span>发消息给&nbsp;</span><span class="text-[10px] sm:text-xs text-zinc-400 font-mono">Agent</span><span>...</span>
               </div>
             </div>
 
             <button id="prompt-action-btn" type="button" onclick="window.appActions.handlePromptAction()"
-              class="shrink-0 h-10 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center gap-1">
+              class="shrink-0 h-10 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center gap-1 m-0">
               <span id="prompt-action-btn-text">发送</span>
             </button>
           </div>
@@ -292,13 +330,13 @@
   <!-- 模态框 1：手机扫码连接 & 状态 -->
   <div id="qr-modal" role="dialog" aria-modal="true" aria-labelledby="qr-modal-title"
     class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-    <div class="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-4 shadow-2xl max-h-[88dvh] overflow-y-auto">
-      <div class="flex items-center justify-between pb-2.5 border-b border-zinc-800 mb-3">
+    <div class="w-full max-w-[420px] rounded-2xl bg-zinc-900 border border-zinc-800 p-5 shadow-2xl overflow-hidden">
+      <div class="flex items-center justify-between pb-3 border-b border-zinc-800/80 mb-3">
         <div id="qr-modal-title" class="font-bold text-sm text-zinc-100 flex items-center gap-2">
           <svg class="w-4 h-4 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-          <span>扫码连接与状态</span>
+          <span>扫码连接</span>
         </div>
-        <button onclick="window.appActions.closeQrModal()" class="text-zinc-400 hover:text-white px-2 py-0.5" aria-label="关闭">
+        <button onclick="window.appActions.closeQrModal()" class="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition cursor-pointer" aria-label="关闭">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
       </div>
@@ -306,7 +344,60 @@
     </div>
   </div>
 
+  <!-- 模态框：4 大 Agent 运行体检 -->
+  <div id="agents-health-modal" role="dialog" aria-modal="true"
+    class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-4 shadow-2xl space-y-3">
+      <div class="flex items-center justify-between pb-2 border-b border-zinc-800">
+        <div class="font-bold text-sm text-zinc-100 flex items-center gap-2">
+          <svg class="w-4 h-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+          <span>Agent 运行体检状态</span>
+        </div>
+        <button onclick="window.appActions.closeAgentsHealthModal()" class="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition cursor-pointer" aria-label="关闭">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div id="agents-health-modal-body" class="space-y-1.5"></div>
+    </div>
+  </div>
+
   <!-- 模态框 2：新建对话 -->
+  <!-- 模态框：未配对引导 / 手动输入配对码 -->
+  <div id="pairing-guide-modal" role="dialog" aria-modal="true"
+    class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-5 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between pb-2 border-b border-zinc-800">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+          </div>
+          <div>
+            <div class="font-bold text-sm text-zinc-100">设备安全配对</div>
+            <div class="text-[10px] text-zinc-400">AgentDeck 安全网关</div>
+          </div>
+        </div>
+        <button onclick="window.appActions.closePairingGuideModal()" class="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition cursor-pointer" aria-label="关闭">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <p id="pairing-guide-msg" class="text-xs text-zinc-300 leading-relaxed">
+        当前手机尚未完成配对（或配对码已失效）。
+      </p>
+      <div class="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800 text-[11px] text-zinc-400 space-y-1.5">
+        <div>👉 <b>方法 1</b>：电脑打开 <code class="text-sky-400 font-mono">127.0.0.1:8765</code>，点击右上角重新扫码；</div>
+        <div>👉 <b>方法 2</b>：在下方直接输入电脑上显示的当前配对码：</div>
+      </div>
+      <div class="space-y-2">
+        <input id="manual-pair-code-input" type="text" placeholder="输入配对码..."
+          class="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 font-mono tracking-wider focus:border-sky-500 focus:outline-none" />
+        <button onclick="window.appActions.submitPairCodeManual(document.getElementById('manual-pair-code-input').value)"
+          class="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs transition shadow-lg shadow-sky-500/20">
+          立即配对并进入中控台
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div id="new-session-modal" role="dialog" aria-modal="true" aria-labelledby="new-session-modal-title"
     class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
     <div class="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-4 shadow-2xl space-y-2.5">
@@ -372,12 +463,12 @@
   <!-- 模态框 3：本地 Markdown / 文档全屏阅读抽屉 -->
   <div id="doc-preview-modal" role="dialog" aria-modal="true" aria-labelledby="doc-preview-title"
     class="hidden fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex flex-col">
-    <div class="safe-top border-b border-zinc-800 bg-zinc-950 px-3 sm:px-5 h-12 flex items-center justify-between gap-2 shrink-0">
+    <div class="modal-header-safe border-b border-zinc-800 bg-zinc-950 px-3 sm:px-5 flex items-center justify-between gap-2 shrink-0">
       <div class="flex items-center gap-2 min-w-0 flex-1">
         <button onclick="window.appActions.closeDocModal()"
-          class="w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-200 flex items-center justify-center shrink-0 active:scale-95"
+          class="w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-200 flex items-center justify-center shrink-0 active:scale-95 hover:bg-zinc-800 transition"
           aria-label="返回">
-          ←
+          <svg class="w-4 h-4 text-zinc-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
         </button>
         <div class="min-w-0 flex-1">
           <div id="doc-preview-title" class="text-xs sm:text-sm font-bold text-zinc-100 truncate">文档阅读</div>
@@ -385,10 +476,11 @@
         </div>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
-        <button onclick="window.appActions.copyCurrentDocContent()"
+        <button id="doc-preview-copy-btn" onclick="window.appActions.copyCurrentDocContent(this)"
           class="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 flex items-center gap-1 active:scale-95 transition">
           <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-          <span>复制全文</span>
+          <span class="hidden sm:inline">复制全文</span>
+          <span class="sm:hidden">复制</span>
         </button>
         <button onclick="window.appActions.closeDocModal()"
           class="h-8 px-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 active:scale-95 transition">
@@ -396,7 +488,7 @@
         </button>
       </div>
     </div>
-    <div id="doc-preview-body" class="flex-1 overflow-y-auto px-3.5 sm:px-8 py-4 max-w-5xl w-full mx-auto safe-bottom"></div>
+    <div id="doc-preview-body" class="flex-1 overflow-y-auto px-2 sm:px-4 pt-1 pb-6 max-w-5xl w-full mx-auto safe-bottom"></div>
   </div>
 
   <!-- 模态框 4：会话上下文 Token 用量与额度状态详情 -->
@@ -462,6 +554,19 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261023_mobile_clean_v1"></script>
+  <!-- 跨网络自愈与漫游浮动提示条 -->
+  <div id="roaming-banner" class="hidden fixed top-3 left-1/2 -translate-x-1/2 z-[100] max-w-[92vw] w-max px-3.5 py-2 rounded-full bg-sky-950/90 border border-sky-500/40 text-sky-200 text-xs font-medium shadow-2xl backdrop-blur-md flex items-center gap-2 transition-all duration-300">
+    <span class="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>
+    <span id="roaming-banner-text">正在探测最优网络通道...</span>
+  </div>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
+      });
+    }
+  </script>
+  <script src="/static/app.js?v=20261024_status_restored_v1"></script>
 </body>
 </html>

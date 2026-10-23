@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import sys
 import time
+import urllib.request
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -368,6 +370,10 @@ class MetaDatabase:
             return [dict(r) for r in rows]
 
 
+# 外部 SQLite 查询轻量级短效缓存：(db_path_str, mtime_ns, sql, params) -> (cached_epoch, rows)
+_ext_query_cache: dict[tuple[str, int, str, tuple[Any, ...]], tuple[float, list[dict[str, Any]]]] = {}
+
+
 def safe_query_external_sqlite(
     db_path: Path,
     sql: str,
@@ -378,25 +384,62 @@ def safe_query_external_sqlite(
 
     设计保障（/autoplan Phase 3 Eng 规范）：
     1. 短连接即查即关（<50ms），绝不长驻连接阻塞桌面端 `language_server.exe` 的 WAL Checkpoint。
-    2. 开启 `PRAGMA busy_timeout = 3000; PRAGMA query_only = ON;`。
-    3. 当遇到 Windows 文件独占锁或 `sqlite3.OperationalError` 时，自动拷贝 `.db`（及 `.db-wal`、`.db-shm`）
-       到 `data/tmp_snapshots/` 读取快照并在读取后立即清理。
+    2. 基于 mtime_ns 的 1 秒短效内存缓存，过滤高频重复并发只读查询。
+    3. 优先使用 SQLite 原生只读 URI (`mode=ro`) 免锁直连，杜绝日常文件拷贝开销。
+    4. 遇锁冲突（sqlite3.OperationalError）自动降级至拷贝快照（Auto-Rescue）兜底。
     """
     if not db_path.exists():
         return []
 
-    # 第一级尝试：直接短连接 query_only 读取
     try:
-        conn = sqlite3.connect(str(db_path), timeout=2.5)
+        st = db_path.stat()
+        mtime_ns = st.st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+
+    cache_key = (str(db_path.resolve()), mtime_ns, sql, params)
+    now = time.monotonic()
+    cached = _ext_query_cache.get(cache_key)
+    if cached and (now - cached[0] < 1.0):
+        return [dict(r) for r in cached[1]]
+
+    def _put_cache(rows_data: list[dict[str, Any]]) -> None:
+        if len(_ext_query_cache) >= 128:
+            oldest_key = next(iter(_ext_query_cache))
+            _ext_query_cache.pop(oldest_key, None)
+        _ext_query_cache[cache_key] = (now, rows_data)
+
+    # 第一级尝试：只读 URI 模式直连查询（零磁盘拷贝，支持空格/特殊字符安全转义）
+    try:
+        abs_str = str(db_path.resolve())
+        file_url = urllib.request.pathname2url(abs_str)
+        uri = f"file:{file_url}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=1.5)
         conn.row_factory = sqlite3.Row
         try:
-            conn.execute("PRAGMA busy_timeout = 2500;")
+            conn.execute("PRAGMA busy_timeout = 1500;")
             conn.execute("PRAGMA query_only = ON;")
-            rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
+            rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+            _put_cache(rows)
+            return rows
         finally:
             conn.close()
-    except sqlite3.OperationalError as primary_err:
+    except Exception as primary_err:
+        # 降级尝试常规短连接
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=1.5)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA busy_timeout = 1500;")
+                conn.execute("PRAGMA query_only = ON;")
+                rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+                _put_cache(rows)
+                return rows
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as op_err:
+            primary_err = op_err
+
         # 第二级自动救援（Auto-Rescue）：拷贝临时快照文件读取
         TMP_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         snap_id = f"{db_path.stem}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
@@ -412,9 +455,10 @@ def safe_query_external_sqlite(
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("PRAGMA query_only = ON;")
-                rows = conn.execute(sql, params).fetchall()
+                rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
                 logger.info(f"【存储繁忙自动救援】已通过临时快照成功读取 {db_path.name}")
-                return [dict(r) for r in rows]
+                _put_cache(rows)
+                return rows
             finally:
                 conn.close()
         except Exception as fallback_err:

@@ -13,10 +13,59 @@ import difflib
 import json
 import re
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Optional
+
+from backend.core.workspace import (
+    ADHOC_DIR_NAMES,
+    PROJECT_MARKER_NAMES,
+    decode_workspace_uri,
+    discover_quick_workflows,
+    evaluate_project_dir,
+    get_git_workspace_diff,
+    get_git_workspace_status,
+    normalize_project_path,
+)
+
+
+class BoundedLRUCache(OrderedDict):
+    """带最大容量限制的轻量 LRU 缓存，防止长时间运行内存无界膨胀。"""
+
+    def __init__(self, maxsize: int = 64, *args: Any, **kwargs: Any) -> None:
+        self.maxsize = maxsize
+        super().__init__(*args, **kwargs)
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        return default
+
+    def __getitem__(self, key: Any) -> Any:
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        while len(self) > self.maxsize:
+            self.popitem(last=False)
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        self[key] = default
+        return default
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        for k, v in dict(*args, **kwargs).items():
+            self[k] = v
 
 
 
@@ -58,18 +107,54 @@ HIGH_RISK_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+READ_ONLY_TOOL_NAMES = {
+    "read_file",
+    "view_file",
+    "read_symbol",
+    "codebase_search",
+    "grep",
+    "glob",
+    "file_search",
+    "list_dir",
+    "list_directory",
+    "search_web",
+    "web_search",
+    "find_by_name",
+}
 
-from backend.core.workspace import (
-    ADHOC_DIR_NAMES,
-    PROJECT_MARKER_NAMES,
-    decode_workspace_uri,
-    discover_quick_workflows,
-    evaluate_project_dir,
-    get_git_workspace_diff,
-    get_git_workspace_status,
-    normalize_project_path,
-)
 
+def is_read_only_tool(tool_name: str) -> bool:
+    """判断是否为只读或检索类工具（其长文本输出对手机端无意义，且拖慢同步）。"""
+    name = (tool_name or "").lower().replace("-", "_")
+    if name in READ_ONLY_TOOL_NAMES:
+        return True
+    return any(
+        k in name
+        for k in (
+            "read_file",
+            "view_file",
+            "codebase_search",
+            "grep",
+            "glob",
+            "file_search",
+            "search_web",
+            "list_dir",
+        )
+    )
+
+
+def count_diff_lines(diff_text: str) -> tuple[int, int]:
+    """计算 Unified Diff 的新增行数和删除行数 (+N, -M)。"""
+    if not diff_text:
+        return 0, 0
+    add_count = 0
+    del_count = 0
+    for line in diff_text.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            add_count += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            del_count += 1
+    return add_count, del_count
 
 
 def classify_tool_risk(tool_name: str, args_text: str) -> str:
@@ -110,6 +195,18 @@ def truncate_large_output(
     if is_truncated:
         joined += f"\n\n... [输出已截断，原始长度 {total_len} 字符 / 共 {len(text.splitlines())} 行，点击可展开全部]"
     return joined, is_truncated, total_len
+
+
+def truncate_tool_output(
+    tool_name: str,
+    raw_output: str,
+    max_bytes: int = MAX_TOOL_OUTPUT_BYTES,
+    max_lines: int = MAX_TOOL_OUTPUT_LINES,
+) -> tuple[str, bool, int]:
+    """根据工具是否为只读探查类做智能截断：只读类截断为轻量预览(≤200字节/2行)，常规工具截断为 4KB。"""
+    if is_read_only_tool(tool_name):
+        return truncate_large_output(raw_output, max_bytes=200, max_lines=2)
+    return truncate_large_output(raw_output, max_bytes=max_bytes, max_lines=max_lines)
 
 
 def build_unified_diff(
@@ -286,6 +383,8 @@ class UnifiedToolCall:
     name: str
     args_summary: str
     diff_text: str = ""
+    diff_add_count: int = 0
+    diff_del_count: int = 0
     output: str = ""
     is_truncated: bool = False
     full_output_len: int = 0
@@ -294,7 +393,12 @@ class UnifiedToolCall:
     file_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d["is_read_only"] = is_read_only_tool(self.name)
+        if d["is_read_only"]:
+            # API 传输裁剪：只读探查类工具(read_file等)的 output 在下发给移动端时强制置空，彻底切断大段源码传输
+            d["output"] = ""
+        return d
 
 
 @dataclass
@@ -310,10 +414,17 @@ class UnifiedMessageItem:
     tool_calls: list[UnifiedToolCall] = field(default_factory=list)
     questions: list[dict[str, Any]] = field(default_factory=list)
     status: str = "DONE"
+    thinking_len: int = 0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, compact_thinking: bool = False) -> dict[str, Any]:
         d = asdict(self)
         d["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
+        if self.thinking:
+            d["thinking_len"] = len(self.thinking)
+            if compact_thinking and len(self.thinking) > 120:
+                d["thinking"] = (
+                    self.thinking[:80] + f" ... (共{len(self.thinking)}字)"
+                )
         return d
 
 
@@ -367,6 +478,10 @@ class BaseAgentAdapter(ABC):
     def __init__(self) -> None:
         self._token_usage_cache: dict[str, tuple[int, dict[str, Any]]] = {}
 
+    def invalidate_cache(self) -> None:
+        """重置适配器内部短效缓存（供外部 watchfiles 事件或手动触发时多态调用）。"""
+        pass
+
     @property
     def supported_modes(self) -> set[str]:
         """该 Agent 原生真实支持的执行策略集合，默认支持全部四种模式。"""
@@ -396,13 +511,19 @@ class BaseAgentAdapter(ABC):
         raw_session_id: str,
         limit: int = 30,
         before_step: Optional[int] = None,
+        since_step: Optional[int] = None,
     ) -> tuple[list[UnifiedMessageItem], int, bool]:
         """
-        分页读取指定会话的结构化消息流。
+        分页或增量读取指定会话的结构化消息流。
         返回 `(当前页消息列表, 会话总消息步数, 是否还有更早的历史消息)`。
         """
         all_items = self.get_session_messages(raw_session_id, limit=0)
         total_count = len(all_items)
+        if since_step is not None:
+            # 增量更新模式：仅返回 >= since_step 的变化或新增步骤，极大节省数据传输
+            page_items = [it for it in all_items if it.step_index >= since_step]
+            return page_items, total_count, False
+
         if before_step is not None:
             filtered = [it for it in all_items if it.step_index < before_step]
         else:

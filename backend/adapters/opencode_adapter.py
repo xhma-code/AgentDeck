@@ -21,19 +21,21 @@ from typing import Any, Optional
 
 from backend.adapters.base import (
     BaseAgentAdapter,
+    BoundedLRUCache,
     ExecutionMode,
     SessionTokenUsage,
     UnifiedMessageItem,
     UnifiedSession,
     UnifiedToolCall,
     classify_tool_risk,
+    count_diff_lines,
     extract_tool_file_path,
     extract_tool_summary_and_diff,
     resolve_model_context_limit,
     truncate_large_output,
 )
 from backend.core.database import safe_query_external_sqlite, utc_now_iso
-from backend.core.logger import log_structured_error
+from backend.core.logger import log_structured_error, logger
 
 
 class OpenCodeHttpBridge:
@@ -54,7 +56,7 @@ class OpenCodeHttpBridge:
             req = urllib.request.Request(f"{self.base_url}/session", method="GET")
             with urllib.request.urlopen(req, timeout=0.6) as resp:
                 return resp.status == 200
-        except Exception:
+        except (urllib.error.URLError, TimeoutError, OSError):
             return False
 
     def is_alive(self) -> bool:
@@ -118,7 +120,7 @@ def ms_to_iso(ts_ms: Any) -> str:
         if val > 1e11:
             val = val / 1000.0
         return datetime.fromtimestamp(val, tz=timezone.utc).isoformat()
-    except Exception:
+    except (TypeError, ValueError, OverflowError, OSError):
         return utc_now_iso()
 
 
@@ -147,9 +149,11 @@ class OpenCodeAdapter(BaseAgentAdapter):
             or os.path.expanduser(r"~\AppData\Roaming\npm\opencode.ps1")
         )
         # limit -> (db_sig, list[UnifiedSession])
-        self._list_cache: dict[int, tuple[tuple[int, int, int, int], list[UnifiedSession]]] = {}
+        self._list_cache: BoundedLRUCache = BoundedLRUCache(maxsize=20)
         # raw_session_id -> (db_sig, list[UnifiedMessageItem])
-        self._messages_cache: dict[str, tuple[tuple[int, int, int, int], list[UnifiedMessageItem]]] = {}
+        self._messages_cache: BoundedLRUCache = BoundedLRUCache(maxsize=40)
+        # cache_key -> (0, data)
+        self._token_usage_cache: BoundedLRUCache = BoundedLRUCache(maxsize=100)
 
     def _get_db_sig(self) -> tuple[int, int, int, int]:
         """获取 opencode.db 及其 WAL 日志文件的修改时间与大小签名，用于 0ms 缓存校验。"""
@@ -168,8 +172,15 @@ class OpenCodeAdapter(BaseAgentAdapter):
 
     def is_available(self) -> tuple[bool, str]:
         if self.db_path.exists():
-            sessions = self.list_sessions(limit=200)
-            return True, f"OpenCode 已就绪: 发现 {len(sessions)} 个会话 (SQLite + opencode serve API)"
+            cnt = 0
+            try:
+                rows = safe_query_external_sqlite(self.db_path, "SELECT count(*) as c FROM session")
+                if rows and isinstance(rows, list):
+                    cnt = int(rows[0].get("c") or 0)
+            except Exception as exc:
+                logger.debug(f"统计 OpenCode 会话数量异常: {exc}")
+                cnt = 0
+            return True, f"OpenCode 已就绪: 发现 {cnt} 个会话 (SQLite + opencode serve API)"
         if self.cli_bin and Path(str(self.cli_bin)).exists():
             return True, "OpenCode CLI 已安装（尚无本地会话记录）"
         return False, "未检测到 ~/.local/share/opencode/opencode.db"
@@ -222,7 +233,7 @@ class OpenCodeAdapter(BaseAgentAdapter):
                             if txt:
                                 extracted = txt[:48]
                                 break
-                    except Exception:
+                    except (json.JSONDecodeError, TypeError, KeyError):
                         continue
                 title = extracted or raw_title or f"OpenCode {sid[:8]}"
             else:
@@ -315,6 +326,7 @@ class OpenCodeAdapter(BaseAgentAdapter):
                     tinput = state.get("input") or p.get("input") or {}
                     toutput = state.get("output") or p.get("output") or ""
                     summary, diff_txt = extract_tool_summary_and_diff(tname, tinput)
+                    add_c, del_c = count_diff_lines(diff_txt)
                     f_path = extract_tool_file_path(tinput)
                     trunc_out, is_trunc, full_len = truncate_large_output(str(toutput))
                     risk = classify_tool_risk(tname, summary)
@@ -324,6 +336,8 @@ class OpenCodeAdapter(BaseAgentAdapter):
                             name=tname,
                             args_summary=summary,
                             diff_text=diff_txt,
+                            diff_add_count=add_c,
+                            diff_del_count=del_c,
                             output=trunc_out,
                             is_truncated=is_trunc,
                             full_output_len=full_len,
@@ -382,10 +396,11 @@ class OpenCodeAdapter(BaseAgentAdapter):
         raw_session_id: str,
         limit: int = 30,
         before_step: Optional[int] = None,
+        since_step: Optional[int] = None,
     ) -> tuple[list[UnifiedMessageItem], int, bool]:
         """
         深度下推至 SQL：先以极低开销查询全量 message 基础元信息，
-        按 before_step 与 limit 切片后仅拉取目标消息关联的 part，杜绝全表扫描与缓存容量污染。
+        按 before_step/since_step 与 limit 切片后仅拉取目标消息关联的 part，杜绝全表扫描与缓存容量污染。
         """
         if not self.db_path.exists():
             return [], 0, False
@@ -400,6 +415,11 @@ class OpenCodeAdapter(BaseAgentAdapter):
 
         total_count = len(all_meta)
         step_index_map = {str(r.get("id")): idx for idx, r in enumerate(all_meta, start=1)}
+
+        if since_step is not None:
+            filtered = [r for r in all_meta if step_index_map.get(str(r.get("id")), 0) >= since_step]
+            page_items = self._parse_messages_from_rows(raw_session_id, filtered, step_index_map)
+            return page_items, total_count, False
 
         if before_step is not None:
             filtered = [r for r in all_meta if step_index_map.get(str(r.get("id")), 0) < before_step]

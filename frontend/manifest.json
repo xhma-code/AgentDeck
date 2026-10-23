@@ -1,7 +1,7 @@
 {
   "name": "AgentDeck — 多 Agent 移动中控台",
   "short_name": "AgentDeck",
-  "description": "通过 Tailscale 同步查看与操控 Antigravity IDE、Antigravity CLI、Claude Code 与 OpenCode 会话",
+  "description": "通过 Tailscale / ZeroTier 虚拟网络同步查看与操控 Antigravity IDE、Antigravity CLI、Claude Code 与 OpenCode 会话",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#090d16",

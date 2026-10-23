@@ -10,28 +10,35 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import shutil
 import sys
 from datetime import datetime, timezone
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 from backend.adapters.base import (
     BaseAgentAdapter,
+    BoundedLRUCache,
     SessionTokenUsage,
     UnifiedMessageItem,
     UnifiedSession,
     UnifiedToolCall,
     classify_tool_risk,
+    count_diff_lines,
     extract_interactive_questions,
     extract_tool_file_path,
     extract_tool_summary_and_diff,
     resolve_model_context_limit,
     truncate_large_output,
+    truncate_tool_output,
 )
 from backend.core.logger import log_structured_error
+
+logger = logging.getLogger(__name__)
 
 COMMAND_NAME_RE = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.DOTALL)
 COMMAND_ARGS_RE = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.DOTALL)
@@ -105,19 +112,37 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             or os.path.expanduser(r"~\.local\bin\claude.exe")
         )
         # fpath_str -> (mtime_ns, file_size, UnifiedSession)
-        self._session_meta_cache: dict[str, tuple[int, int, UnifiedSession]] = {}
+        self._session_meta_cache: BoundedLRUCache = BoundedLRUCache(maxsize=100)
         # raw_session_id -> Path
-        self._session_file_map: dict[str, Path] = {}
+        self._session_file_map: BoundedLRUCache = BoundedLRUCache(maxsize=200)
         # raw_session_id -> (mtime_ns, file_size, list[UnifiedMessageItem])
-        self._messages_cache: dict[str, tuple[int, int, list[UnifiedMessageItem]]] = {}
+        self._messages_cache: BoundedLRUCache = BoundedLRUCache(maxsize=40)
+        # cache_key -> (mtime_ns, token_usage_dict)
+        self._token_usage_cache: BoundedLRUCache = BoundedLRUCache(maxsize=100)
+        # 扫描文件候选路径短效缓存 (monotonic_ts, list[Path])，防高频 rglob 磁盘遍历风暴
+        self._dir_scan_cache: tuple[float, list[Path]] = (0.0, [])
+
+    def invalidate_cache(self) -> None:
+        """重置目录扫描短效缓存（多态实现 BaseAgentAdapter 契约）。"""
+        self._dir_scan_cache = (0.0, [])
+
+    def invalidate_scan_cache(self) -> None:
+        self.invalidate_cache()
 
     def is_available(self) -> tuple[bool, str]:
         has_bin = Path(str(self.cli_bin)).exists() if self.cli_bin else False
-        sessions = self.list_sessions(limit=200) if self.projects_dir.exists() else []
-        if has_bin or self.projects_dir.exists():
+        has_dir = self.projects_dir.exists()
+        if has_bin or has_dir:
+            cnt = len(self._cached_sessions) if hasattr(self, "_cached_sessions") and self._cached_sessions else 0
+            if cnt == 0 and has_dir:
+                try:
+                    cnt = sum(1 for p in self.projects_dir.glob("*/*.jsonl"))
+                except OSError as err:
+                    logger.debug("统计 Claude projects 目录会话文件失败: %s", err)
+                    cnt = 0
             return (
                 True,
-                f"Claude Code 已就绪: 发现 {len(sessions)} 个会话 (stream-json + stdio 逐条权限拦截)",
+                f"Claude Code 已就绪: 发现 {cnt} 个会话 (stream-json + stdio 逐条权限拦截)",
             )
         return False, "未检测到 claude.exe 或 ~/.claude/projects 目录"
 
@@ -137,29 +162,37 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         return None
 
     def list_sessions(self, limit: int = 50) -> list[UnifiedSession]:
-        """扫描 ~/.claude/projects 下所有 .jsonl 文件并提取会话元数据（带 mtime_ns 内存缓存）。"""
+        """扫描 ~/.claude/projects 下所有 .jsonl 文件并提取会话元数据（带 mtime_ns 内存缓存与短效扫描缓存）。"""
         if not self.projects_dir.exists():
             return []
 
+        now_mono = time.monotonic()
+        if now_mono - self._dir_scan_cache[0] < 2.5 and self._dir_scan_cache[1]:
+            candidate_paths = self._dir_scan_cache[1]
+        else:
+            candidate_paths = []
+            try:
+                for fpath in self.projects_dir.rglob("*.jsonl"):
+                    if not fpath.name.startswith("agent-"):
+                        candidate_paths.append(fpath)
+                self._dir_scan_cache = (now_mono, candidate_paths)
+            except Exception as exc:
+                log_structured_error(
+                    problem="扫描 Claude Code 会话目录失败",
+                    cause=str(exc),
+                    fix="请检查 ~/.claude/projects 目录权限。",
+                    exc=exc,
+                )
+                return []
+
         files: list[tuple[float, int, int, Path]] = []
-        try:
-            for fpath in self.projects_dir.rglob("*.jsonl"):
-                if fpath.name.startswith("agent-"):
-                    continue
-                try:
-                    st = fpath.stat()
-                    self._session_file_map[fpath.stem] = fpath
-                    files.append((st.st_mtime, st.st_mtime_ns, st.st_size, fpath))
-                except OSError:
-                    continue
-        except Exception as exc:
-            log_structured_error(
-                problem="扫描 Claude Code 会话目录失败",
-                cause=str(exc),
-                fix="请检查 ~/.claude/projects 目录权限。",
-                exc=exc,
-            )
-            return []
+        for fpath in candidate_paths:
+            try:
+                st = fpath.stat()
+                self._session_file_map[fpath.stem] = fpath
+                files.append((st.st_mtime, st.st_mtime_ns, st.st_size, fpath))
+            except OSError:
+                continue
 
         files.sort(key=lambda x: x[0], reverse=True)
         sessions: list[UnifiedSession] = []
@@ -263,10 +296,176 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             return cleaned
         return raw_text
 
+    def _parse_claude_record_line(
+        self,
+        line: str,
+        raw_session_id: str,
+        items: list[UnifiedMessageItem],
+        tool_id_map: dict[str, UnifiedToolCall],
+        step_idx_container: list[int],
+    ) -> bool:
+        """解析单行 Claude Code JSONL 记录并更新 items 和 tool_id_map。"""
+        line = line.strip()
+        if not line:
+            return False
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+
+        rec_type = rec.get("type")
+        if rec_type not in ("user", "assistant"):
+            return False
+
+        msg = rec.get("message")
+        if not isinstance(msg, dict):
+            return False
+
+        created_at = str(rec.get("timestamp") or "")
+        content = msg.get("content")
+
+        def _append_cleaned_user_text(raw_txt: str, created_at_str: str) -> None:
+            kind, cleaned = clean_claude_user_text(raw_txt)
+            if kind == "ignore" or not cleaned:
+                return
+            if kind == "slash_expanded":
+                if items and items[-1].role == "user" and items[-1].content.startswith("/"):
+                    return
+            if kind == "task_notification":
+                step_idx_container[0] += 1
+                cur_step = step_idx_container[0]
+                items.append(
+                    UnifiedMessageItem(
+                        item_id=f"{raw_session_id}:step:{cur_step}",
+                        step_index=cur_step,
+                        role="assistant",
+                        created_at=created_at_str,
+                        content="",
+                        tool_calls=[
+                            UnifiedToolCall(
+                                tool_id=f"task_notif_{cur_step}",
+                                name="TaskNotification",
+                                args_summary=cleaned,
+                                status="DONE",
+                            )
+                        ],
+                    )
+                )
+                return
+
+            step_idx_container[0] += 1
+            cur_step = step_idx_container[0]
+            items.append(
+                UnifiedMessageItem(
+                    item_id=f"{raw_session_id}:step:{cur_step}",
+                    step_index=cur_step,
+                    role="user",
+                    created_at=created_at_str,
+                    content=cleaned,
+                )
+            )
+
+        if rec_type == "user":
+            if isinstance(content, str):
+                _append_cleaned_user_text(content, created_at)
+            elif isinstance(content, list):
+                user_texts: list[str] = []
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype == "text":
+                        txt = str(block.get("text") or "").strip()
+                        if txt and not txt.startswith("<system-reminder>"):
+                            user_texts.append(txt)
+                    elif btype == "tool_result":
+                        tid = str(block.get("tool_use_id") or "")
+                        raw_res = block.get("content")
+                        res_str = (
+                            raw_res
+                            if isinstance(raw_res, str)
+                            else json.dumps(raw_res, ensure_ascii=False)
+                        )
+                        if tid in tool_id_map:
+                            target_tc = tool_id_map[tid]
+                            trunc_out, is_trunc, full_len = truncate_tool_output(
+                                target_tc.name, str(res_str)
+                            )
+                            target_tc.output = trunc_out
+                            target_tc.is_truncated = is_trunc
+                            target_tc.full_output_len = full_len
+                if user_texts:
+                    _append_cleaned_user_text("\n".join(user_texts), created_at)
+            return True
+
+        elif rec_type == "assistant":
+            text_parts: list[str] = []
+            thinking_parts: list[str] = []
+            tool_calls: list[UnifiedToolCall] = []
+            parsed_questions: list[dict[str, Any]] = []
+
+            if isinstance(content, str):
+                text_parts.append(content.strip())
+            elif isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype == "text":
+                        t = str(block.get("text") or "").strip()
+                        if t:
+                            text_parts.append(t)
+                    elif btype == "thinking":
+                        th = str(block.get("thinking") or "").strip()
+                        if th:
+                            thinking_parts.append(th)
+                    elif btype == "tool_use":
+                        tid = str(block.get("id") or f"tc_{step_idx_container[0]}")
+                        tname = str(block.get("name") or "Tool")
+                        tinput = block.get("input") or {}
+                        q_items = extract_interactive_questions(tname, tinput)
+                        if q_items:
+                            parsed_questions.extend(q_items)
+                            continue
+                        summary, diff_txt = extract_tool_summary_and_diff(tname, tinput)
+                        add_c, del_c = count_diff_lines(diff_txt)
+                        f_path = extract_tool_file_path(tinput)
+                        risk = classify_tool_risk(tname, summary)
+                        tc_obj = UnifiedToolCall(
+                            tool_id=tid,
+                            name=tname,
+                            args_summary=summary,
+                            diff_text=diff_txt,
+                            diff_add_count=add_c,
+                            diff_del_count=del_c,
+                            risk_level=risk,
+                            file_path=f_path,
+                        )
+                        tool_calls.append(tc_obj)
+                        tool_id_map[tid] = tc_obj
+
+            if text_parts or thinking_parts or tool_calls or parsed_questions:
+                step_idx_container[0] += 1
+                cur_step = step_idx_container[0]
+                items.append(
+                    UnifiedMessageItem(
+                        item_id=f"{raw_session_id}:step:{cur_step}",
+                        step_index=cur_step,
+                        role="assistant",
+                        created_at=created_at,
+                        content="\n\n".join(text_parts),
+                        thinking="\n\n".join(thinking_parts),
+                        tool_calls=tool_calls,
+                        questions=parsed_questions,
+                    )
+                )
+                return True
+        return False
+
     def get_session_messages(
         self, raw_session_id: str, limit: int = 120
     ) -> list[UnifiedMessageItem]:
-        """解析指定 Claude Code 会话的 JSONL 为统一消息流（带 mtime_ns 内存缓存）。"""
+        """解析指定 Claude Code 会话的 JSONL 为统一消息流（带 mtime_ns 与文件游标增量缓存）。"""
         fpath = self._find_session_file(raw_session_id)
         if not fpath or not fpath.exists():
             return []
@@ -281,12 +480,62 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         if cached and cached[0] == mtime_ns and cached[1] == fsize:
             return cached[2][-limit:] if limit > 0 else list(cached[2])
 
+        # 增量 Seek 读取判定：文件发生追加写且先前已有合法读取 offset
+        if (
+            cached
+            and len(cached) >= 6
+            and fsize > cached[1]
+            and cached[3] > 0
+        ):
+            try:
+                items = list(cached[2])
+                step_idx_container = [int(cached[4])]
+                tool_id_map = dict(cached[5])
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(cached[3])
+                    inc_lines = f.readlines()
+                    new_offset = f.tell()
+
+                if inc_lines and not inc_lines[-1].endswith(("\n", "\r")):
+                    incomplete_len = len(inc_lines[-1].encode("utf-8", errors="replace"))
+                    inc_lines = inc_lines[:-1]
+                    new_offset = max(cached[3], new_offset - incomplete_len)
+
+                for ln in inc_lines:
+                    self._parse_claude_record_line(
+                        line=ln,
+                        raw_session_id=raw_session_id,
+                        items=items,
+                        tool_id_map=tool_id_map,
+                        step_idx_container=step_idx_container,
+                    )
+
+                self._messages_cache[raw_session_id] = (
+                    mtime_ns,
+                    fsize,
+                    items,
+                    new_offset,
+                    step_idx_container[0],
+                    tool_id_map,
+                )
+                return items[-limit:] if limit > 0 else items
+            except Exception as inc_exc:
+                logger.debug(f"增量读取 Claude Code 会话 {raw_session_id[:8]} 异常，回退全量解析: {inc_exc}")
+
+        # 全量冷读取
         items: list[UnifiedMessageItem] = []
         tool_id_map: dict[str, UnifiedToolCall] = {}
+        step_idx_container = [0]
+        byte_offset = 0
 
         try:
             with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
+                byte_offset = f.tell()
+            if lines and not lines[-1].endswith(("\n", "\r")):
+                incomplete_len = len(lines[-1].encode("utf-8", errors="replace"))
+                lines = lines[:-1]
+                byte_offset = max(0, byte_offset - incomplete_len)
         except Exception as exc:
             log_structured_error(
                 problem=f"读取 Claude Code 会话文件失败 ({raw_session_id[:8]})",
@@ -296,157 +545,23 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             )
             return []
 
-        def _append_cleaned_user_text(raw_txt: str, created_at_str: str) -> None:
-            nonlocal step_idx
-            kind, cleaned = clean_claude_user_text(raw_txt)
-            if kind == "ignore" or not cleaned:
-                return
-            if kind == "slash_expanded":
-                # 若上一条已经是斜杠命令（如 /init），则不再把展开的千字系统模板重复渲染为用户气泡
-                if items and items[-1].role == "user" and items[-1].content.startswith("/"):
-                    return
-            if kind == "task_notification":
-                # 后台子任务通知归入 Assistant 工具步骤，避免伪装成用户提问打断对话流
-                step_idx += 1
-                items.append(
-                    UnifiedMessageItem(
-                        item_id=f"{raw_session_id}:step:{step_idx}",
-                        step_index=step_idx,
-                        role="assistant",
-                        created_at=created_at_str,
-                        content="",
-                        tool_calls=[
-                            UnifiedToolCall(
-                                tool_id=f"task_notif_{step_idx}",
-                                name="TaskNotification",
-                                args_summary=cleaned,
-                                status="DONE",
-                            )
-                        ],
-                    )
-                )
-                return
-
-            step_idx += 1
-            items.append(
-                UnifiedMessageItem(
-                    item_id=f"{raw_session_id}:step:{step_idx}",
-                    step_index=step_idx,
-                    role="user",
-                    created_at=created_at_str,
-                    content=cleaned,
-                )
+        for line in lines:
+            self._parse_claude_record_line(
+                line=line,
+                raw_session_id=raw_session_id,
+                items=items,
+                tool_id_map=tool_id_map,
+                step_idx_container=step_idx_container,
             )
 
-        step_idx = 0
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            rec_type = rec.get("type")
-            if rec_type not in ("user", "assistant"):
-                continue
-
-            msg = rec.get("message")
-            if not isinstance(msg, dict):
-                continue
-
-            created_at = str(rec.get("timestamp") or "")
-            content = msg.get("content")
-
-            if rec_type == "user":
-                if isinstance(content, str):
-                    _append_cleaned_user_text(content, created_at)
-                elif isinstance(content, list):
-                    user_texts: list[str] = []
-                    for block in content:
-                        if not isinstance(block, dict):
-                            continue
-                        btype = block.get("type")
-                        if btype == "text":
-                            txt = str(block.get("text") or "").strip()
-                            if txt and not txt.startswith("<system-reminder>"):
-                                user_texts.append(txt)
-                        elif btype == "tool_result":
-                            tid = str(block.get("tool_use_id") or "")
-                            raw_res = block.get("content")
-                            res_str = (
-                                raw_res
-                                if isinstance(raw_res, str)
-                                else json.dumps(raw_res, ensure_ascii=False)
-                            )
-                            if tid in tool_id_map:
-                                trunc_out, is_trunc, full_len = truncate_large_output(str(res_str))
-                                tool_id_map[tid].output = trunc_out
-                                tool_id_map[tid].is_truncated = is_trunc
-                                tool_id_map[tid].full_output_len = full_len
-                    if user_texts:
-                        _append_cleaned_user_text("\n".join(user_texts), created_at)
-
-            elif rec_type == "assistant":
-                text_parts: list[str] = []
-                thinking_parts: list[str] = []
-                tool_calls: list[UnifiedToolCall] = []
-                parsed_questions: list[dict[str, Any]] = []
-
-                if isinstance(content, str):
-                    text_parts.append(content.strip())
-                elif isinstance(content, list):
-                    for block in content:
-                        if not isinstance(block, dict):
-                            continue
-                        btype = block.get("type")
-                        if btype == "text":
-                            t = str(block.get("text") or "").strip()
-                            if t:
-                                text_parts.append(t)
-                        elif btype == "thinking":
-                            th = str(block.get("thinking") or "").strip()
-                            if th:
-                                thinking_parts.append(th)
-                        elif btype == "tool_use":
-                            tid = str(block.get("id") or f"tc_{step_idx}")
-                            tname = str(block.get("name") or "Tool")
-                            tinput = block.get("input") or {}
-                            q_items = extract_interactive_questions(tname, tinput)
-                            if q_items:
-                                parsed_questions.extend(q_items)
-                                continue
-                            summary, diff_txt = extract_tool_summary_and_diff(tname, tinput)
-                            f_path = extract_tool_file_path(tinput)
-                            risk = classify_tool_risk(tname, summary)
-                            tc_obj = UnifiedToolCall(
-                                tool_id=tid,
-                                name=tname,
-                                args_summary=summary,
-                                diff_text=diff_txt,
-                                risk_level=risk,
-                                file_path=f_path,
-                            )
-                            tool_calls.append(tc_obj)
-                            tool_id_map[tid] = tc_obj
-
-                if text_parts or thinking_parts or tool_calls or parsed_questions:
-                    step_idx += 1
-                    items.append(
-                        UnifiedMessageItem(
-                            item_id=f"{raw_session_id}:step:{step_idx}",
-                            step_index=step_idx,
-                            role="assistant",
-                            created_at=created_at,
-                            content="\n\n".join(text_parts),
-                            thinking="\n\n".join(thinking_parts),
-                            tool_calls=tool_calls,
-                            questions=parsed_questions,
-                        )
-                    )
-
-        self._messages_cache[raw_session_id] = (mtime_ns, fsize, items)
+        self._messages_cache[raw_session_id] = (
+            mtime_ns,
+            fsize,
+            items,
+            byte_offset,
+            step_idx_container[0],
+            tool_id_map,
+        )
         return items[-limit:] if limit > 0 else items
 
     def get_full_step_output(self, raw_session_id: str, step_index: int) -> str:
@@ -574,7 +689,8 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         cache_key = str(fpath)
         try:
             mtime = fpath.stat().st_mtime_ns
-        except Exception:
+        except OSError as err:
+            logger.debug("获取 Claude 会话文件 mtime 失败: %s", err)
             mtime = 0
 
         cached = self._token_usage_cache.get(cache_key)

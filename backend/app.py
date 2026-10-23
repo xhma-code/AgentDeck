@@ -10,12 +10,17 @@ AgentDeck FastAPI 网关与多路复用 WebSocket 路由中枢。
 from __future__ import annotations
 
 import asyncio
+import io
 import re
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
+
+import qrcode
+import qrcode.image.svg
 
 from fastapi import (
     Depends,
@@ -27,6 +32,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -103,11 +109,20 @@ class HideWorkspaceRequest(BaseModel):
     workspace_path: str = Field(..., description="要从项目列表移出隐藏的目录路径")
 
 
+def check_etag_matches(if_none_match: Optional[str], current_etag: str) -> bool:
+    """统一校验客户端 If-None-Match 是否命中服务端 ETag（支持弱验证 W/ 前缀与引号容错）。"""
+    if not if_none_match or not current_etag:
+        return False
+    inm = if_none_match.strip()
+    etag = current_etag.strip()
+    return inm == etag or inm == etag.strip('"') or inm.strip('"') == etag.strip('"')
+
+
 def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
     """工厂函数：创建并配置 AgentDeck FastAPI 应用实例。"""
     db = meta_db or MetaDatabase()
     ts_status: TailscaleStatus = detect_tailscale_status()
-    auth_mgr = PairingAuthManager(meta_db=db)
+    auth_mgr = PairingAuthManager(meta_db=db, pair_code_ttl_sec=600)
     awake_lock = WindowsAwakeLock()
     orchestrator = AgentOrchestrator(meta_db=db)
 
@@ -123,6 +138,13 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         title="AgentDeck — 多 Agent 移动端统一中控台",
         version="2.0.0",
         lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -166,14 +188,15 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         if provided_token and auth_mgr.verify_token(provided_token, client_ip=client_host):
             return True
 
-        # 本机环回或测试客户端免密直通（方便电脑本地打开面板查看二维码）
-        if client_host in ("127.0.0.1", "::1", "localhost", "testclient"):
+        # 本机环回或本机物理/虚拟网卡免密直通（方便电脑本地任何地址打开面板查看二维码）
+        bind_hosts = getattr(ts_status, "bind_hosts", []) or []
+        if client_host in ("127.0.0.1", "::1", "localhost", "testclient") or (client_host in bind_hosts):
             return True
 
-        # Tailscale 虚拟局域网内节点（100.64.0.0/10）：
+        # Tailscale / ZeroTier 虚拟私网内节点（100.64.0.0/10 及 10.0.0.0/8 等受信网段）：
         # 针对写操作（POST/PATCH/DELETE）强制要求携带有效 Token，杜绝第三方网页跨站 CSRF 借用 IP 免密执行高危操作；
-        # 仅对只读 GET/HEAD 请求在已配对 Tailscale IP 时放行查看
-        if auth_mgr.is_paired_tailscale_ip(client_host):
+        # 仅对只读 GET/HEAD 请求在已配对虚拟私网 IP 时放行查看
+        if auth_mgr.is_paired_trusted_vpn_ip(client_host):
             if request.method in ("GET", "HEAD", "OPTIONS"):
                 return True
             if provided_token and auth_mgr.verify_token(provided_token, client_ip=client_host):
@@ -181,7 +204,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
 
         raise HTTPException(
             status_code=401,
-            detail="【鉴权拦截】未授权的访问请求（原因：缺少有效配对 Token 且非本机/Tailscale 受信节点）。修复：请使用手机扫描电脑端生成的最新配对二维码。",
+            detail="【鉴权拦截】未授权的访问请求（原因：缺少有效配对 Token 且非本机/Tailscale/ZeroTier 受信节点）。修复：请使用手机扫描电脑端生成的最新配对二维码。",
         )
 
     # --- 1. 系统状态与扫码配对接口 ---
@@ -199,28 +222,67 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
                 status_code=400,
                 detail="【配对码失效】该一次性配对码已过期或已被使用（原因：安全防重放机制）。修复：请刷新电脑端页面或使用最新二维码重新扫描。",
             )
+        # 向已连接的所有中控台客户端广播配对成功事件，实现双向握手自动感知
+        await orchestrator.broadcast_event(
+            "DEVICE_PAIRED",
+            {
+                "device_name": req.device_name,
+                "client_ip": client_ip,
+                "paired_at": time.time(),
+            },
+        )
         return {"ok": True, **res}
+
+    @app.post("/api/v1/auth/refresh_pair_code")
+    async def refresh_bootstrap_pair_code(
+        _auth: bool = Depends(verify_request_auth),
+    ) -> dict[str, Any]:
+        """主动刷新一次性配对码（用于电脑端二维码超时过期后点击一键刷新，立即作废前序旧码并清空 SVG 缓存）。"""
+        new_code, expires_at = auth_mgr.refresh_pair_code()
+        _qr_svg_cache.clear()
+        return {"ok": True, "pair_code": new_code, "pair_code_expires_at": expires_at}
+
+    _qr_svg_cache: OrderedDict[str, bytes] = OrderedDict()
 
     @app.get("/api/v1/auth/qr.svg")
     async def get_local_qr_svg(
-        request: Request, _auth: bool = Depends(verify_request_auth)
+        request: Request,
+        net: str = Query(default=""),
+        _auth: bool = Depends(verify_request_auth),
     ) -> Any:
-        """本地离线生成配对二维码 SVG 图像（不向任何外部二维码 API 发送内网 URL 与 pair_code）。"""
-        import io
-        import qrcode
-        import qrcode.image.svg
-        from fastapi.responses import Response
-
+        """本地离线生成聚合智能配对二维码 SVG 图像（带 LRU 内存缓存，避免重复渲染）。"""
         port = request.url.port or 8765
-        host_for_qr = ts_status.tailscale_ip if ts_status.is_online else "127.0.0.1"
+        lan_ip = getattr(ts_status, "lan_ip", "") or ""
+        zt_ip = getattr(ts_status, "zerotier_ip", "") or ""
+        ts_ip = ts_status.tailscale_ip if (ts_status.is_online and ts_status.tailscale_ip) else ""
+
+        if net == "lan" and lan_ip:
+            host_for_qr = lan_ip
+        elif net == "zerotier" and zt_ip:
+            host_for_qr = zt_ip
+        elif net == "tailscale" and ts_ip:
+            host_for_qr = ts_ip
+        else:
+            # 默认绝对优先 Tailscale（全网漫游），其次 ZeroTier，严禁在有 VPN 时优先显示 Wi-Fi
+            host_for_qr = ts_ip or zt_ip or lan_ip or "127.0.0.1"
+
         pair_url = f"http://{host_for_qr}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}"
+        if pair_url in _qr_svg_cache:
+            _qr_svg_cache.move_to_end(pair_url)
+            return Response(content=_qr_svg_cache[pair_url], media_type="image/svg+xml")
+
         qr = qrcode.QRCode(border=2, box_size=8)
         qr.add_data(pair_url)
         qr.make(fit=True)
         img = qr.make_image(image_factory=qrcode.image.svg.SvgPathImage)
         buf = io.BytesIO()
         img.save(buf)
-        return Response(content=buf.getvalue(), media_type="image/svg+xml")
+        svg_bytes = buf.getvalue()
+
+        _qr_svg_cache[pair_url] = svg_bytes
+        if len(_qr_svg_cache) > 20:
+            _qr_svg_cache.popitem(last=False)
+        return Response(content=svg_bytes, media_type="image/svg+xml")
 
     _fp_cache: tuple[float, str] = (0.0, "2.0.0")
 
@@ -270,10 +332,56 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
     ) -> dict[str, Any]:
         """返回 Tailscale 隧道状态、4 大 Agent 健康体检表、防休眠锁状态与配对二维码 URL。"""
         port = request.url.port or 8765
-        host_for_qr = ts_status.tailscale_ip if ts_status.is_online else "127.0.0.1"
+        ts_ip = ts_status.tailscale_ip if (ts_status.is_online and ts_status.tailscale_ip) else ""
+        lan_ip = getattr(ts_status, "lan_ip", "") or ""
+        zt_ip = getattr(ts_status, "zerotier_ip", "") or ""
+        host_for_qr = ts_ip or zt_ip or lan_ip or "127.0.0.1"
         pair_url = f"http://{host_for_qr}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}"
+        lan_pair_url = f"http://{lan_ip}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}" if lan_ip else ""
+        zt_pair_url = f"http://{zt_ip}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}" if zt_ip else ""
+        channels = []
+        if ts_status.is_online and ts_status.tailscale_ip:
+            channels.append({
+                "type": "tailscale",
+                "label": "Tailscale",
+                "ip": ts_status.tailscale_ip,
+                "url": f"http://{ts_status.tailscale_ip}:{port}",
+                "pair_url": pair_url,
+            })
+        if zt_ip:
+            channels.append({
+                "type": "zerotier",
+                "label": "ZeroTier",
+                "ip": zt_ip,
+                "url": f"http://{zt_ip}:{port}",
+                "pair_url": zt_pair_url,
+            })
+        if lan_ip:
+            channels.append({
+                "type": "wifi",
+                "label": "Wi-Fi 直连",
+                "ip": lan_ip,
+                "url": f"http://{lan_ip}:{port}",
+                "pair_url": lan_pair_url,
+            })
+        ts_valid_pair = pair_url if ts_status.is_online else ""
+        # 默认绝对优先 Tailscale（全网漫游），其次 ZeroTier，严禁在有 VPN 时优先显示 Wi-Fi
+        primary_pair_url = ts_valid_pair or zt_pair_url or lan_pair_url or pair_url
+
+        client_host = (request.client.host if request.client else "") or ""
+        provided_token = request.headers.get("x-agentdeck-token") or request.query_params.get("token")
+        has_valid_token = bool(provided_token and auth_mgr.verify_token(provided_token, client_ip=client_host))
+
+        trusted_client_token: Optional[str] = None
+        # PWA 主屏幕独立沙盒自愈保障：仅当客户端尚未持有有效 Token 且属于已配对受信私网时，才下发一次自愈 Token，严禁对已有有效 Token 的设备重复轮转覆盖
+        if not has_valid_token and client_host and auth_mgr.is_paired_trusted_vpn_ip(client_host):
+            trusted_client_token = auth_mgr.issue_token_for_trusted_vpn_ip(client_host)
+
+        overview = await orchestrator.get_system_overview()
+
         return {
             "ok": True,
+            "trusted_client_token": trusted_client_token,
             "tailscale": {
                 "is_online": ts_status.is_online,
                 "ip": ts_status.tailscale_ip,
@@ -281,13 +389,17 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
                 "hostname": ts_status.hostname,
                 "bind_hosts": ts_status.bind_hosts,
                 "diagnostic_msg": ts_status.diagnostic_msg,
+                "lan_ip": lan_ip,
+                "zerotier_ip": zt_ip,
             },
             "awake_lock_active": awake_lock.is_active,
             "pair_url": pair_url,
-            "agents_health": orchestrator.get_startup_health_report(),
-            "models_by_agent": orchestrator.get_available_models(),
-            "workflows": await asyncio.to_thread(discover_quick_workflows),
-            "snapshot": orchestrator.get_state_snapshot(),
+            "lan_pair_url": lan_pair_url,
+            "zt_pair_url": zt_pair_url,
+            "primary_pair_url": primary_pair_url,
+            "pair_code_expires_at": auth_mgr.bootstrap_pair_code_expires_at,
+            "channels": channels,
+            **overview,
         }
 
     @app.get("/api/v1/workflows")
@@ -320,15 +432,21 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
     # --- 2. 会话列表、详情、新建与配置接口 ---
     @app.get("/api/v1/sessions")
     async def list_sessions(
+        request: Request,
         agent_type: str = Query(default="all"),
         limit: int = Query(default=40, ge=1, le=200),
+        if_none_match: Optional[str] = Header(default=None, alias="if-none-match"),
         _auth: bool = Depends(verify_request_auth),
-    ) -> dict[str, Any]:
-        """获取聚合后的 4 大 Agent 会话列表。"""
+    ) -> Response:
+        """获取聚合后的 4 大 Agent 会话列表（带 ETag 304 协商缓存，大幅减少服务端压力与传输流量）。"""
+        etag = orchestrator.get_sessions_etag(agent_filter=agent_type, limit=limit)
+        if check_etag_matches(if_none_match, etag):
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
+
         sessions = orchestrator.list_all_sessions(
             agent_filter=agent_type, limit_per_agent=limit
         )
-        return {
+        data = {
             "ok": True,
             "count": len(sessions),
             "pending_approvals": [
@@ -336,6 +454,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
             ],
             "sessions": sessions,
         }
+        return JSONResponse(content=data, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
     @app.post("/api/v1/sessions")
     async def create_new_session(
@@ -359,6 +478,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
             execution_mode=normalized_mode,
             model_name=req.model_name.strip() if req.model_name else None,
         )
+        orchestrator.bump_version()
 
         if req.initial_prompt.strip():
             await orchestrator.send_prompt_to_session(
@@ -376,13 +496,29 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         unified_id: str,
         limit: int = Query(default=30, ge=1, le=500),
         before_step: Optional[int] = Query(default=None),
+        since_step: Optional[int] = Query(default=None),
+        if_none_match: Optional[str] = Header(default=None, alias="if-none-match"),
         _auth: bool = Depends(verify_request_auth),
-    ) -> dict[str, Any]:
-        """获取单个会话的结构化对话流（支持首屏分页与向上加载更早历史）、思考块、工具调用 Diff 与挂起审批详情。"""
+    ) -> Response:
+        """获取单个会话的结构化对话流（带 ETag 304 协商缓存、增量更新 since_step 与首屏分页）。"""
         detail = orchestrator.get_session_detail(
-            unified_id, limit=limit, before_step=before_step
+            unified_id, limit=limit, before_step=before_step, since_step=since_step
         )
-        return {"ok": True, **detail}
+        msg_etag = orchestrator.get_session_messages_etag(
+            detail,
+            unified_id=unified_id,
+            limit=limit,
+            before_step=before_step,
+            since_step=since_step,
+        )
+
+        if check_etag_matches(if_none_match, msg_etag):
+            return Response(status_code=304, headers={"ETag": msg_etag, "Cache-Control": "no-cache"})
+
+        return JSONResponse(
+            content={"ok": True, **detail},
+            headers={"ETag": msg_etag, "Cache-Control": "no-cache"},
+        )
 
     @app.patch("/api/v1/sessions/{unified_id:path}/meta")
     async def update_session_meta(
@@ -408,6 +544,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
             execution_mode=normalized_mode,
             model_name=req.model_name,
         )
+        orchestrator.bump_version()
         return {"ok": True, "meta": updated}
 
     @app.delete("/api/v1/sessions/{unified_id:path}")
@@ -417,6 +554,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
     ) -> dict[str, Any]:
         """删除指定会话在数据库中的索引元数据。"""
         db.delete_session_meta(unified_id)
+        orchestrator.bump_version()
         return {"ok": True, "deleted": unified_id}
 
     # --- 3. 发送指令、工具审批与紧急中断接口 ---
@@ -589,10 +727,12 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
             return
 
         client_host = (websocket.client.host if websocket.client else "") or ""
+        bind_hosts = getattr(ts_status, "bind_hosts", []) or []
         is_trusted_net = (
             client_host in ("127.0.0.1", "::1", "localhost", "testclient")
+            or (client_host in bind_hosts)
             or auth_mgr.verify_token(token, client_ip=client_host)
-            or auth_mgr.is_paired_tailscale_ip(client_host)
+            or auth_mgr.is_paired_trusted_vpn_ip(client_host)
         )
         if not is_trusted_net:
             await websocket.close(code=1008)
@@ -675,6 +815,20 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         if icon_file.exists():
             return FileResponse(icon_file, media_type="image/png")
         return JSONResponse({"error": "未找到网站图标文件"}, status_code=404)
+
+    @app.get("/sw.js")
+    async def serve_service_worker() -> Response:
+        sw_file = FRONTEND_DIR / "sw.js"
+        if sw_file.exists():
+            return FileResponse(
+                sw_file,
+                media_type="application/javascript",
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Service-Worker-Allowed": "/",
+                },
+            )
+        return JSONResponse({"error": "未找到 Service Worker 脚本"}, status_code=404)
 
     @app.get("/", response_class=HTMLResponse)
     @app.get("/index.html", response_class=HTMLResponse)

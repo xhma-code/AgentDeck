@@ -79,6 +79,7 @@ const MODES_BY_AGENT = {
 
 const state = {
   token: localStorage.getItem("agentdeck_token") || "",
+  activeBaseUrl: "", // 动态信道热切换基地址（支持 In-App 无刷新平滑漫游）
   wsConnected: false,
   wsReconnecting: false,
   lastSeqId: 0,
@@ -116,6 +117,7 @@ const state = {
   optimisticMessages: {}, // unified_id -> array of unconfirmed user message objects
   autoScrollLocked: false,
   expandedTurns: {}, // turnKey -> boolean
+  turnThinkingExpanded: {}, // turnKey -> boolean（用户主动展开思考时在运行中保持展开）
   expandedDetails: {}, // detailId -> boolean（保留已展开的思考/输出详情状态）
   lazyDetailsStore: {}, // detailId -> { type, raw, diff }
   turnsMap: {}, // turnKey -> turn object（供局部切换展开时不重绘整页）
@@ -181,6 +183,46 @@ const AGENT_META = {
 };
 
 let wsInstance = null;
+let wsHeartbeatTimer = null;
+let wsPongTimeoutTimer = null;
+let lastPongReceived = Date.now();
+let lastWsSyncToastTime = 0;
+
+function clearWsHeartbeat() {
+  if (wsHeartbeatTimer) {
+    clearInterval(wsHeartbeatTimer);
+    wsHeartbeatTimer = null;
+  }
+  if (wsPongTimeoutTimer) {
+    clearTimeout(wsPongTimeoutTimer);
+    wsPongTimeoutTimer = null;
+  }
+}
+
+function startWsHeartbeat() {
+  clearWsHeartbeat();
+  lastPongReceived = Date.now();
+  wsHeartbeatTimer = setInterval(() => {
+    if (!wsInstance || wsInstance.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    try {
+      wsInstance.send(JSON.stringify({ action: "ping" }));
+      if (wsPongTimeoutTimer) clearTimeout(wsPongTimeoutTimer);
+      wsPongTimeoutTimer = setTimeout(() => {
+        const elapsed = Date.now() - lastPongReceived;
+        if (elapsed >= 18000 && wsInstance) {
+          console.warn(`[AgentDeck WS] 心跳 Pong 超时 (${elapsed}ms)，判定网络半开假死，触发强制重连`);
+          try {
+            wsInstance.close();
+          } catch (_) {}
+        }
+      }, 8000);
+    } catch (e) {
+      console.warn("[AgentDeck WS] 发送 Ping 心跳异常:", e);
+    }
+  }, 15000);
+}
 let holdTimer = null;
 let holdStartTime = 0;
 let silentSessionsTimer = null;
@@ -214,21 +256,94 @@ async function apiFetch(path, options = {}) {
   if (state.token) {
     headers["X-AgentDeck-Token"] = state.token;
   }
-  const resp = await fetch(path, { ...options, headers });
+  const fullUrl = (state.activeBaseUrl && !path.startsWith("http")) ? `${state.activeBaseUrl}${path}` : path;
+  const resp = await fetch(fullUrl, { ...options, headers });
+  if (resp.status === 304) {
+    return { not_modified: true, _etag: resp.headers.get("etag") };
+  }
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
+    if (resp.status === 401 || resp.status === 403) {
+      // 401 智能自愈拦截重试：若尚未重试过且非鉴权/状态接口，尝试静默自愈恢复 Token 一次
+      if (!options._retried && !path.includes("/auth/") && !path.includes("/system/status")) {
+        try {
+          const statusResp = await fetch(
+            (state.activeBaseUrl && !path.startsWith("http")) ? `${state.activeBaseUrl}/api/v1/system/status` : "/api/v1/system/status",
+            { headers: { "Content-Type": "application/json" } }
+          );
+          if (statusResp.ok) {
+            const sData = await statusResp.json().catch(() => ({}));
+            if (sData && sData.trusted_client_token) {
+              state.token = sData.trusted_client_token;
+              try {
+                localStorage.setItem("agentdeck_token", sData.trusted_client_token);
+              } catch (_) {}
+              closePairingGuideModal();
+              console.info("[AgentDeck] 401 拦截触发静默自愈成功，自动重试原业务请求");
+              return await apiFetch(path, { ...options, _retried: true });
+            }
+          }
+        } catch (_) {}
+      }
+      showPairingGuideModal();
+      throw new Error("请完成设备安全配对");
+    }
     const errMsg = data.detail || data.error || `请求失败 (${resp.status})`;
     showToast(errMsg, "error");
     throw new Error(errMsg);
   }
+  if (resp.headers.get("etag")) {
+    data._etag = resp.headers.get("etag");
+  }
   return data;
 }
 
-// --- 1. 一次性配对码置换 ---
+function showPairingGuideModal(msg) {
+  const modal = document.getElementById("pairing-guide-modal");
+  if (!modal) return;
+  const msgEl = document.getElementById("pairing-guide-msg");
+  if (msgEl && msg) msgEl.textContent = msg;
+  const input = document.getElementById("manual-pair-code-input");
+  if (input && !input.value) {
+    try {
+      const pCode = new URLSearchParams(window.location.search).get("pair_code");
+      if (pCode) input.value = pCode.trim();
+    } catch (_) {}
+  }
+  modal.classList.remove("hidden");
+}
+
+function closePairingGuideModal() {
+  const modal = document.getElementById("pairing-guide-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function isLocalHostClient() {
+  const h = window.location.hostname;
+  return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+
+// --- 1. 一次性配对码与 Token 参数置换 ---
 async function checkAndExchangePairCode() {
   const params = new URLSearchParams(window.location.search);
+
+  // 1. 优先读取跨通道或书签携带的有效 Token
+  const urlToken = params.get("token");
+  if (urlToken) {
+    state.token = urlToken;
+    try {
+      localStorage.setItem("agentdeck_token", urlToken);
+    } catch (_) {}
+    closePairingGuideModal();
+    return;
+  }
+
+  // 2. 携带了一次性配对码进行鉴权置换
   const pairCode = params.get("pair_code");
-  if (!pairCode) return;
+  if (!pairCode) {
+    // 首次进入不盲目弹窗拦截，允许本机或已受信网络静默进入
+    return;
+  }
 
   try {
     const ua = navigator.userAgent || "Mobile";
@@ -245,12 +360,19 @@ async function checkAndExchangePairCode() {
     if (res.token) {
       state.token = res.token;
       localStorage.setItem("agentdeck_token", res.token);
-      showToast("扫码配对成功", "success");
+      showToast("设备配对成功！", "success");
+      closePairingGuideModal();
+      // 将 pair_code 置换为长期 token 保存在地址栏，确保随后添加到主屏幕时 PWA 独立沙盒原生携带该授权 token
+      const pwaUrl = new URL(window.location.href);
+      pwaUrl.searchParams.delete("pair_code");
+      pwaUrl.searchParams.set("token", res.token);
+      window.history.replaceState({}, document.title, pwaUrl.pathname + pwaUrl.search + pwaUrl.hash);
     }
   } catch (err) {
     console.warn("配对码置换失败:", err);
-  } finally {
-    window.history.replaceState({}, document.title, window.location.pathname);
+    if (!state.token) {
+      showPairingGuideModal("该配对码已失效或已过期。请在下方输入电脑上显示的当前配对码。");
+    }
   }
 }
 
@@ -274,30 +396,186 @@ function requestNotificationPermission() {
   }
 }
 
+// --- 自动网络通道探活与跨网络自愈漫游调度器 ---
+let isRoamingCheckBusy = false;
+let wsDisconnectStreak = 0;
+
+function showRoamingBanner(text, isPermanent = false) {
+  const banner = document.getElementById("roaming-banner");
+  const bannerText = document.getElementById("roaming-banner-text");
+  if (!banner || !bannerText) return;
+  bannerText.textContent = text;
+  banner.classList.remove("hidden");
+  if (!isPermanent) {
+    setTimeout(() => {
+      banner.classList.add("hidden");
+    }, 4500);
+  }
+}
+
+function hideRoamingBanner() {
+  const banner = document.getElementById("roaming-banner");
+  if (banner) banner.classList.add("hidden");
+}
+
+async function probeChannelHealth(targetBaseUrl, timeoutMs = 1800) {
+  if (!targetBaseUrl) return false;
+  const cleanUrl = targetBaseUrl.replace(/\/+$/, "");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${cleanUrl}/healthz?_probe=${Date.now()}`, {
+      method: "GET",
+      signal: ctrl.signal,
+      cache: "no-store",
+      mode: "cors",
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return data.ok === true || res.status === 200;
+    }
+    return false;
+  } catch (_) {
+    clearTimeout(timer);
+    return false;
+  }
+}
+
+async function triggerAutoRoaming(triggerSource = "network") {
+  if (isRoamingCheckBusy) return;
+  isRoamingCheckBusy = true;
+
+  try {
+    // 1. 先探测当前所在 Origin 是否畅通（放宽至 3000ms，兼容 ZeroTier / Tailscale 虚拟私网抖动）
+    const currentOrigin = window.location.origin;
+    const currentAlive = await probeChannelHealth(currentOrigin, 3000);
+    if (currentAlive) {
+      // 当前 Origin 响应正常，通道畅通，重置断线计数
+      wsDisconnectStreak = 0;
+      hideRoamingBanner();
+      return;
+    }
+
+    // 2. 当前 Origin 不通，读取已持久化的聚合通道列表
+    let cachedChannels = [];
+    try {
+      cachedChannels = JSON.parse(localStorage.getItem("agentdeck_channels") || "[]");
+    } catch (_) {
+      cachedChannels = [];
+    }
+
+    // 过滤出除当前 Origin 之外的其他通道
+    const candidates = (cachedChannels || []).filter((c) => {
+      if (!c.url) return false;
+      try {
+        const u = new URL(c.url);
+        return u.origin !== currentOrigin;
+      } catch (_) {
+        return false;
+      }
+    });
+
+    if (candidates.length === 0) {
+      console.warn("未发现可漫游的备用网络通道");
+      showRoamingBanner("网络通道不可达，请检查 VPN 网络连接", false);
+      return;
+    }
+
+    showRoamingBanner("检测到网络通道变动，正在自动漫游探活...", true);
+
+    // 3. 并发探测所有候选通道，取最先响应成功者
+    const probePromises = candidates.map(async (c) => {
+      const ok = await probeChannelHealth(c.url, 3500);
+      if (ok) return c;
+      throw new Error("channel offline");
+    });
+
+    let winner = null;
+    try {
+      winner = await Promise.any(probePromises);
+    } catch (_) {
+      showRoamingBanner("所有通道暂不可达，请检查 VPN 网络连接", false);
+      return;
+    }
+
+    if (winner && winner.url) {
+      showRoamingBanner(`已切换至更优通道：${winner.label}（无感热切中）`, true);
+      try {
+        const targetUrlObj = new URL(winner.url);
+        if (targetUrlObj.host !== window.location.host) {
+          state.activeBaseUrl = winner.url.replace(/\/+$/, "");
+        } else {
+          state.activeBaseUrl = "";
+        }
+        wsDisconnectStreak = 0;
+        connectWebSocket();
+        await Promise.all([loadSystemStatus(), loadSessions(true)]);
+        setTimeout(hideRoamingBanner, 1600);
+        return;
+      } catch (hotSwapErr) {
+        console.warn("无感热切换失败，降级为页面重定向:", hotSwapErr);
+        const token = state.token || localStorage.getItem("agentdeck_token") || "";
+        const target = new URL(winner.url);
+        if (token) {
+          target.searchParams.set("token", token);
+        }
+        target.hash = window.location.hash || "";
+        setTimeout(() => {
+          window.location.replace(target.toString());
+        }, 200);
+      }
+    }
+  } catch (err) {
+    console.error("自动漫游探活异常:", err);
+  } finally {
+    isRoamingCheckBusy = false;
+  }
+}
+
 // --- 3. WebSocket 实时流 ---
 function connectWebSocket() {
+  clearWsHeartbeat();
   if (wsInstance) {
     try {
+      wsInstance.onclose = null;
+      wsInstance.onerror = null;
+      wsInstance.onmessage = null;
+      wsInstance.onopen = null;
       wsInstance.close();
     } catch (_) {}
+    wsInstance = null;
   }
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const qs = new URLSearchParams({
     since_seq: String(state.lastSeqId || 0),
     token: state.token || "",
   });
-  const wsUrl = `${proto}//${window.location.host}/ws/stream?${qs.toString()}`;
+  let host = window.location.host;
+  if (state.activeBaseUrl) {
+    try {
+      host = new URL(state.activeBaseUrl).host;
+    } catch (_) {}
+  }
+  const wsUrl = `${proto}//${host}/ws/stream?${qs.toString()}`;
 
   wsInstance = new WebSocket(wsUrl);
 
   wsInstance.onopen = () => {
+    wsDisconnectStreak = 0;
+    hideRoamingBanner();
+    startWsHeartbeat();
     const wasReconnecting = state.wsReconnecting;
     state.wsConnected = true;
     state.wsReconnecting = false;
     renderHeaderStatus();
     if (wasReconnecting) {
-      showToast("已恢复同步", "success");
-      loadSessions();
+      const now = Date.now();
+      if (now - lastWsSyncToastTime > 8000) {
+        lastWsSyncToastTime = now;
+        showToast("已恢复同步", "success");
+      }
+      loadSessions(true);
       if (state.selectedSessionId) {
         loadSessionMessages(state.selectedSessionId, true);
       }
@@ -307,6 +585,14 @@ function connectWebSocket() {
   wsInstance.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
+      if (msg.type === "PONG") {
+        lastPongReceived = Date.now();
+        if (wsPongTimeoutTimer) {
+          clearTimeout(wsPongTimeoutTimer);
+          wsPongTimeoutTimer = null;
+        }
+        return;
+      }
       if (msg.seq_id && msg.seq_id > state.lastSeqId) {
         state.lastSeqId = msg.seq_id;
       }
@@ -316,10 +602,29 @@ function connectWebSocket() {
     }
   };
 
-  wsInstance.onclose = () => {
+  wsInstance.onclose = (ev) => {
+    clearWsHeartbeat();
     state.wsConnected = false;
     state.wsReconnecting = true;
     renderHeaderStatus();
+    if (ev && ev.code === 1008) {
+      // 鉴权未通过被服务端拒绝，先尝试通过受信虚拟私网静默自愈一次，避免冷启动瞬态误报
+      loadSystemStatus().then(() => {
+        if (state.token) {
+          console.info("[AgentDeck WS] 握手 1008 自愈成功，正在使用新 Token 重连...");
+          setTimeout(connectWebSocket, 800);
+        } else {
+          showPairingGuideModal();
+        }
+      }).catch(() => {
+        showPairingGuideModal();
+      });
+      return;
+    }
+    wsDisconnectStreak++;
+    if (wsDisconnectStreak >= 2) {
+      triggerAutoRoaming("websocket_disconnect");
+    }
     setTimeout(connectWebSocket, 2200);
   };
 }
@@ -327,9 +632,32 @@ function connectWebSocket() {
 function handleRealtimeEvent(envelope) {
   const { type, payload } = envelope;
 
+  // 手机端扫码配对成功广播：电脑端扫码弹窗瞬间响应双向握手并优雅自动关闭
+  if (type === "DEVICE_PAIRED") {
+    state.pairedSuccessNotice = payload;
+    const qrModal = document.getElementById("qr-modal");
+    if (qrModal && !qrModal.classList.contains("hidden")) {
+      renderQrModalContent();
+      setTimeout(() => {
+        state.pairedSuccessNotice = null;
+        window.appActions.closeQrModal();
+      }, 1800);
+    }
+    showToast(`📱 ${payload.device_name || "移动设备"} 配对成功！`, "success");
+    triggerAlertNotification("设备配对成功", `${payload.device_name || "移动设备"} 已安全接入中控台`);
+    return;
+  }
+
   if (type === "SESSION_STATE_SNAPSHOT") {
     state.pendingApprovals = payload.pending_approvals || [];
     renderApprovalBanners();
+    if (payload.is_overflow) {
+      console.info("[AgentDeck] 检测到事件环形缓冲区溢出 (is_overflow=true)，触发全量数据补偿同步...");
+      loadSessions(true);
+      if (state.selectedSessionId) {
+        loadSessionMessages(state.selectedSessionId, { silent: true });
+      }
+    }
     return;
   }
 
@@ -494,6 +822,20 @@ async function loadSystemStatus() {
   try {
     const data = await apiFetch("/api/v1/system/status");
     state.systemStatus = data;
+    // PWA 主屏幕独立沙盒无感自愈：若服务端基于受信任已配对 VPN IP 下发了有效 token，立即补齐并入库
+    if (data.trusted_client_token) {
+      state.token = data.trusted_client_token;
+      try {
+        localStorage.setItem("agentdeck_token", data.trusted_client_token);
+      } catch (_) {}
+      closePairingGuideModal();
+      console.info("[AgentDeck] PWA 独立沙盒已通过已配对 VPN IP 静默同步授权 Token");
+    }
+    if (Array.isArray(data.channels) && data.channels.length > 0) {
+      try {
+        localStorage.setItem("agentdeck_channels", JSON.stringify(data.channels));
+      } catch (_) {}
+    }
     if (data.models_by_agent) {
       state.modelsByAgent = data.models_by_agent;
     }
@@ -504,6 +846,7 @@ async function loadSystemStatus() {
       state.pendingApprovals = data.snapshot.pending_approvals;
     }
     renderHeaderStatus();
+    renderSidebarAwakeLock();
     renderApprovalBanners();
     renderQrModalContent();
     renderCurrentSessionHeader();
@@ -627,8 +970,18 @@ function pickDefaultSession(sessionList) {
 
 async function loadSessions(silent = false) {
   try {
-    // 始终拉取全量会话（limit=60），前端切换 Agent 标签时 0ms 纯内存过滤
-    const data = await apiFetch(`/api/v1/sessions?agent_type=all&limit=60`);
+    const headers = {};
+    if (state.sessionsETag) {
+      headers["If-None-Match"] = state.sessionsETag;
+    }
+    // 始终拉取全量会话（limit=60），前端切换 Agent 标签时 0ms 纯内存过滤（支持 ETag 304 协商缓存）
+    const data = await apiFetch(`/api/v1/sessions?agent_type=all&limit=60`, { headers });
+    if (data && data.not_modified) {
+      return;
+    }
+    if (data && data._etag) {
+      state.sessionsETag = data._etag;
+    }
     const incomingSessions = data.sessions || [];
     const incomingApprovals = data.pending_approvals || state.pendingApprovals || [];
     const newSig = computeSessionsSig(incomingSessions, incomingApprovals);
@@ -843,9 +1196,35 @@ async function loadSessionMessages(unifiedId, options = false) {
     renderMessagesList();
   }
   try {
-    const data = await apiFetch(
-      `/api/v1/sessions/${encodeURIComponent(unifiedId)}/messages?limit=${limit}`
-    );
+    const headers = {};
+    const prevCache = state.sessionMessagesCache[unifiedId];
+    let sinceStep = null;
+    // 静默轮询时启用增量拉取：若本地已有该会话消息，则只拉取最后一步起的变化 (since_step)，大幅节省带宽与反序列化损耗
+    if (silent && prevCache && Array.isArray(prevCache.messages) && prevCache.messages.length > 0) {
+      const lastLocalMsg = prevCache.messages[prevCache.messages.length - 1];
+      if (typeof lastLocalMsg.step_index === "number") {
+        sinceStep = lastLocalMsg.step_index;
+      }
+    }
+
+    const lastETag = state.sessionMessagesETag?.[unifiedId];
+    if (silent && lastETag) {
+      headers["If-None-Match"] = lastETag;
+    }
+
+    let fetchUrl = `/api/v1/sessions/${encodeURIComponent(unifiedId)}/messages?limit=${limit}`;
+    if (sinceStep !== null) {
+      fetchUrl += `&since_step=${sinceStep}`;
+    }
+
+    const data = await apiFetch(fetchUrl, { headers });
+    if (data && data.not_modified) {
+      return;
+    }
+    if (data && data._etag) {
+      state.sessionMessagesETag = state.sessionMessagesETag || {};
+      state.sessionMessagesETag[unifiedId] = data._etag;
+    }
     const incoming = data.messages || [];
     const hasMore = Boolean(data.has_more);
     const totalCount = data.total_count || incoming.length;
@@ -867,12 +1246,36 @@ async function loadSessionMessages(unifiedId, options = false) {
       }
     }
 
-    // 写入内存缓存
-    const prevCache = state.sessionMessagesCache[unifiedId];
+    // 写入内存缓存与就地增量合并
     let mergedMessages = incoming;
     let mergedHasMore = hasMore;
-    // 若用户此前已向上加载过更早消息，静默刷新时保留头部已加载的历史步骤
-    if (
+    if (sinceStep !== null && prevCache && Array.isArray(prevCache.messages)) {
+      if (typeof totalCount === "number" && totalCount < prevCache.messages.length) {
+        // 服务端消息总数缩水，说明会话被截断或重新初始化，丢弃陈旧缓存直接使用 incoming
+        mergedMessages = incoming;
+      } else if (incoming.length === 0) {
+        // 增量拉取无新消息，安全保留现有完整消息列表
+        mergedMessages = prevCache.messages;
+        mergedHasMore = prevCache.hasMore;
+      } else {
+        // 基于 step_index 原子去重合并，防止网络抖动导致的丢步或重复
+        const msgMap = new Map();
+        for (const m of prevCache.messages) {
+          if (m && m.step_index !== undefined) {
+            msgMap.set(m.step_index, m);
+          }
+        }
+        for (const m of incoming) {
+          if (m && m.step_index !== undefined) {
+            msgMap.set(m.step_index, m);
+          }
+        }
+        mergedMessages = Array.from(msgMap.values()).sort(
+          (a, b) => (a.step_index || 0) - (b.step_index || 0)
+        );
+        mergedHasMore = prevCache.hasMore;
+      }
+    } else if (
       silent &&
       prevCache &&
       Array.isArray(prevCache.messages) &&
@@ -1260,6 +1663,17 @@ function escapeHtml(str) {
     .replace(/'/g, "&#39;");
 }
 
+function cleanFriendlyTitle(title) {
+  if (!title) return "";
+  const str = String(title).trim();
+  const m = str.match(/^\[已拒绝工具\s+[^\s\]]+\]\s*(?:请勿执行刚才的操作，按以下要求调整方案：)?\s*(.*)$/);
+  if (m) {
+    const feedback = m[1] ? m[1].trim() : "";
+    return feedback ? `指导: ${feedback}` : "已拒绝工具执行";
+  }
+  return str;
+}
+
 function formatRelativeTime(isoStr) {
   if (!isoStr) return "";
   const dt = new Date(isoStr);
@@ -1283,48 +1697,93 @@ function getProjectInfo(rawPath) {
 
 function renderSidebarStatus() {
   const btn = document.getElementById("sidebar-status-btn");
-  if (!btn) return;
+  const headerIndicator = document.getElementById("header-status-indicator");
 
   if (state.hasUpdate) {
-    // 发现前端新代码更新：亮蓝呼吸脉冲 + 向上箭头图标
-    btn.className =
-      "h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/50 text-sky-200 flex items-center gap-1.5 text-xs transition active:scale-95 shadow-[0_0_12px_rgba(56,189,248,0.25)] animate-pulse";
-    btn.title = "发现新版本前端代码，点击立即载入更新";
-    btn.innerHTML = `
-      <svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="12" y1="19" x2="12" y2="5"></line>
-        <polyline points="5 12 12 5 19 12"></polyline>
-      </svg>
-      <span class="text-[11px] font-semibold text-sky-300">更新</span>
-    `;
+    // 发现前端代码更新：亮蓝呼吸脉冲 + 向上箭头图标
+    if (btn) {
+      btn.className =
+        "h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/50 text-sky-200 flex items-center gap-1.5 text-xs transition active:scale-95 shadow-[0_0_12px_rgba(56,189,248,0.25)] animate-pulse cursor-pointer";
+      btn.title = "发现新版本前端代码，点击立即载入更新";
+      btn.innerHTML = `
+        <svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="19" x2="12" y2="5"></line>
+          <polyline points="5 12 12 5 19 12"></polyline>
+        </svg>
+        <span class="text-[11px] font-semibold text-sky-300">更新</span>
+      `;
+    }
+    if (headerIndicator) {
+      headerIndicator.classList.remove("hidden");
+      headerIndicator.className =
+        "shrink-0 h-6 px-1.5 rounded-md bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/50 text-sky-300 flex items-center gap-1 text-[11px] transition active:scale-95 shadow-sm animate-pulse cursor-pointer";
+      headerIndicator.title = "发现前端代码更新，点击立即载入最新代码";
+      headerIndicator.innerHTML = `
+        <svg class="w-3 h-3 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="19" x2="12" y2="5"></line>
+          <polyline points="5 12 12 5 19 12"></polyline>
+        </svg>
+        <span class="font-semibold text-[10px]">更新</span>
+      `;
+    }
     return;
   }
 
-  // 常规连接状态：仅保留纯粹呼吸圆点（完全去除外框与背景圈）
-  btn.className =
-    "p-1 rounded-full bg-transparent hover:bg-white/[0.06] border-0 flex items-center justify-center transition active:scale-95";
+  // 常规连接状态：手机端日常仅保留呼吸圆点（无背景与外边框），电脑端保留胶囊样式
+  if (btn) {
+    btn.className =
+      "h-8 w-8 sm:w-auto p-0 sm:px-2 rounded-lg bg-transparent hover:bg-zinc-900/60 sm:bg-zinc-900 sm:hover:bg-zinc-800 border-0 sm:border sm:border-zinc-800/80 text-zinc-300 flex items-center justify-center sm:justify-start gap-0 sm:gap-1.5 text-xs transition active:scale-95 cursor-pointer";
 
-  if (state.wsConnected) {
-    btn.title = "WebSocket 实时连接正常（双击可强制重载）";
-    btn.innerHTML = `
-      <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.7)]"></span>
-    `;
-  } else if (state.wsReconnecting) {
-    btn.title = "正在重新连接 WebSocket 服务...";
-    btn.innerHTML = `
-      <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
-    `;
-  } else {
-    btn.title = "与服务端的实时连接断开（点击尝试重新载入）";
-    btn.innerHTML = `
-      <span class="w-2.5 h-2.5 rounded-full bg-zinc-600"></span>
-    `;
+    if (state.wsConnected) {
+      btn.title = "WebSocket 实时连接正常（双击可强制重载）";
+      btn.innerHTML = `
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.7)]"></span>
+        <span class="text-[11px] font-mono text-zinc-400 hidden sm:inline">已连接</span>
+      `;
+    } else if (state.wsReconnecting) {
+      btn.title = "正在重新连接 WebSocket 服务...";
+      btn.innerHTML = `
+        <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
+        <span class="text-[11px] font-mono text-amber-400 hidden sm:inline">连接中</span>
+      `;
+    } else {
+      btn.title = "与服务端的实时连接断开（点击尝试重新载入）";
+      btn.innerHTML = `
+        <span class="w-2.5 h-2.5 rounded-full bg-zinc-600"></span>
+        <span class="text-[11px] font-mono text-zinc-500 hidden sm:inline">离线</span>
+      `;
+    }
+  }
+
+  if (headerIndicator) {
+    if (state.wsConnected) {
+      headerIndicator.classList.add("hidden");
+    } else if (state.wsReconnecting) {
+      headerIndicator.classList.remove("hidden");
+      headerIndicator.className =
+        "shrink-0 h-5 px-1 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center gap-1 text-[10px] cursor-pointer";
+      headerIndicator.title = "重连中... 点击尝试重新载入";
+      headerIndicator.innerHTML = `
+        <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
+        <span>重连中</span>
+      `;
+    } else {
+      headerIndicator.classList.remove("hidden");
+      headerIndicator.className =
+        "shrink-0 h-5 px-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-400 flex items-center gap-1 text-[10px] cursor-pointer";
+      headerIndicator.title = "已离线，点击重新载入";
+      headerIndicator.innerHTML = `
+        <span class="w-1.5 h-1.5 rounded-full bg-zinc-500"></span>
+        <span>离线</span>
+      `;
+    }
   }
 }
 
 async function checkFrontendVersion() {
   try {
-    const res = await fetch("/api/v1/version", { cache: "no-store" });
+    const url = state.activeBaseUrl ? `${state.activeBaseUrl}/api/v1/version` : "/api/v1/version";
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return;
     const data = await res.json();
     if (data.ok && data.frontend_version) {
@@ -1343,7 +1802,7 @@ function handleStatusBtnClick() {
   if (state.hasUpdate) {
     showToast("检测到前端改动，正在载入最新代码...", "info");
     setTimeout(() => {
-      window.location.reload();
+      window.location.reload(true);
     }, 150);
     return;
   }
@@ -1352,7 +1811,7 @@ function handleStatusBtnClick() {
   if (now - (state.lastStatusClickTime || 0) < 2000) {
     showToast("正在强制重新载入...", "info");
     setTimeout(() => {
-      window.location.reload();
+      window.location.reload(true);
     }, 100);
     return;
   }
@@ -1373,15 +1832,61 @@ function renderHeaderStatus() {
   if (!netBadge) return;
 
   if (state.wsConnected) {
-    const tsOnline = state.systemStatus?.tailscale?.is_online;
+    const tsOnline = !!state.systemStatus?.tailscale?.is_online;
+    const ztOnline = !!state.systemStatus?.tailscale?.zerotier_ip;
+    const vpnOnline = tsOnline || ztOnline;
     netBadge.innerHTML = `<span class="w-2 h-2 rounded-full ${
-      tsOnline ? "bg-emerald-400" : "bg-sky-400"
+      vpnOnline ? "bg-emerald-400" : "bg-sky-400"
     }"></span>`;
     if (reconnectBanner) reconnectBanner.classList.add("hidden");
   } else {
     netBadge.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>`;
     if (reconnectBanner) reconnectBanner.classList.remove("hidden");
   }
+}
+
+function renderSidebarAwakeLock() {
+  const dot = document.getElementById("sidebar-awake-dot");
+  const text = document.getElementById("sidebar-awake-text");
+  if (!dot || !text) return;
+  const active = !!state.systemStatus?.awake_lock_active;
+  if (active) {
+    dot.className = "w-1.5 h-1.5 rounded-full bg-emerald-400";
+    text.textContent = "防休眠: 开";
+    text.className = "text-emerald-300 font-medium";
+  } else {
+    dot.className = "w-1.5 h-1.5 rounded-full bg-zinc-600";
+    text.textContent = "防休眠: 关";
+    text.className = "text-zinc-400";
+  }
+}
+
+function renderAgentsHealthModal() {
+  const body = document.getElementById("agents-health-modal-body");
+  if (!body) return;
+  const list = state.systemStatus?.agents_health || [];
+  body.innerHTML = list
+    .map(
+      (a) => `
+        <div class="p-2.5 rounded-xl bg-zinc-950/80 border border-zinc-800 flex items-start justify-between gap-2">
+          <div class="space-y-0.5 min-w-0">
+            <div class="text-xs font-semibold flex items-center gap-1.5 ${
+              a.ready ? "text-emerald-300" : "text-zinc-400"
+            }">
+              <span class="w-1.5 h-1.5 rounded-full ${a.ready ? "bg-emerald-400" : "bg-zinc-600"}"></span>
+              <span>${escapeHtml(a.agent_label)}</span>
+            </div>
+            <div class="text-[10px] text-zinc-500 leading-relaxed truncate">${escapeHtml(a.description || "")}</div>
+          </div>
+          <span class="text-[10px] px-1.5 py-0.5 rounded font-mono shrink-0 ${
+            a.ready ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-zinc-800 text-zinc-500"
+          }">
+            ${a.ready ? "就绪" : "未挂载"}
+          </span>
+        </div>
+      `
+    )
+    .join("");
 }
 
 function renderCompactSessionItem(s, showProjectTag = true) {
@@ -1423,7 +1928,7 @@ function renderCompactSessionItem(s, showProjectTag = true) {
         <span class="px-1 py-0.5 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
           ${meta.short}
         </span>
-        <span class="text-xs truncate font-medium">${escapeHtml(s.title)}</span>
+        <span class="text-xs truncate font-medium">${escapeHtml(cleanFriendlyTitle(s.title))}</span>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
         ${
@@ -1956,12 +2461,12 @@ function renderCurrentSessionHeader() {
       <div class="hidden sm:flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
         ${desktopProjectHtml}
         <span class="text-zinc-500 text-xs shrink-0 select-none">·</span>
-        <span class="truncate font-medium text-sm text-zinc-100 min-w-0" title="${escapeHtml(sess.title)}">${escapeHtml(sess.title)}</span>
+        <span class="truncate font-medium text-sm text-zinc-100 min-w-0" title="${escapeHtml(cleanFriendlyTitle(sess.title))}">${escapeHtml(cleanFriendlyTitle(sess.title))}</span>
       </div>
 
       <!-- 手机端（sm以下显示）：会话名称 · 项目名称 -->
       <div class="flex sm:hidden items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
-        <span class="truncate font-medium text-xs text-zinc-100 min-w-0 shrink" title="${escapeHtml(sess.title)}">${escapeHtml(sess.title)}</span>
+        <span class="truncate font-medium text-xs text-zinc-100 min-w-0 shrink" title="${escapeHtml(cleanFriendlyTitle(sess.title))}">${escapeHtml(cleanFriendlyTitle(sess.title))}</span>
         ${mobileProjectHtml}
       </div>
     `;
@@ -2368,9 +2873,112 @@ function renderMarkdownHtml(rawMd, scopeKey = "md") {
   return `<div class="md-prose">${out.join("")}</div>`;
 }
 
-function renderUnifiedDiffHtml(diffText) {
+function isReadOnlyTool(tc) {
+  if (tc && typeof tc.is_read_only === "boolean") return tc.is_read_only;
+  const name = String((tc && tc.name) || tc || "").toLowerCase().replace(/-/g, "_");
+  return (
+    name.includes("read_file") ||
+    name.includes("view_file") ||
+    name.includes("grep") ||
+    name.includes("glob") ||
+    name.includes("search_web") ||
+    name.includes("file_search")
+  );
+}
+
+async function copyTextToClipboard(text) {
+  if (!text) return false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_) {}
+  }
+  try {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-9999px";
+    textArea.style.top = "-9999px";
+    textArea.style.opacity = "0";
+    textArea.setAttribute("readonly", "");
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    textArea.setSelectionRange(0, text.length);
+    const successful = document.execCommand("copy");
+    document.body.removeChild(textArea);
+    if (successful) return true;
+  } catch (_) {}
+  return false;
+}
+
+function saveToBoundedStore(storeName, key, value, maxItems = 150) {
+  if (!state[storeName]) {
+    state[storeName] = {};
+  }
+  const store = state[storeName];
+  store[key] = value;
+  const keys = Object.keys(store);
+  if (keys.length > maxItems) {
+    const pruneCount = Math.floor(maxItems / 4);
+    for (let i = 0; i < pruneCount; i++) {
+      delete store[keys[i]];
+    }
+  }
+}
+
+function applyButtonCheckmark(btnEl, options = {}) {
+  if (!btnEl) return;
+  const label = options.label || "已复制";
+  const iconSize = options.iconSize || "w-3.5 h-3.5";
+  const highlightBorder = !!options.highlightBorder;
+  const duration = options.duration || 1600;
+
+  if (btnEl._copyResetTimer) {
+    clearTimeout(btnEl._copyResetTimer);
+  } else {
+    btnEl._oldCopyHtml = btnEl.innerHTML;
+  }
+
+  btnEl.innerHTML = `
+    <svg class="${iconSize} text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+    <span class="text-emerald-300 font-medium">${escapeHtml(label)}</span>
+  `;
+
+  if (highlightBorder) {
+    btnEl.classList.add("border-emerald-500/40", "bg-emerald-500/10");
+  }
+
+  btnEl._copyResetTimer = setTimeout(() => {
+    if (btnEl._oldCopyHtml !== undefined) {
+      btnEl.innerHTML = btnEl._oldCopyHtml;
+      delete btnEl._oldCopyHtml;
+    }
+    if (highlightBorder) {
+      btnEl.classList.remove("border-emerald-500/40", "bg-emerald-500/10");
+    }
+    delete btnEl._copyResetTimer;
+  }, duration);
+}
+
+function updateCollapseStepsPillVisibility() {
+  const pill = document.getElementById("collapse-steps-pill");
+  if (!pill) return;
+  const hasExpandedTurn =
+    Object.values(state.expandedTurns || {}).some(Boolean) ||
+    Object.values(state.turnThinkingExpanded || {}).some(Boolean);
+  const container = document.getElementById("messages-container");
+  const isScrolledDown = container ? container.scrollTop > 80 : false;
+  pill.classList.toggle("hidden", !(hasExpandedTurn && isScrolledDown));
+}
+
+function renderUnifiedDiffHtml(diffText, filePath = "", options = {}) {
   if (!diffText) return "";
   const lines = diffText.split("\n");
+  let addCount = 0;
+  let delCount = 0;
+
   const renderedLines = lines
     .map((line) => {
       let cls = "diff-line text-zinc-300";
@@ -2380,22 +2988,59 @@ function renderUnifiedDiffHtml(diffText) {
         cls = "diff-line diff-line-hunk";
       } else if (line.startsWith("+")) {
         cls = "diff-line diff-line-add";
+        addCount++;
       } else if (line.startsWith("-")) {
         cls = "diff-line diff-line-del";
+        delCount++;
       }
       return `<div class="${cls}">${escapeHtml(line)}</div>`;
     })
     .join("");
 
+  const fileName = filePath ? getBasename(filePath) : "";
+  const isModal = !!options.isModal;
+  const finalAddCount = typeof options.addCount === "number" ? options.addCount : addCount;
+  const finalDelCount = typeof options.delCount === "number" ? options.delCount : delCount;
+
+  // 避免在 HTML 属性中拼接大字符串导致单引号/特殊字符截断失效：统一注册到带容量上限的内存存储
+  const diffId = options.diffId || `diff_${Math.random().toString(36).slice(2, 9)}`;
+  saveToBoundedStore("diffStore", diffId, {
+    diffText,
+    filePath,
+    addCount: finalAddCount,
+    delCount: finalDelCount,
+  });
+
   return `
-    <div class="mt-1.5">
-      <div class="flex items-center justify-between text-[10px] text-zinc-400 mb-1">
-        <span>📄 代码变更 Diff</span>
-        <button type="button" onclick="window.appActions.toggleWordWrap()" class="text-sky-400 hover:underline">
-          ${state.wordWrapDiff ? "横向滚动" : "自动换行"}
-        </button>
+    <div class="unified-diff-card">
+      <div class="unified-diff-header">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span class="font-mono font-medium text-zinc-200 truncate text-[11px]" title="${escapeHtml(filePath)}">
+            ${escapeHtml(fileName || "代码变更")}
+          </span>
+          <div class="flex items-center gap-1 font-mono shrink-0 ml-1">
+            <span class="diff-stat-badge diff-stat-add">+${finalAddCount}</span>
+            <span class="diff-stat-badge diff-stat-del">-${finalDelCount}</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <button type="button" data-action="toggle-word-wrap" onclick="window.appActions.toggleWordWrap()" class="text-zinc-400 hover:text-sky-300 text-[10px] transition">
+            ${state.wordWrapDiff ? "横向滚动" : "自动换行"}
+          </button>
+          ${
+            !isModal
+              ? `<button type="button" onclick="window.appActions.openDiffFullscreenById('${escapeJsSingleQuote(diffId)}', event)" class="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-sky-300 text-[10px] flex items-center gap-0.5 transition active:scale-95" title="全屏查看 Diff">
+                  <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                  <span>全屏</span>
+                </button>`
+              : ""
+          }
+        </div>
       </div>
-      <div class="unified-diff-box ${state.wordWrapDiff ? "word-wrap" : ""} max-h-60 overflow-y-auto">
+      <div class="unified-diff-box ${state.wordWrapDiff ? "word-wrap" : ""} ${
+        !isModal ? "max-h-64" : ""
+      } overflow-y-auto">
         ${renderedLines}
       </div>
     </div>
@@ -2511,6 +3156,7 @@ function groupMessagesIntoTurns(messages) {
         processRecords.push({
           step_index: step.step_index,
           thinking: hasThinking ? step.thinking.trim() : "",
+          thinking_len: step.thinking_len || (hasThinking ? step.thinking.trim().length : 0),
           intermediateNote: isIntermediateNote ? text : "",
           tool_calls: tools,
         });
@@ -2558,7 +3204,7 @@ function renderTurnProcessBar(turn) {
   if (!processRecords || processRecords.length === 0) return "";
   state.turnsMap[turnKey] = turn;
 
-  const isExpanded = !!state.expandedTurns[turnKey];
+  const isExpanded = !!state.expandedTurns[turnKey] || !!state.turnThinkingExpanded[turnKey];
   const totalActions =
     toolCount + thinkingCount + processRecords.filter((r) => r.intermediateNote).length;
 
@@ -2567,24 +3213,38 @@ function renderTurnProcessBar(turn) {
   if (editedFiles.length > 0) {
     const fileHint =
       editedFiles.length === 1
-        ? `✏️ 修改 ${editedFiles[0]}`
-        : `✏️ 修改 ${editedFiles.length} 个文件`;
+        ? `修改 ${editedFiles[0]}`
+        : `修改 ${editedFiles.length} 个文件`;
     badges.push(
-      `<span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium shrink-0">${escapeHtml(
-        fileHint
-      )}</span>`
+      `<span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium shrink-0 flex items-center gap-1">
+        <svg class="w-3 h-3 text-emerald-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        <span>${escapeHtml(fileHint)}</span>
+      </span>`
     );
   }
   if (hasHighRisk) {
     badges.push(
-      `<span class="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/35 text-[10px] font-semibold shrink-0">⚠️ 含高危操作</span>`
+      `<span class="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/35 text-[10px] font-semibold shrink-0 flex items-center gap-1">
+        <svg class="w-3 h-3 text-rose-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span>含高危操作</span>
+      </span>`
     );
   }
   if (toolCount > 0) {
-    badges.push(`<span class="text-[11px] text-zinc-400">🔧 ${toolCount} 次调用</span>`);
+    badges.push(
+      `<span class="text-[11px] text-zinc-400 flex items-center gap-1 shrink-0">
+        <svg class="w-3 h-3 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        <span>${toolCount} 次调用</span>
+      </span>`
+    );
   }
   if (thinkingCount > 0) {
-    badges.push(`<span class="text-[11px] text-zinc-400">💭 ${thinkingCount} 次思考</span>`);
+    badges.push(
+      `<span class="text-[11px] text-zinc-400 flex items-center gap-1 shrink-0">
+        <svg class="w-3 h-3 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span>${thinkingCount} 次思考</span>
+      </span>`
+    );
   }
 
   const detailsHtml = isExpanded
@@ -2592,22 +3252,38 @@ function renderTurnProcessBar(turn) {
         ${processRecords
           .map((rec) => {
             const thinkDetailId = `${turnKey}_think_${rec.step_index}`;
-            const isThinkOpen = !!state.expandedDetails[thinkDetailId];
+            const isThinkExplicitlySet = typeof state.expandedDetails[thinkDetailId] === "boolean";
+            const isThinkOpen = isThinkExplicitlySet
+              ? Boolean(state.expandedDetails[thinkDetailId])
+              : Boolean(state.turnThinkingExpanded[turnKey]);
             if (rec.thinking) {
-              state.lazyDetailsStore[thinkDetailId] = {
+              saveToBoundedStore("lazyDetailsStore", thinkDetailId, {
                 type: "thinking",
                 raw: rec.thinking,
-              };
+              });
             }
+            const displayThinkLen =
+              rec.thinking_len || (rec.thinking ? rec.thinking.length : 0);
             const thinkHtml = rec.thinking
               ? `
                 <details data-detail-id="${escapeHtml(thinkDetailId)}" ${
                   isThinkOpen ? "open" : ""
                 } ontoggle="window.appActions.onDetailToggle(this, '${escapeJsSingleQuote(
                   thinkDetailId
-                )}')" class="rounded-lg bg-zinc-950/80 border border-zinc-800/80 px-2.5 py-1.5 text-[11px] text-zinc-400">
-                  <summary class="cursor-pointer select-none font-medium text-zinc-300">
-                    💭 思考过程 (${rec.thinking.length}字)
+                )}', '${escapeJsSingleQuote(turnKey)}')" class="rounded-lg bg-zinc-950/80 border border-zinc-800/80 px-2.5 py-1.5 text-[11px] text-zinc-400">
+                  <summary onclick="window.appActions.onThinkSummaryClick(event, '${escapeJsSingleQuote(
+                    turnKey
+                  )}', '${escapeJsSingleQuote(thinkDetailId)}')" class="cursor-pointer select-none font-medium text-zinc-300 flex items-center justify-between">
+                    <span class="flex items-center gap-1.5 min-w-0">
+                      <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 3.2 1.9 6 4.7 7.3V19a2 2 0 0 0 2 2h2.6a2 2 0 0 0 2-2v-1.7c2.8-1.3 4.7-4.1 4.7-7.3a8 8 0 0 0-8-8z"/><path d="M10 22h4"/></svg>
+                      <span class="truncate">思考过程 (${displayThinkLen}字)</span>
+                    </span>
+                    <button type="button" onclick="window.appActions.copyThinkingText('${escapeJsSingleQuote(
+                      thinkDetailId
+                    )}', this, event)" class="px-1.5 py-0.5 rounded text-[10px] text-zinc-400 hover:text-sky-300 hover:bg-zinc-800/80 transition active:scale-95 flex items-center gap-1" title="复制思考内容">
+                      <svg class="w-3 h-3 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                      <span>复制</span>
+                    </button>
                   </summary>
                   <div data-lazy-slot class="mt-1.5 pt-1.5 border-t border-zinc-800/70 whitespace-pre-wrap leading-relaxed text-zinc-400 font-mono text-[11px] max-h-52 overflow-y-auto">${
                     isThinkOpen ? escapeHtml(rec.thinking) : ""
@@ -2619,46 +3295,105 @@ function renderTurnProcessBar(turn) {
             const noteHtml = rec.intermediateNote
               ? `
                 <div class="px-2.5 py-1.5 rounded-lg bg-zinc-900/70 border border-zinc-800/60 text-xs text-zinc-300">
-                  <span class="text-[10px] text-sky-400 font-semibold mr-1">💬 过程说明:</span>
+                  <span class="text-[10px] text-sky-400 font-semibold mr-1 inline-flex items-center gap-0.5">
+                    <svg class="w-3 h-3 text-sky-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    <span>过程说明:</span>
+                  </span>
                   ${escapeHtml(rec.intermediateNote)}
                 </div>
               `
               : "";
 
-            const toolsHtml = (rec.tool_calls || [])
+            const allTools = rec.tool_calls || [];
+            const readTools = [];
+            const actionTools = [];
+            allTools.forEach((tc) => {
+              if (isReadOnlyTool(tc)) {
+                readTools.push(tc);
+              } else {
+                actionTools.push(tc);
+              }
+            });
+
+            // 1. 只读探索类工具（如 read_file、grep）：紧凑微型胶囊流，不占纵向屏幕
+            const readChipsHtml =
+              readTools.length > 0
+                ? `
+                  <div class="read-tool-chips-row">
+                    <span class="text-[10px] text-zinc-500 font-medium mr-1 select-none flex items-center gap-1 shrink-0">
+                      <svg class="w-3 h-3 text-zinc-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>
+                      查阅 (${readTools.length}):
+                    </span>
+                    ${readTools
+                      .map((tc) => {
+                        const target = getBasename(tc.file_path || tc.args_summary) || tc.args_summary;
+                        return `
+                          <span class="read-tool-chip" title="${escapeHtml(tc.file_path || tc.args_summary)}">
+                            <svg class="w-3 h-3 text-zinc-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                            <span class="truncate max-w-[150px]">${escapeHtml(target)}</span>
+                          </span>
+                        `;
+                      })
+                      .join("")}
+                  </div>
+                `
+                : "";
+
+            // 2. 变更类（edit_file/write_file）与执行类工具：高亮呈现
+            const actionToolsHtml = actionTools
               .map((tc, tcIdx) => {
                 const isHigh = tc.risk_level === "high";
+                const isEditTool = !!tc.diff_text || /edit|write|replace|create/i.test(tc.name || "");
                 const diffDetailId = `${turnKey}_diff_${rec.step_index}_${tcIdx}`;
-                const isDiffOpen = !!state.expandedDetails[diffDetailId];
+                // 用户要求：思考过程里的 edit_file 默认不展开
+                const isDiffOpen = Boolean(state.expandedDetails[diffDetailId]);
                 if (tc.diff_text) {
-                  state.lazyDetailsStore[diffDetailId] = {
+                  saveToBoundedStore("lazyDetailsStore", diffDetailId, {
                     type: "diff",
                     raw: tc.diff_text,
-                  };
+                    filePath: tc.file_path || tc.args_summary || "",
+                    addCount: tc.diff_add_count,
+                    delCount: tc.diff_del_count,
+                  });
                 }
 
                 const outDetailId = `${turnKey}_out_${rec.step_index}_${tcIdx}`;
                 const isOutOpen = !!state.expandedDetails[outDetailId];
                 if (tc.output) {
-                  state.lazyDetailsStore[outDetailId] = {
+                  saveToBoundedStore("lazyDetailsStore", outDetailId, {
                     type: "output",
                     raw: tc.output,
-                  };
+                  });
                 }
 
-                const diffLineCount = tc.diff_text ? tc.diff_text.split("\n").length : 0;
+                const cardClass = isEditTool
+                  ? "edit-tool-card"
+                  : `rounded-lg bg-zinc-950/90 border ${
+                      isHigh ? "border-rose-500/45" : "border-zinc-800/90"
+                    } p-2 text-xs`;
+
+                const badgeBg = isEditTool
+                  ? "bg-emerald-500/20 text-emerald-300"
+                  : "bg-zinc-800 text-sky-300";
+                const badgeSvg = isEditTool
+                  ? `<svg class="w-3 h-3 text-emerald-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`
+                  : `<svg class="w-3 h-3 text-sky-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`;
+                const targetText = isEditTool
+                  ? getBasename(tc.file_path || tc.args_summary) || tc.args_summary
+                  : tc.args_summary;
 
                 return `
-                  <div class="rounded-lg bg-zinc-950/90 border ${
-                    isHigh ? "border-rose-500/45" : "border-zinc-800/90"
-                  } p-2 text-xs">
+                  <div class="${cardClass}">
                     <div class="flex items-center justify-between gap-2">
                       <div class="flex items-center gap-1.5 min-w-0">
-                        <span class="px-1.5 py-0.5 rounded bg-zinc-800 text-sky-300 font-mono font-semibold text-[10px] shrink-0">
-                          🔧 ${escapeHtml(tc.name)}
+                        <span class="px-1.5 py-0.5 rounded ${badgeBg} font-mono font-semibold text-[10px] flex items-center gap-1 shrink-0">
+                          ${badgeSvg}
+                          <span>${escapeHtml(tc.name)}</span>
                         </span>
-                        <span class="font-mono text-[11px] text-zinc-300 truncate">
-                          ${escapeHtml(tc.args_summary)}
+                        <span class="font-mono text-[11px] ${
+                          isEditTool ? "text-zinc-100 font-semibold" : "text-zinc-300"
+                        } truncate" title="${escapeHtml(tc.file_path || tc.args_summary)}">
+                          ${escapeHtml(targetText)}
                         </span>
                       </div>
                       <span class="text-[9px] text-zinc-500 font-mono shrink-0">${escapeHtml(
@@ -2673,11 +3408,36 @@ function renderTurnProcessBar(turn) {
                           } ontoggle="window.appActions.onDetailToggle(this, '${escapeJsSingleQuote(
                             diffDetailId
                           )}')" class="mt-1.5 text-[10px] text-zinc-400">
-                            <summary class="cursor-pointer text-emerald-300/90 hover:text-emerald-200 select-none font-medium">
-                              📝 查看代码变更 Diff (${diffLineCount}行)
+                            <summary class="cursor-pointer select-none font-medium flex items-center justify-between text-emerald-300/90 hover:text-emerald-200 py-1 px-1 rounded hover:bg-emerald-500/10 transition">
+                              <span class="flex items-center gap-1.5 min-w-0">
+                                <svg class="w-3.5 h-3.5 text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                <span class="truncate">代码变更 Diff</span>
+                              </span>
+                              <div class="flex items-center gap-1.5 font-mono text-[9px] shrink-0">
+                                ${
+                                  typeof tc.diff_add_count === "number"
+                                    ? `<span class="diff-stat-badge diff-stat-add">+${tc.diff_add_count}</span>`
+                                    : ""
+                                }
+                                ${
+                                  typeof tc.diff_del_count === "number"
+                                    ? `<span class="diff-stat-badge diff-stat-del">-${tc.diff_del_count}</span>`
+                                    : ""
+                                }
+                                <span class="text-zinc-500 font-sans ml-0.5">
+                                  <span class="toggle-arrow-open">收起 ▴</span>
+                                  <span class="toggle-arrow-closed">展开 ▾</span>
+                                </span>
+                              </div>
                             </summary>
-                            <div data-lazy-slot>${
-                              isDiffOpen ? renderUnifiedDiffHtml(tc.diff_text) : ""
+                            <div data-lazy-slot class="mt-1">${
+                              isDiffOpen
+                                ? renderUnifiedDiffHtml(tc.diff_text, tc.file_path || tc.args_summary, {
+                                    addCount: tc.diff_add_count,
+                                    delCount: tc.diff_del_count,
+                                    diffId: diffDetailId,
+                                  })
+                                : ""
                             }</div>
                           </details>
                         `
@@ -2692,14 +3452,17 @@ function renderTurnProcessBar(turn) {
                             outDetailId
                           )}')" class="mt-1.5 text-[10px] text-zinc-400">
                             <summary class="cursor-pointer text-zinc-400 hover:text-zinc-200 select-none flex items-center justify-between">
-                              <span>📤 查看执行输出 ${
-                                tc.is_truncated ? `(${tc.full_output_len}字·已截断)` : ""
-                              }</span>
+                              <span class="flex items-center gap-1.5 min-w-0">
+                                <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                                <span class="truncate">查看执行输出 ${
+                                  tc.is_truncated ? `(${tc.full_output_len}字·已截断)` : ""
+                                }</span>
+                              </span>
                               ${
                                 tc.is_truncated
                                   ? `<button onclick="window.appActions.loadFullOutput('${escapeHtml(
                                       state.selectedSessionId
-                                    )}', ${rec.step_index}, this, event)" class="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-[9px]">加载完整输出</button>`
+                                    )}', ${rec.step_index}, this, event)" class="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-[9px] shrink-0">加载完整输出</button>`
                                   : ""
                               }
                             </summary>
@@ -2715,9 +3478,16 @@ function renderTurnProcessBar(turn) {
               })
               .join("");
 
-            return `<div class="space-y-1.5">${thinkHtml}${noteHtml}${toolsHtml}</div>`;
+            return `<div class="space-y-1.5">${thinkHtml}${noteHtml}${readChipsHtml}${actionToolsHtml}</div>`;
           })
           .join("")}
+        <div class="pt-2 text-center border-t border-zinc-800/60">
+          <button type="button" onclick="window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}')"
+            class="px-3 py-1 rounded-lg bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 text-[11px] text-zinc-400 hover:text-sky-300 font-medium transition active:scale-95 inline-flex items-center gap-1">
+            <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>
+            <span>收起已展开步骤</span>
+          </button>
+        </div>
       </div>`
     : "";
 
@@ -2726,8 +3496,8 @@ function renderTurnProcessBar(turn) {
       <div onclick="window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}')"
         class="cursor-pointer select-none flex items-center justify-between gap-2">
         <div class="flex items-center gap-1.5 flex-wrap min-w-0">
-          <span class="text-xs font-semibold text-zinc-200 flex items-center gap-1 shrink-0">
-            <span class="text-sky-400">⚡</span>
+          <span class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5 shrink-0">
+            <svg class="w-3.5 h-3.5 text-sky-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
             <span>已收纳 ${totalActions} 个执行步骤</span>
           </span>
           ${badges.join("")}
@@ -3090,6 +3860,7 @@ function renderMessagesList() {
   if (!state.autoScrollLocked) {
     scrollToBottom();
   }
+  updateCollapseStepsPillVisibility();
 }
 
 function isSessionWorking(unifiedId) {
@@ -3160,7 +3931,7 @@ function updatePromptActionBtnState() {
   if (isWorking && !hasText) {
     btn.dataset.action = "abort";
     btn.className =
-      "shrink-0 h-10 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center";
+      "shrink-0 h-10 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center m-0";
     if (btnText) {
       btnText.textContent = "中断";
     }
@@ -3168,7 +3939,7 @@ function updatePromptActionBtnState() {
   } else {
     btn.dataset.action = "send";
     btn.className =
-      "shrink-0 h-10 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center";
+      "shrink-0 h-10 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center m-0";
     if (btnText) {
       btnText.textContent = "发送";
     }
@@ -3186,7 +3957,17 @@ function handlePromptAction() {
   }
 }
 
+let liveStreamRaf = null;
+
 function renderLiveStreamOverlay() {
+  if (liveStreamRaf) return;
+  liveStreamRaf = requestAnimationFrame(() => {
+    liveStreamRaf = null;
+    _doRenderLiveStreamOverlay();
+  });
+}
+
+function _doRenderLiveStreamOverlay() {
   const slot = document.getElementById("live-stream-overlay-slot");
   updatePromptActionBtnState();
   if (!slot || !state.selectedSessionId) return;
@@ -3195,11 +3976,18 @@ function renderLiveStreamOverlay() {
   const liveText = state.streamingBuffer[state.selectedSessionId];
 
   if (!isWorking && !liveText) {
-    slot.innerHTML = "";
+    if (slot.innerHTML !== "") slot.innerHTML = "";
     return;
   }
 
-  // Agent 工作中，在对话区域显示 Working... 与实时生成流
+  // Agent 工作中，在对话区域显示 Working... 与实时生成流（RAF 帧对齐渲染）
+  const streamHtml = liveText
+    ? `<div class="mt-2 text-xs text-zinc-200 border-t border-zinc-800/60 pt-2">${renderMarkdownHtml(
+        liveText.slice(-3000),
+        "live_stream"
+      )}</div>`
+    : "";
+
   slot.innerHTML = `
     <div class="mb-4 rounded-xl bg-zinc-900/60 border border-zinc-800/80 px-3 py-2 text-xs text-zinc-300 shadow-sm transition-all">
       <div class="flex items-center gap-2 font-mono text-[11px] text-sky-400">
@@ -3209,20 +3997,14 @@ function renderLiveStreamOverlay() {
         </span>
         <span class="tracking-wider font-semibold">Working...</span>
       </div>
-      ${
-        liveText
-          ? `<div class="mt-2 text-xs text-zinc-200 border-t border-zinc-800/60 pt-2">${renderMarkdownHtml(
-              liveText.slice(-3000),
-              "live_stream"
-            )}</div>`
-          : ""
-      }
+      ${streamHtml}
     </div>
   `;
 
   if (!state.autoScrollLocked) {
     scrollToBottom();
   }
+  updateCollapseStepsPillVisibility();
 }
 
 function scrollToBottom() {
@@ -3289,7 +4071,7 @@ function renderApprovalBanners() {
         ${escapeHtml(activeApproval.args_summary)}
       </div>
 
-      ${activeApproval.diff_text ? renderUnifiedDiffHtml(activeApproval.diff_text) : ""}
+      ${activeApproval.diff_text ? renderUnifiedDiffHtml(activeApproval.diff_text, activeApproval.args_summary) : ""}
 
       ${
         state.denyFeedbackOpen
@@ -3366,51 +4148,158 @@ function renderApprovalBanners() {
   `;
 }
 
+
+let qrExpireTimer = null;
+
+function startQrExpireCountdown() {
+  if (qrExpireTimer) {
+    clearTimeout(qrExpireTimer);
+    qrExpireTimer = null;
+  }
+  const expAtSec = Number(state.systemStatus?.pair_code_expires_at || 0);
+  const nowSec = Date.now() / 1000;
+  if (expAtSec > 0 && expAtSec <= nowSec) {
+    state.qrExpired = true;
+    renderQrModalContent();
+    return;
+  }
+  state.qrExpired = false;
+  state.qrGeneratedAt = Date.now();
+  const remainMs = expAtSec > 0 ? Math.max(1000, Math.floor((expAtSec - nowSec) * 1000)) : 600 * 1000;
+  qrExpireTimer = setTimeout(() => {
+    state.qrExpired = true;
+    renderQrModalContent();
+  }, remainMs);
+}
+
 function renderQrModalContent() {
   const box = document.getElementById("qr-modal-body");
   if (!box || !state.systemStatus) return;
 
-  const { pair_url, awake_lock_active, agents_health } = state.systemStatus;
-  const qrImgUrl = `/api/v1/auth/qr.svg?t=${Date.now()}&token=${encodeURIComponent(state.token || "")}`;
+  // 1. 若刚刚接收到设备配对成功的实时广播，展示精致的双向握手成功卡片
+  if (state.pairedSuccessNotice) {
+    const dev = state.pairedSuccessNotice.device_name || "移动设备";
+    const ip = state.pairedSuccessNotice.client_ip || "";
+    box.innerHTML = `
+      <div class="py-6 px-4 flex flex-col items-center justify-center text-center space-y-3.5 animate-fadeIn">
+        <div class="w-14 h-14 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.25)]">
+          <svg class="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        </div>
+        <div class="space-y-1">
+          <div class="text-base font-bold text-zinc-100">手机已成功连接！</div>
+          <div class="text-xs text-zinc-400 font-mono flex items-center justify-center gap-1.5">
+            <span>${escapeHtml(dev)}</span>
+            ${ip ? `<span class="text-zinc-600">·</span><span>${escapeHtml(ip)}</span>` : ""}
+          </div>
+        </div>
+        <div class="pt-2 text-[11px] text-zinc-500 flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+          <span>窗口即将自动关闭...</span>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const { pair_url, lan_pair_url, zt_pair_url, channels } = state.systemStatus;
+  const orderWeight = { tailscale: 1, zerotier: 2, wifi: 3 };
+  const channelList = (channels || []).slice().sort((a, b) => (orderWeight[a.type] || 9) - (orderWeight[b.type] || 9));
+
+  if (!state.selectedQrNet) {
+    // 默认绝对优先展示 Tailscale（支持随时随地全网随身漫游），其次 ZeroTier，严禁在有 VPN 时优先展示 Wi-Fi 直连
+    const hasTs = channelList.some((c) => c.type === "tailscale");
+    const hasZt = channelList.some((c) => c.type === "zerotier");
+    if (hasTs) {
+      state.selectedQrNet = "tailscale";
+    } else if (hasZt) {
+      state.selectedQrNet = "zerotier";
+    } else {
+      state.selectedQrNet = channelList[0]?.type || "wifi";
+    }
+  }
+
+  const curChannel = channelList.find((c) => c.type === state.selectedQrNet) || channelList[0] || {};
+  const activeUrl = curChannel.pair_url || curChannel.url || pair_url || "";
+  const tokenParam = encodeURIComponent(state.token || "");
+  const qrImgUrl = `/api/v1/auth/qr.svg?net=${encodeURIComponent(state.selectedQrNet)}&token=${tokenParam}&_t=${state.qrGeneratedAt || 0}`;
+
+  const channelTips = {
+    tailscale: "全网随身漫游 · 手机开启 Tailscale 随时秒连",
+    zerotier: "虚拟隧道直连 · 手机开启 ZeroTier 隧道直连",
+    wifi: "局域网免密直连 · 仅限当前同一 Wi-Fi 连接",
+  };
+
+  const channelIcons = {
+    tailscale: `<svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>`,
+    zerotier: `<svg class="w-3.5 h-3.5 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>`,
+    wifi: `<svg class="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line></svg>`,
+  };
 
   box.innerHTML = `
     <div class="space-y-3">
-      <div class="flex flex-col items-center bg-zinc-950/90 border border-zinc-800 rounded-xl p-3">
-        <div class="bg-white p-2 rounded-xl mb-2 shadow">
-          <img src="${qrImgUrl}" alt="QR" class="w-40 h-40 block" />
-        </div>
-        <div class="text-[11px] font-mono text-sky-400 break-all text-center select-all px-1">
-          ${escapeHtml(pair_url)}
-        </div>
-      </div>
-
-      <div class="flex items-center justify-between p-2.5 rounded-xl bg-zinc-800/60 border border-zinc-700/60">
-        <span class="text-xs font-medium text-zinc-200">💻 PC 防休眠锁</span>
-        <button onclick="window.appActions.toggleAwakeLock(${!awake_lock_active})"
-          class="px-2.5 py-1 rounded-lg text-xs font-semibold ${
-            awake_lock_active
-              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-              : "bg-zinc-700 text-zinc-300"
-          }">
-          ${awake_lock_active ? "已开启" : "已关闭"}
-        </button>
-      </div>
-
-      <div class="space-y-1">
-        ${(agents_health || [])
-          .map(
-            (a) => `
-              <div class="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-zinc-950/70 border border-zinc-800 text-xs">
-                <span class="font-medium ${a.ready ? "text-emerald-300" : "text-zinc-400"}">
-                  ${a.ready ? "✓" : "!"} ${escapeHtml(a.agent_label)}
-                </span>
-                <span class="text-[10px] text-zinc-400 truncate max-w-[60%]">
-                  ${escapeHtml(a.description)}
-                </span>
-              </div>
-            `
-          )
+      <!-- 极简三通道切换胶囊 (精细化矢量排版) -->
+      <div class="grid grid-cols-3 gap-1.5 w-full">
+        ${channelList
+          .map((c) => {
+            const isSelected = c.type === state.selectedQrNet;
+            return `
+              <button type="button" onclick="window.appActions.switchQrChannel('${c.type}')"
+                class="py-1.5 px-2 rounded-xl text-[11px] font-medium transition cursor-pointer select-none flex items-center justify-center gap-1.5 active:scale-95 ${
+                  isSelected
+                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/50 shadow-[0_0_12px_rgba(56,189,248,0.15)] font-semibold"
+                    : "bg-zinc-950/70 hover:bg-zinc-800/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800"
+                }">
+                ${channelIcons[c.type] || ""}
+                <span>${escapeHtml(c.label)}</span>
+              </button>
+            `;
+          })
           .join("")}
+      </div>
+
+      <!-- 二维码专属卡片 (带 10 分钟过期遮罩防护) -->
+      <div class="relative flex flex-col items-center bg-zinc-950/90 border border-zinc-800/80 rounded-2xl p-4 shadow-xl">
+        <div class="relative bg-white p-3 rounded-2xl shadow-md">
+          <img src="${qrImgUrl}" alt="AgentDeck Pair QR" class="w-44 h-44 block select-none" loading="eager" />
+          
+          ${
+            state.qrExpired
+              ? `
+                <div class="absolute inset-0 bg-zinc-950/90 backdrop-blur-xs rounded-2xl flex flex-col items-center justify-center p-3 text-center space-y-2.5 animate-fadeIn">
+                  <div class="w-8 h-8 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                  </div>
+                  <div class="text-[11px] text-zinc-300 font-medium">二维码已过期 (10分钟时限)</div>
+                  <button onclick="window.appActions.refreshPairCodeAndQr()"
+                    class="px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs shadow-md transition active:scale-95 cursor-pointer flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                    <span>点击立即刷新</span>
+                  </button>
+                </div>
+              `
+              : ""
+          }
+        </div>
+
+        <!-- 单行不换行主直连地址 -->
+        <div class="w-full mt-3 px-2.5 py-1 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-between gap-1.5">
+          <div class="text-[11px] font-mono text-sky-400 whitespace-nowrap overflow-hidden select-all flex-1 py-0.5 tracking-tight" title="${escapeHtml(activeUrl)}">
+            ${escapeHtml(activeUrl)}
+          </div>
+          <button onclick="window.appActions.copyQrUrl('${escapeJsSingleQuote(activeUrl)}')"
+            class="text-[11px] text-zinc-300 hover:text-white px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 shrink-0 transition active:scale-95 cursor-pointer font-medium"
+            title="复制直连链接">复制</button>
+        </div>
+
+        <!-- 精炼通道场景提示 -->
+        <div class="w-full mt-2.5 pt-2.5 border-t border-zinc-800/80 text-[11px] text-center text-zinc-400 flex items-center justify-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full ${
+            curChannel.type === "wifi" ? "bg-emerald-400" : curChannel.type === "tailscale" ? "bg-sky-400" : "bg-amber-400"
+          }"></span>
+          <span>${channelTips[state.selectedQrNet] || "扫码或复制链接在手机中打开"}</span>
+        </div>
       </div>
     </div>
   `;
@@ -3702,6 +4591,67 @@ function showToast(message, type = "info") {
 
 // --- 暴露给模板的事件动作集 ---
 window.appActions = {
+  closePairingGuideModal() {
+    closePairingGuideModal();
+  },
+  async submitPairCodeManual(code) {
+    code = (code || "").trim();
+    if (!code) {
+      showToast("请输入有效配对码", "error");
+      return;
+    }
+    const ua = navigator.userAgent || "Mobile";
+    const devName = /iPhone|iPad/i.test(ua) ? "iPhone" : /Android/i.test(ua) ? "Android" : "Web Client";
+    try {
+      const res = await apiFetch("/api/v1/auth/exchange", {
+        method: "POST",
+        body: JSON.stringify({ pair_code: code, device_name: devName }),
+      });
+      if (res.token) {
+        state.token = res.token;
+        localStorage.setItem("agentdeck_token", res.token);
+        showToast("设备配对成功！", "success");
+        closePairingGuideModal();
+        const pwaUrl = new URL(window.location.href);
+        pwaUrl.searchParams.delete("pair_code");
+        pwaUrl.searchParams.set("token", res.token);
+        window.history.replaceState({}, document.title, pwaUrl.pathname + pwaUrl.search + pwaUrl.hash);
+        await Promise.all([loadSystemStatus(), loadWorkspaces(), loadSessions()]);
+        connectWebSocket();
+      }
+    } catch (e) {
+      showToast("配对失败: " + (e.message || "配对码无效或已过期"), "error");
+    }
+  },
+  switchQrChannel(type) {
+    state.selectedQrNet = type;
+    renderQrModalContent();
+  },
+  switchQrNetMode(mode) {
+    state.qrNetMode = mode;
+    const modes = ["lan", "zerotier", "tailscale"];
+    let switched = false;
+    for (const m of modes) {
+      const panel = document.getElementById(`qr-panel-${m}`);
+      const tab = document.getElementById(`qr-tab-${m}`);
+      const isActive = m === mode;
+      if (panel) {
+        panel.classList.toggle("hidden", !isActive);
+        panel.classList.toggle("block", isActive);
+        switched = true;
+      }
+      if (tab) {
+        if (isActive) {
+          tab.className = "flex-1 py-1.5 px-2 rounded-lg font-medium transition cursor-pointer select-none active:scale-95 bg-sky-500/20 text-sky-300 border border-sky-500/40 shadow-xs";
+        } else {
+          tab.className = "flex-1 py-1.5 px-2 rounded-lg font-medium transition cursor-pointer select-none active:scale-95 text-zinc-400 hover:text-zinc-200";
+        }
+      }
+    }
+    if (!switched) {
+      renderQrModalContent();
+    }
+  },
   handleStatusBtnClick,
   selectSession,
   jumpToRunningSession() {
@@ -3852,19 +4802,39 @@ window.appActions = {
     }
   },
   loadOlderMessages,
-  onDetailToggle(detailsEl, detailId) {
+  onDetailToggle(detailsEl, detailId, turnKey) {
     if (!detailsEl || !detailId) return;
     const isOpen = detailsEl.open;
     state.expandedDetails[detailId] = isOpen;
+    if (turnKey) {
+      state.turnThinkingExpanded[turnKey] = isOpen;
+      if (isOpen) {
+        state.expandedTurns[turnKey] = true;
+      }
+    }
     if (!isOpen) return;
     const slot = detailsEl.querySelector("[data-lazy-slot]");
     if (!slot || slot.innerHTML.trim() !== "") return;
     const entry = state.lazyDetailsStore[detailId];
     if (!entry) return;
     if (entry.type === "diff") {
-      slot.innerHTML = renderUnifiedDiffHtml(entry.raw);
+      slot.innerHTML = renderUnifiedDiffHtml(entry.raw, entry.filePath || "", {
+        diffId: detailId,
+        addCount: entry.addCount,
+        delCount: entry.delCount,
+      });
     } else {
       slot.textContent = entry.raw || "";
+    }
+  },
+  onThinkSummaryClick(e, turnKey, detailId) {
+    const details = e.currentTarget?.closest("details");
+    if (!details) return;
+    const willOpen = !details.open;
+    state.expandedDetails[detailId] = willOpen;
+    state.turnThinkingExpanded[turnKey] = willOpen;
+    if (willOpen) {
+      state.expandedTurns[turnKey] = true;
     }
   },
   toggleDrawer(open) {
@@ -3884,12 +4854,76 @@ window.appActions = {
     );
     updateDrawerVisibility();
   },
-  openQrModal() {
-    loadSystemStatus();
-    document.getElementById("qr-modal").classList.remove("hidden");
+  async openQrModal() {
+    startQrExpireCountdown();
+    const m = document.getElementById("qr-modal");
+    if (m) m.classList.remove("hidden");
+    if (state.systemStatus) {
+      renderQrModalContent();
+    } else {
+      const box = document.getElementById("qr-modal-body");
+      if (box) {
+        box.innerHTML = `
+          <div class="py-12 flex flex-col items-center justify-center space-y-3">
+            <div class="w-8 h-8 rounded-full border-2 border-sky-400 border-t-transparent animate-spin"></div>
+            <div class="text-xs text-zinc-400">正在生成配对信息...</div>
+          </div>
+        `;
+      }
+    }
+    // 静默在后台拉取最新配对状态，零阻塞 UI 弹出
+    loadSystemStatus().then(() => {
+      renderQrModalContent();
+    }).catch((e) => {
+      console.warn("[AgentDeck] 后台更新配对状态提示:", e);
+    });
   },
   closeQrModal() {
-    document.getElementById("qr-modal").classList.add("hidden");
+    state.pairedSuccessNotice = null;
+    if (qrExpireTimer) {
+      clearTimeout(qrExpireTimer);
+      qrExpireTimer = null;
+    }
+    const m = document.getElementById("qr-modal");
+    if (m) m.classList.add("hidden");
+  },
+  async copyQrUrl(url) {
+    if (!url) return;
+    const ok = await copyTextToClipboard(url);
+    if (ok) {
+      showToast("直连地址已复制", "success");
+    } else {
+      showToast("复制失败，请手动选择复制", "error");
+    }
+  },
+  async refreshPairCodeAndQr() {
+    try {
+      await apiFetch("/api/v1/auth/refresh_pair_code", { method: "POST" });
+      await loadSystemStatus();
+      startQrExpireCountdown();
+      showToast("配对码已刷新", "success");
+    } catch (e) {
+      showToast("刷新失败: " + e.message, "error");
+    }
+  },
+  async toggleAwakeLockFromSidebar() {
+    const nextState = !state.systemStatus?.awake_lock_active;
+    try {
+      await apiFetch(`/api/v1/system/awake-lock?enable=${nextState}`, { method: "POST" });
+      await loadSystemStatus();
+      showToast(nextState ? "PC 防休眠锁已开启" : "PC 防休眠锁已关闭", "info");
+    } catch (e) {
+      showToast("切换防休眠失败: " + e.message, "error");
+    }
+  },
+  openAgentsHealthModal() {
+    renderAgentsHealthModal();
+    const m = document.getElementById("agents-health-modal");
+    if (m) m.classList.remove("hidden");
+  },
+  closeAgentsHealthModal() {
+    const m = document.getElementById("agents-health-modal");
+    if (m) m.classList.add("hidden");
   },
   openNewSessionModal: (prefill = "") => openNewSessionModal(prefill, ""),
   closeNewSessionModal() {
@@ -3905,16 +4939,43 @@ window.appActions = {
   startHold: startHoldToApprove,
   cancelHold: cancelHoldToApprove,
   toggleWordWrap() {
-    const container = document.getElementById("messages-container");
-    const prevTop = container ? container.scrollTop : 0;
     state.wordWrapDiff = !state.wordWrapDiff;
     state.autoScrollLocked = true;
-    renderMessagesList();
-    renderApprovalBanners();
-    if (container) container.scrollTop = prevTop;
+
+    // 1. 实时就地同步页面及模态框中的所有 .unified-diff-box，实现全屏零卡顿即时换行
+    const boxes = document.querySelectorAll(".unified-diff-box");
+    boxes.forEach((box) => {
+      if (state.wordWrapDiff) {
+        box.classList.add("word-wrap");
+      } else {
+        box.classList.remove("word-wrap");
+      }
+    });
+
+    // 2. 实时更新所有换行切换按钮文本
+    const toggleBtns = document.querySelectorAll("[data-action='toggle-word-wrap']");
+    toggleBtns.forEach((btn) => {
+      btn.textContent = state.wordWrapDiff ? "横向滚动" : "自动换行";
+    });
+
+    // 3. 模态框未打开时同步重绘消息列表与审批流
+    const modal = document.getElementById("doc-preview-modal");
+    const isModalOpen = modal && !modal.classList.contains("hidden");
+    if (!isModalOpen) {
+      const container = document.getElementById("messages-container");
+      const prevTop = container ? container.scrollTop : 0;
+      renderMessagesList();
+      renderApprovalBanners();
+      if (container) container.scrollTop = prevTop;
+    }
   },
   toggleTurnSteps(turnKey) {
-    state.expandedTurns[turnKey] = !state.expandedTurns[turnKey];
+    const isCurrentlyExpanded = !!state.expandedTurns[turnKey] || !!state.turnThinkingExpanded[turnKey];
+    const nextVal = !isCurrentlyExpanded;
+    state.expandedTurns[turnKey] = nextVal;
+    if (!nextVal) {
+      state.turnThinkingExpanded[turnKey] = false;
+    }
     state.autoScrollLocked = true;
     const turn = state.turnsMap[turnKey];
     const wrapEl = document.getElementById(`turn-process-wrap-${turnKey}`);
@@ -3989,18 +5050,14 @@ window.appActions = {
   },
   async copyCodeBlock(codeId, btnEl) {
     const raw = state.codeBlockStore[codeId] || "";
-    try {
-      await navigator.clipboard.writeText(raw);
+    const ok = await copyTextToClipboard(raw);
+    if (ok) {
       if (btnEl) {
-        const oldText = btnEl.textContent;
-        btnEl.textContent = "✓ 已复制";
-        setTimeout(() => {
-          btnEl.textContent = oldText;
-        }, 1600);
+        applyButtonCheckmark(btnEl, { iconSize: "w-3 h-3" });
       } else {
         showToast("已复制代码", "success");
       }
-    } catch (_) {
+    } else {
       showToast("复制失败，请长按手动选择", "error");
     }
   },
@@ -4048,15 +5105,93 @@ window.appActions = {
   closeDocModal() {
     const modal = document.getElementById("doc-preview-modal");
     if (modal) modal.classList.add("hidden");
+    document.body.style.overflow = "";
   },
-  async copyCurrentDocContent() {
-    if (!state.currentDocRawContent) return;
-    try {
-      await navigator.clipboard.writeText(state.currentDocRawContent);
-      showToast("已复制文档全文", "success");
-    } catch (_) {
-      showToast("复制失败", "error");
+  openDiffFullscreen(diffText, filePath = "", options = {}) {
+    const modal = document.getElementById("doc-preview-modal");
+    const titleEl = document.getElementById("doc-preview-title");
+    const pathEl = document.getElementById("doc-preview-path");
+    const bodyEl = document.getElementById("doc-preview-body");
+    if (!modal || !bodyEl) return;
+
+    state.currentDocRawContent = diffText || "";
+    const bName = filePath ? getBasename(filePath) : "代码变更 Diff";
+    if (titleEl) titleEl.textContent = `变更 Diff · ${bName}`;
+    if (pathEl) pathEl.textContent = filePath || "";
+
+    bodyEl.innerHTML = renderUnifiedDiffHtml(diffText, filePath, {
+      isModal: true,
+      diffId: options.diffId,
+      addCount: options.addCount,
+      delCount: options.delCount,
+    });
+    modal.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+  },
+  openDiffFullscreenById(diffId, e) {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
     }
+    const entry =
+      (state.lazyDetailsStore && state.lazyDetailsStore[diffId]) ||
+      (state.diffStore && state.diffStore[diffId]);
+    if (!entry) return;
+    const diffText = entry.raw || entry.diffText || "";
+    const filePath = entry.filePath || "";
+    window.appActions.openDiffFullscreen(diffText, filePath, {
+      diffId,
+      addCount: entry.addCount,
+      delCount: entry.delCount,
+    });
+  },
+  async copyCurrentDocContent(btnEl) {
+    if (!state.currentDocRawContent) {
+      showToast("无可复制内容", "info");
+      return;
+    }
+    const targetBtn = btnEl || document.getElementById("doc-preview-copy-btn");
+    const ok = await copyTextToClipboard(state.currentDocRawContent);
+    if (ok) {
+      if (targetBtn) {
+        applyButtonCheckmark(targetBtn, { highlightBorder: true });
+      }
+      showToast("已复制全文", "success");
+    } else {
+      showToast("复制失败，请手动选择复制", "error");
+    }
+  },
+  async copyThinkingText(detailId, btnEl, e) {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    const entry = state.lazyDetailsStore[detailId];
+    const text = entry ? entry.raw : "";
+    if (!text) {
+      showToast("思考内容为空", "info");
+      return;
+    }
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      if (btnEl) {
+        applyButtonCheckmark(btnEl, { iconSize: "w-3 h-3" });
+      }
+      showToast("已复制思考过程", "success");
+    } else {
+      showToast("复制失败，请手动选择复制", "error");
+    }
+  },
+  collapseCurrentExpandedSteps() {
+    state.expandedTurns = {};
+    state.turnThinkingExpanded = {};
+    const pill = document.getElementById("collapse-steps-pill");
+    if (pill) pill.classList.add("hidden");
+    const container = document.getElementById("messages-container");
+    const prevTop = container ? container.scrollTop : 0;
+    renderMessagesList();
+    if (container) container.scrollTop = prevTop;
+    showToast("已收起执行步骤", "info");
   },
   async toggleAwakeLock(enable) {
     await apiFetch(`/api/v1/system/awake-lock?enable=${enable}`, { method: "POST" });
@@ -4243,7 +5378,7 @@ window.appActions = {
     }
 
     if (state.gitDiffCache[relPath]) {
-      container.innerHTML = renderUnifiedDiffHtml(state.gitDiffCache[relPath]);
+      container.innerHTML = renderUnifiedDiffHtml(state.gitDiffCache[relPath], relPath);
       return;
     }
 
@@ -4256,7 +5391,7 @@ window.appActions = {
         )}&file_path=${encodeURIComponent(relPath)}`
       );
       state.gitDiffCache[relPath] = res.diff || "无文本变更";
-      container.innerHTML = renderUnifiedDiffHtml(state.gitDiffCache[relPath]);
+      container.innerHTML = renderUnifiedDiffHtml(state.gitDiffCache[relPath], relPath);
     } catch (err) {
       container.innerHTML = `<div class="p-2 text-xs text-rose-400">加载 Diff 失败</div>`;
     }
@@ -4655,7 +5790,7 @@ function renderGitStatusBody(data) {
                 <div id="${gitPathToSlotId(f.path)}">
                   ${
                     isExp && state.gitDiffCache[f.path]
-                      ? renderUnifiedDiffHtml(state.gitDiffCache[f.path])
+                      ? renderUnifiedDiffHtml(state.gitDiffCache[f.path], f.path)
                       : ""
                   }
                 </div>
@@ -4697,15 +5832,31 @@ window.addEventListener("DOMContentLoaded", async () => {
   updateDrawerVisibility();
   initDrawerSwipeGestures();
   await checkAndExchangePairCode();
-  await Promise.all([loadSystemStatus(), loadWorkspaces(), loadSessions()]);
+  try {
+    await Promise.all([loadSystemStatus(), loadWorkspaces(), loadSessions()]);
+  } catch (err) {
+    console.warn("冷启动连接当前通道失败，尝试漫游探测可用通道...", err);
+    triggerAutoRoaming("initial_boot_fail");
+  }
   connectWebSocket();
   checkFrontendVersion();
 
-  // 手机锁屏唤醒或切回主屏幕应用时立即检测一次版本
+  // 手机锁屏唤醒或切回主屏幕应用时立即检测一次版本与通道连通性
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       checkFrontendVersion();
+      const isStale = Date.now() - lastPongReceived > 20000;
+      if (!state.wsConnected || isStale || !wsInstance || wsInstance.readyState !== WebSocket.OPEN) {
+        console.info("[AgentDeck] 移动端切回前台发现连接断开或心跳逾期，立即加速重连与漫游...");
+        connectWebSocket();
+        triggerAutoRoaming("visibility_resume");
+      }
     }
+  });
+
+  // 手机网络环境变更监听（Wi-Fi 断开/连接、蜂窝网切换等）
+  window.addEventListener("online", () => {
+    triggerAutoRoaming("network_online");
   });
   // 保持周期性轻量巡检
   setInterval(checkFrontendVersion, 25000);
@@ -4824,6 +5975,34 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
+  // 全局键盘 Escape 键支持一键关闭任何打开的模态框
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      const modals = [
+        "qr-modal",
+        "agents-health-modal",
+        "pairing-guide-modal",
+        "new-session-modal",
+        "git-status-modal",
+        "token-usage-modal",
+        "doc-preview-modal",
+      ];
+      for (const mId of modals) {
+        const el = document.getElementById(mId);
+        if (el && !el.classList.contains("hidden")) {
+          el.classList.add("hidden");
+          if (mId === "doc-preview-modal") {
+            document.body.style.overflow = "";
+          }
+          if (mId === "qr-modal" && qrExpireTimer) {
+            clearTimeout(qrExpireTimer);
+            qrExpireTimer = null;
+          }
+        }
+      }
+    }
+  });
+
   const msgContainer = document.getElementById("messages-container");
   if (msgContainer) {
     msgContainer.addEventListener("scroll", () => {
@@ -4834,6 +6013,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (jumpBtn) {
         jumpBtn.classList.toggle("hidden", !state.autoScrollLocked);
       }
+      updateCollapseStepsPillVisibility();
     });
   }
 });
