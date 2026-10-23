@@ -112,6 +112,7 @@ const state = {
   wordWrapDiff: true,
   drawerOpen: false,
   sidebarCollapsed: localStorage.getItem("agentdeck_sidebar_collapsed") === "1",
+  isUserInteractingWithList: false, // 视觉稳定性标志：用户滑动或聚焦列表时锁定重排防跳动
   streamingBuffer: {}, // unified_id -> string
   pendingTurnThinking: {}, // unified_id -> timestamp (ms)
   optimisticMessages: {}, // unified_id -> array of unconfirmed user message objects
@@ -149,7 +150,64 @@ const state = {
   hasUpdate: false,
   remoteBuild: "",
   lastStatusClickTime: 0,
+  unreadCompletedSessionIds: new Set(),
+  sessionLastViewedTimes: (() => {
+    try {
+      return JSON.parse(localStorage.getItem("agentdeck_last_viewed_sessions") || "{}") || {};
+    } catch (_) {
+      return {};
+    }
+  })(),
 };
+
+function saveLastViewedTimes() {
+  try {
+    localStorage.setItem(
+      "agentdeck_last_viewed_sessions",
+      JSON.stringify(state.sessionLastViewedTimes || {})
+    );
+  } catch (e) {
+    console.warn("保存会话查看时间失败:", e);
+  }
+}
+
+function markSessionViewed(unifiedId) {
+  if (!unifiedId) return;
+  state.sessionLastViewedTimes[unifiedId] = Date.now();
+  state.unreadCompletedSessionIds.delete(unifiedId);
+  saveLastViewedTimes();
+}
+
+function markSessionCompletedUnread(unifiedId) {
+  if (!unifiedId || unifiedId === state.selectedSessionId) return;
+  state.unreadCompletedSessionIds.add(unifiedId);
+}
+
+function isSessionCompletedUnread(s) {
+  if (!s || !s.unified_id) return false;
+  if (s.unified_id === state.selectedSessionId) return false;
+  return state.unreadCompletedSessionIds.has(s.unified_id);
+}
+
+function syncUnreadSessions(sessionList) {
+  if (!Array.isArray(sessionList)) return;
+  const now = Date.now();
+  for (const s of sessionList) {
+    if (!s || !s.unified_id) continue;
+    if (s.unified_id === state.selectedSessionId) {
+      state.unreadCompletedSessionIds.delete(s.unified_id);
+      continue;
+    }
+    if (isSessionStatusActive(s) || s.status === "waiting_approval") {
+      continue;
+    }
+    const lastViewed = state.sessionLastViewedTimes[s.unified_id] || 0;
+    const updatedAt = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+    if (updatedAt > 0 && lastViewed > 0 && updatedAt > lastViewed && (now - updatedAt < 24 * 3600 * 1000)) {
+      state.unreadCompletedSessionIds.add(s.unified_id);
+    }
+  }
+}
 
 const GIT_STATUS_BADGES = {
   M: "bg-amber-500/20 text-amber-300 border-amber-500/40",
@@ -245,6 +303,33 @@ function scheduleSilentMessagesRefresh(unifiedId, delayMs = 250) {
       loadSessionMessages(unifiedId, { silent: true });
     }
   }, delayMs);
+}
+
+let deferredListRenderTimer = null;
+function scheduleDeferredSessionListRender(delayMs = 1200) {
+  if (deferredListRenderTimer) clearTimeout(deferredListRenderTimer);
+  deferredListRenderTimer = setTimeout(() => {
+    deferredListRenderTimer = null;
+    if (!state.isUserInteractingWithList) {
+      renderSessionList();
+    }
+  }, delayMs);
+}
+
+function bindSessionListScrollGuardian() {
+  const container = document.getElementById("session-list-container");
+  if (!container || container._guardianBound) return;
+  container._guardianBound = true;
+  let scrollTimeout = null;
+  const onUserActivity = () => {
+    state.isUserInteractingWithList = true;
+    if (scrollTimeout) clearTimeout(scrollTimeout);
+    scrollTimeout = setTimeout(() => {
+      state.isUserInteractingWithList = false;
+    }, 1200);
+  };
+  container.addEventListener("scroll", onUserActivity, { passive: true });
+  container.addEventListener("touchstart", onUserActivity, { passive: true });
 }
 
 // --- API 请求封装 ---
@@ -1057,9 +1142,16 @@ async function loadSessions(silent = false) {
 
     if (!silent || newSig !== state.lastSessionsSig || needsInitialSelect) {
       state.lastSessionsSig = newSig;
-      // 手机端抽屉展开浏览时，禁止销毁重构侧边栏 DOM，避免打断用户的滑动操作与项目折叠状态
+      // 手机端抽屉展开浏览或用户正在滚动列表/搜索输入时，静默更新不销毁重构侧边栏 DOM，避免打断用户的滑动操作与视口跳动
+      const isUserBusyWithList =
+        state.isUserInteractingWithList ||
+        (document.activeElement && document.activeElement.id === "search-input");
       if (!isMobileDrawerActive) {
-        renderSessionList();
+        if (silent && isUserBusyWithList) {
+          scheduleDeferredSessionListRender();
+        } else {
+          renderSessionList();
+        }
       }
       renderCurrentSessionHeader();
       renderApprovalBanners();
@@ -1916,7 +2008,7 @@ function renderCompactSessionItem(s, showProjectTag = true) {
   } else if (s.status === "desktop_active") {
     statusDotHtml = `
       <span class="relative flex h-2 w-2" title="桌面端活跃">
-        <span class="w-2 h-2 rounded-full bg-purple-400 animate-pulse shadow-[0_0_8px_rgba(192,132,252,0.8)]"></span>
+        <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_rgba(34,211,238,0.8)]"></span>
       </span>
     `;
   }
@@ -1991,6 +2083,7 @@ function sortSessions(list) {
 function renderSessionList() {
   const container = document.getElementById("session-list-container");
   if (!container) return;
+  const savedScrollTop = container.scrollTop;
 
   const q = state.searchQuery.trim().toLowerCase();
   const rawList = state.allSessions.length > 0 ? state.allSessions : state.sessions;
@@ -2194,6 +2287,9 @@ function renderSessionList() {
   `;
 
   container.innerHTML = html;
+  if (savedScrollTop > 0) {
+    container.scrollTop = savedScrollTop;
+  }
 }
 
 const MODEL_CONTEXT_LIMITS = {
@@ -3214,29 +3310,29 @@ function renderTurnProcessBar(turn) {
 
   // 构建折叠栏上的精炼徽章
   const badges = [];
-  if (editedFiles.length > 0) {
-    const fileHint =
-      editedFiles.length === 1
-        ? `修改 ${editedFiles[0]}`
-        : `修改 ${editedFiles.length} 个文件`;
-    badges.push(
-      `<span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium shrink-0 flex items-center gap-1">
-        <svg class="w-3 h-3 text-emerald-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-        <span>${escapeHtml(fileHint)}</span>
-      </span>`
-    );
-  }
   if (hasHighRisk) {
     badges.push(
       `<span class="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/35 text-[10px] font-semibold shrink-0 flex items-center gap-1">
         <svg class="w-3 h-3 text-rose-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        <span>含高危操作</span>
+        <span>高危</span>
+      </span>`
+    );
+  }
+  if (editedFiles.length > 0) {
+    const fileHint =
+      editedFiles.length === 1
+        ? `改动 ${editedFiles[0]}`
+        : `改动 ${editedFiles.length} 文件`;
+    badges.push(
+      `<span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium shrink-0 flex items-center gap-1">
+        <svg class="w-3 h-3 text-emerald-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        <span class="truncate max-w-[105px] sm:max-w-[180px]">${escapeHtml(fileHint)}</span>
       </span>`
     );
   }
   if (toolCount > 0) {
     badges.push(
-      `<span class="text-[11px] text-zinc-400 flex items-center gap-1 shrink-0">
+      `<span class="hidden sm:inline-flex text-[11px] text-zinc-400 items-center gap-1 shrink-0">
         <svg class="w-3 h-3 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         <span>${toolCount} 次调用</span>
       </span>`
@@ -3244,7 +3340,7 @@ function renderTurnProcessBar(turn) {
   }
   if (thinkingCount > 0) {
     badges.push(
-      `<span class="text-[11px] text-zinc-400 flex items-center gap-1 shrink-0">
+      `<span class="hidden sm:inline-flex text-[11px] text-zinc-400 items-center gap-1 shrink-0">
         <svg class="w-3 h-3 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         <span>${thinkingCount} 次思考</span>
       </span>`
@@ -3277,14 +3373,14 @@ function renderTurnProcessBar(turn) {
                 )}', '${escapeJsSingleQuote(turnKey)}')" class="rounded-lg bg-zinc-950/80 border border-zinc-800/80 px-2.5 py-1.5 text-[11px] text-zinc-400">
                   <summary onclick="window.appActions.onThinkSummaryClick(event, '${escapeJsSingleQuote(
                     turnKey
-                  )}', '${escapeJsSingleQuote(thinkDetailId)}')" class="cursor-pointer select-none font-medium text-zinc-300 flex items-center justify-between">
+                  )}', '${escapeJsSingleQuote(thinkDetailId)}')" class="cursor-pointer select-none font-medium text-zinc-300 min-h-[34px] flex items-center justify-between px-0.5">
                     <span class="flex items-center gap-1.5 min-w-0">
                       <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 3.2 1.9 6 4.7 7.3V19a2 2 0 0 0 2 2h2.6a2 2 0 0 0 2-2v-1.7c2.8-1.3 4.7-4.1 4.7-7.3a8 8 0 0 0-8-8z"/><path d="M10 22h4"/></svg>
                       <span class="truncate">思考过程 (${displayThinkLen}字)</span>
                     </span>
                     <button type="button" onclick="window.appActions.copyThinkingText('${escapeJsSingleQuote(
                       thinkDetailId
-                    )}', this, event)" class="px-1.5 py-0.5 rounded text-[10px] text-zinc-400 hover:text-sky-300 hover:bg-zinc-800/80 transition active:scale-95 flex items-center gap-1" title="复制思考内容">
+                    )}', this, event)" class="min-h-[30px] px-2 py-0.5 rounded text-[11px] text-zinc-400 hover:text-sky-300 hover:bg-zinc-800/80 transition active:scale-95 flex items-center gap-1" title="复制思考内容">
                       <svg class="w-3 h-3 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                       <span>复制</span>
                     </button>
@@ -3412,7 +3508,7 @@ function renderTurnProcessBar(turn) {
                           } ontoggle="window.appActions.onDetailToggle(this, '${escapeJsSingleQuote(
                             diffDetailId
                           )}')" class="mt-1.5 text-[10px] text-zinc-400">
-                            <summary class="cursor-pointer select-none font-medium flex items-center justify-between text-emerald-300/90 hover:text-emerald-200 py-1 px-1 rounded hover:bg-emerald-500/10 transition">
+                            <summary class="cursor-pointer select-none font-medium flex items-center justify-between text-emerald-300/90 hover:text-emerald-200 min-h-[34px] py-1 px-1 rounded hover:bg-emerald-500/10 transition">
                               <span class="flex items-center gap-1.5 min-w-0">
                                 <svg class="w-3.5 h-3.5 text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                                 <span class="truncate">代码变更 Diff</span>
@@ -3455,7 +3551,7 @@ function renderTurnProcessBar(turn) {
                           } ontoggle="window.appActions.onDetailToggle(this, '${escapeJsSingleQuote(
                             outDetailId
                           )}')" class="mt-1.5 text-[10px] text-zinc-400">
-                            <summary class="cursor-pointer text-zinc-400 hover:text-zinc-200 select-none flex items-center justify-between">
+                            <summary class="cursor-pointer text-zinc-400 hover:text-zinc-200 select-none min-h-[34px] flex items-center justify-between py-1 px-1 rounded hover:bg-zinc-800/40 transition">
                               <span class="flex items-center gap-1.5 min-w-0">
                                 <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
                                 <span class="truncate">查看执行输出 ${
@@ -3466,7 +3562,7 @@ function renderTurnProcessBar(turn) {
                                 tc.is_truncated
                                   ? `<button onclick="window.appActions.loadFullOutput('${escapeHtml(
                                       state.selectedSessionId
-                                    )}', ${rec.step_index}, this, event)" class="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-[9px] shrink-0">加载完整输出</button>`
+                                    )}', ${rec.step_index}, this, event)" class="min-h-[28px] px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-[10px] shrink-0">加载完整输出</button>`
                                   : ""
                               }
                             </summary>
@@ -3487,7 +3583,7 @@ function renderTurnProcessBar(turn) {
           .join("")}
         <div class="pt-2 text-center border-t border-zinc-800/60">
           <button type="button" onclick="window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}')"
-            class="px-3 py-1 rounded-lg bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 text-[11px] text-zinc-400 hover:text-sky-300 font-medium transition active:scale-95 inline-flex items-center gap-1">
+            class="min-h-[34px] px-3.5 py-1.5 rounded-lg bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 text-[11px] text-zinc-400 hover:text-sky-300 font-medium transition active:scale-95 inline-flex items-center gap-1">
             <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>
             <span>收起已展开步骤</span>
           </button>
@@ -3496,19 +3592,21 @@ function renderTurnProcessBar(turn) {
     : "";
 
   return `
-    <div id="turn-process-wrap-${escapeHtml(turnKey)}" class="mb-2.5 rounded-xl bg-zinc-900/65 border border-zinc-800/85 px-3 py-2">
+    <div id="turn-process-wrap-${escapeHtml(turnKey)}" class="mb-2.5 rounded-xl bg-zinc-900/50 hover:bg-zinc-900/70 border border-zinc-800/80 px-2.5 sm:px-3 py-1.5 transition-colors">
       <div onclick="window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}')"
-        class="cursor-pointer select-none flex items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5 flex-wrap min-w-0">
+        class="cursor-pointer select-none min-h-[34px] flex items-center justify-between gap-1.5 sm:gap-2 active:opacity-75">
+        <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
           <span class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5 shrink-0">
             <svg class="w-3.5 h-3.5 text-sky-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-            <span>已收纳 ${totalActions} 个执行步骤</span>
+            <span class="whitespace-nowrap">${totalActions} 步操作</span>
           </span>
-          ${badges.join("")}
+          <div class="flex items-center gap-1 min-w-0 overflow-hidden">
+            ${badges.join("")}
+          </div>
         </div>
-        <span class="text-[11px] text-sky-400 font-medium shrink-0">
-          ${isExpanded ? "收起 ▴" : "展开 ▾"}
-        </span>
+        <div class="text-[11px] text-sky-400 hover:text-sky-300 font-medium shrink-0 px-2 py-1 -mr-1 rounded-md hover:bg-zinc-800/50 transition flex items-center gap-0.5">
+          <span>${isExpanded ? "收起 ▴" : "展开 ▾"}</span>
+        </div>
       </div>
       ${detailsHtml}
     </div>
@@ -4028,6 +4126,7 @@ function renderApprovalBanners() {
   if (list.length === 0) {
     topBanner.classList.add("hidden");
     bottomBar.classList.add("hidden");
+    if (window.updateBottomControlHeight) window.updateBottomControlHeight();
     return;
   }
 
@@ -4150,6 +4249,7 @@ function renderApprovalBanners() {
       </div>
     </div>
   `;
+  if (window.updateBottomControlHeight) window.updateBottomControlHeight();
 }
 
 
@@ -5847,6 +5947,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   updateDrawerVisibility();
   initDrawerSwipeGestures();
+  bindSessionListScrollGuardian();
   await checkAndExchangePairCode();
   try {
     await Promise.all([loadSystemStatus(), loadWorkspaces(), loadSessions()]);
@@ -6032,4 +6133,25 @@ window.addEventListener("DOMContentLoaded", async () => {
       updateCollapseStepsPillVisibility();
     });
   }
+
+  // 自适应监测底部控制舱高度（含输入框撑高、移动端键盘、审批横幅变化），动态更新浮动药丸吸附位置
+  const updateBottomControlHeight = () => {
+    const footerEl = document.querySelector("footer");
+    const approvalBarEl = document.getElementById("bottom-approval-bar");
+    let totalBottomHeight = footerEl ? footerEl.offsetHeight : 108;
+    if (approvalBarEl && !approvalBarEl.classList.contains("hidden")) {
+      totalBottomHeight += approvalBarEl.offsetHeight;
+    }
+    document.documentElement.style.setProperty("--bottom-control-height", `${totalBottomHeight}px`);
+  };
+  window.updateBottomControlHeight = updateBottomControlHeight;
+
+  const footerEl = document.querySelector("footer");
+  if (footerEl && window.ResizeObserver) {
+    const bottomObserver = new ResizeObserver(() => updateBottomControlHeight());
+    bottomObserver.observe(footerEl);
+    const approvalBarEl = document.getElementById("bottom-approval-bar");
+    if (approvalBarEl) bottomObserver.observe(approvalBarEl);
+  }
+  updateBottomControlHeight();
 });

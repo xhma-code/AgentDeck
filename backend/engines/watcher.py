@@ -22,6 +22,59 @@ from backend.core.logger import log_structured_error, logger
 from backend.engines.event_bus import RealtimeEventBus
 
 
+def is_meaningful_session_storage_change(p_str: str, p_name: str) -> bool:
+    """
+    白名单谓词：收敛过滤无效临时文件与高频共享内存变动，阻断广播风暴。
+    仅当变动命中核心会话存储（如 transcript.jsonl, summaries.db, *.jsonl）时放行。
+    """
+    lower_name = p_name.lower()
+    lower_str = p_str.lower()
+
+    # 1. 严格黑名单排除（临时快照、SQLite 共享内存、锁文件、版本控制与 Python 缓存）
+    if any(
+        noise in lower_str
+        for noise in (
+            "tmp_snapshots",
+            ".db-shm",
+            ".git",
+            "__pycache__",
+            ".pytest_cache",
+            "/scratch/",
+            "\\.scratch\\",
+        )
+    ):
+        return False
+
+    if lower_name.endswith((".tmp", ".lock", ".swp", ".bak")):
+        return False
+
+    # 2. Antigravity 核心会话载体白名单
+    if "antigravity" in lower_str:
+        if lower_name == "transcript.jsonl":
+            return True
+        if "conversation_summaries.db" in lower_name:
+            return True
+        if lower_name.endswith(".db") and "/conversations/" in lower_str:
+            return True
+        return False
+
+    # 3. Claude Code 核心会话载体白名单
+    if ".claude" in lower_str:
+        if lower_name.endswith(".jsonl") and not lower_name.startswith("agent-"):
+            return True
+        if lower_name.endswith(".json") and "/sessions/" in lower_str:
+            return True
+        return False
+
+    # 4. OpenCode 核心会话载体白名单
+    if "opencode" in lower_str:
+        if lower_name.endswith((".json", ".jsonl", ".sqlite", ".db")):
+            return True
+        return False
+
+    return False
+
+
 class SafeStorageWatcher:
     """实时本地文件系统变动监听与多态缓存失效深模块。"""
 
@@ -81,9 +134,12 @@ class SafeStorageWatcher:
 
                     for _, raw_p in changes:
                         p_str = str(raw_p).replace("\\", "/")
-                        if "tmp_snapshots" in p_str:
-                            continue
                         p_obj = Path(raw_p)
+
+                        # 使用白名单收敛过滤，阻断临时文件、SQLite 共享内存与无关日志导致的广播风暴
+                        if not is_meaningful_session_storage_change(p_str, p_obj.name):
+                            continue
+
                         changed_files.append(p_obj.name)
 
                         lower_p = p_str.lower()

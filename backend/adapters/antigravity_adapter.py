@@ -558,8 +558,8 @@ class AntigravityAdapter(BaseAgentAdapter):
                             stat = transcript.stat()
                             mtime_iso = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
                             model_name = self.get_session_model(cid) or ""
-                            is_recent = (time.time() - stat.st_mtime) < RECENT_ACTIVE_WINDOW_SECONDS
-                            new_status = ("desktop_active" if self.agent_type == "agy_ide" else "running") if is_recent else "idle"
+                            is_active, _ = inspect_transcript_tail_status(transcript)
+                            new_status = ("desktop_active" if self.agent_type == "agy_ide" else "running") if is_active else "idle"
                             new_brain_map[cid] = UnifiedSession(
                                 unified_id=f"{self.agent_type}:{cid}",
                                 agent_type=self.agent_type,
@@ -572,7 +572,7 @@ class AntigravityAdapter(BaseAgentAdapter):
                                 step_count=0,
                                 updated_at=mtime_iso,
                                 model_name=model_name,
-                                desktop_locked=(self.agent_type == "agy_ide" and is_recent),
+                                desktop_locked=(self.agent_type == "agy_ide" and is_active),
                             )
                 except Exception as exc:
                     log_structured_error(
@@ -599,13 +599,17 @@ class AntigravityAdapter(BaseAgentAdapter):
                     file_iso = datetime.fromtimestamp(file_mtime, tz=timezone.utc).isoformat()
                     if file_iso > sess.updated_at:
                         sess.updated_at = file_iso
-                    # 窗口时间内有文件写入，直接动态标记为运行/桌面活跃态
-                    if (now_ts - file_mtime) < RECENT_ACTIVE_WINDOW_SECONDS:
+                    # 深度联动：结合末尾 Step 状态机与写入时间，平滑识别真实活跃态与闲置态（消除思考中抖动与假活迟钝）
+                    is_active, _ = inspect_transcript_tail_status(tp)
+                    if is_active:
                         if self.agent_type == "agy_ide":
                             sess.status = "desktop_active"
                             sess.desktop_locked = True
                         else:
                             sess.status = "running"
+                    elif sess.status in ("running", "desktop_active"):
+                        sess.status = "idle"
+                        sess.desktop_locked = False
                 except OSError as exc:
                     logger.debug(f"联动活跃会话时间戳异常 ({cid[:8]}): {exc}")
 
@@ -793,28 +797,37 @@ class AntigravityAdapter(BaseAgentAdapter):
                     None,
                 )
                 last_assistant_box: list[Optional[UnifiedMessageItem]] = [last_assistant]
-                with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(transcript_path, "rb") as f:
                     f.seek(cached[3])
-                    inc_lines = f.readlines()
-                    new_offset = f.tell()
+                    inc_raw = f.read()
 
-                # 安全防护：若最后一行正在刷盘尚未写出换行符，丢弃半截行并回退游标至上一合法边界
-                if inc_lines and not inc_lines[-1].endswith(("\n", "\r")):
-                    incomplete_len = len(inc_lines[-1].encode("utf-8", errors="replace"))
+                inc_lines = inc_raw.splitlines(keepends=True)
+                # 安全防护：若最后一行正在刷盘尚未写出换行符，丢弃半截行
+                if inc_lines and not inc_lines[-1].endswith((b"\n", b"\r")):
                     inc_lines = inc_lines[:-1]
-                    new_offset = max(cached[3], new_offset - incomplete_len)
 
                 start_idx = len(items)
-                for idx_offset, ln in enumerate(inc_lines):
-                    self._parse_agy_step_line(
-                        line=ln,
+                consumed_bytes = cached[3]
+                for idx_offset, b_line in enumerate(inc_lines):
+                    u_line = b_line.decode("utf-8", errors="replace")
+                    parsed_ok = self._parse_agy_step_line(
+                        line=u_line,
                         raw_session_id=raw_session_id,
                         fallback_idx=start_idx + idx_offset,
                         items=items,
                         last_assistant_container=last_assistant_box,
                     )
+                    if parsed_ok:
+                        consumed_bytes += len(b_line)
+                    else:
+                        # 安全防护：若为最后一行且非空但解析失败（极可能是流式刷盘截断），游标保留在该行行首等待下一轮补齐
+                        if idx_offset == len(inc_lines) - 1 and u_line.strip():
+                            logger.debug(f"增量读取时末行正在并发写入中 ({raw_session_id[:8]})，游标安全保留在行首")
+                            break
+                        if not u_line.strip():
+                            consumed_bytes += len(b_line)
 
-                self._messages_cache[raw_session_id] = (mtime_ns, fsize, items, new_offset)
+                self._messages_cache[raw_session_id] = (mtime_ns, fsize, items, consumed_bytes)
                 return items[-limit:] if limit > 0 else items
             except Exception as inc_exc:
                 logger.debug(f"增量读取 Antigravity 会话 {raw_session_id[:8]} 异常，回退全量解析: {inc_exc}")
@@ -822,16 +835,13 @@ class AntigravityAdapter(BaseAgentAdapter):
         # 全量冷读取
         items: list[UnifiedMessageItem] = []
         last_assistant_box = [None]
-        raw_lines: list[str] = []
-        byte_offset = 0
+        raw_b_lines: list[bytes] = []
         try:
-            with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
-                raw_lines = f.readlines()
-                byte_offset = f.tell()
-            if raw_lines and not raw_lines[-1].endswith(("\n", "\r")):
-                incomplete_len = len(raw_lines[-1].encode("utf-8", errors="replace"))
-                raw_lines = raw_lines[:-1]
-                byte_offset = max(0, byte_offset - incomplete_len)
+            with open(transcript_path, "rb") as f:
+                all_raw = f.read()
+            raw_b_lines = all_raw.splitlines(keepends=True)
+            if raw_b_lines and not raw_b_lines[-1].endswith((b"\n", b"\r")):
+                raw_b_lines = raw_b_lines[:-1]
         except Exception as exc:
             log_structured_error(
                 problem=f"读取 {self.agent_label} 会话日志失败 ({raw_session_id[:8]})",
@@ -841,16 +851,26 @@ class AntigravityAdapter(BaseAgentAdapter):
             )
             return []
 
-        for idx, line in enumerate(raw_lines):
-            self._parse_agy_step_line(
-                line=line,
+        consumed_bytes = 0
+        for idx, b_line in enumerate(raw_b_lines):
+            u_line = b_line.decode("utf-8", errors="replace")
+            parsed_ok = self._parse_agy_step_line(
+                line=u_line,
                 raw_session_id=raw_session_id,
                 fallback_idx=idx,
                 items=items,
                 last_assistant_container=last_assistant_box,
             )
+            if parsed_ok:
+                consumed_bytes += len(b_line)
+            else:
+                if idx == len(raw_b_lines) - 1 and u_line.strip():
+                    logger.debug(f"全量读取时末行正在并发写入中 ({raw_session_id[:8]})，游标安全保留在行首")
+                    break
+                if not u_line.strip():
+                    consumed_bytes += len(b_line)
 
-        self._messages_cache[raw_session_id] = (mtime_ns, fsize, items, byte_offset)
+        self._messages_cache[raw_session_id] = (mtime_ns, fsize, items, consumed_bytes)
         return items[-limit:] if limit > 0 else items
 
     def send_prompt_via_ls(

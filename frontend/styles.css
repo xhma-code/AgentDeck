@@ -767,3 +767,45 @@ details:not([open]) > summary .toggle-arrow-closed {
   appearance: none;
 }
 
+/* ==========================================================================
+   移动端执行步骤与内容视口优化（方案 B & C）
+   ========================================================================== */
+
+/* 移动端执行步骤详情扁平化与抗挤压优化 */
+@media (max-width: 640px) {
+  /* 减少展开步骤的内边距损耗，让出横向可视宽度给代码与文本 */
+  [id^="turn-process-wrap-"] {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+  .read-tool-chips-row {
+    gap: 0.2rem;
+    padding: 0.15rem 0;
+  }
+  .read-tool-chip {
+    padding: 0.1rem 0.35rem;
+    max-width: calc(100vw - 4.5rem);
+  }
+  .edit-tool-card {
+    padding: 0.375rem;
+    border-radius: var(--radius-sm);
+  }
+  .unified-diff-box {
+    font-size: 0.625rem;
+    line-height: 1.45;
+  }
+  /* 解决移动端代码块与执行输出的平滑手势滚动与防截断 */
+  [data-lazy-slot] pre,
+  .unified-diff-box {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+}
+
+/* 浮动操作药丸容器自适应吸附在底部输入控制舱上方 */
+#floating-actions-container {
+  bottom: calc(var(--bottom-control-height, 108px) + 10px);
+  will-change: bottom;
+}
+
+

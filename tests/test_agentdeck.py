@@ -2478,6 +2478,117 @@ async def test_safe_storage_watcher_lifecycle(tmp_path: Path):
     assert watcher.is_running is False
 
 
+def test_meaningful_session_storage_change_filter():
+    """T4 验证：测试 SafeStorageWatcher 白名单收敛过滤规则，阻断广播风暴。"""
+    from backend.engines.watcher import is_meaningful_session_storage_change
+
+    # 1. 核心白名单：应当放行
+    assert is_meaningful_session_storage_change("C:/Users/test/.gemini/antigravity/brain/123/.system_generated/logs/transcript.jsonl", "transcript.jsonl") is True
+    assert is_meaningful_session_storage_change("C:/Users/test/.gemini/antigravity/conversation_summaries.db", "conversation_summaries.db") is True
+    assert is_meaningful_session_storage_change("C:/Users/test/.gemini/antigravity/conversation_summaries.db-wal", "conversation_summaries.db-wal") is True
+    assert is_meaningful_session_storage_change("C:/Users/test/.claude/projects/my-proj/sess-123.jsonl", "sess-123.jsonl") is True
+    assert is_meaningful_session_storage_change("C:/Users/test/.claude/sessions/active.json", "active.json") is True
+
+    # 2. 噪音黑名单：必须阻断拦截
+    assert is_meaningful_session_storage_change("C:/Users/test/.gemini/antigravity/conversation_summaries.db-shm", "conversation_summaries.db-shm") is False
+    assert is_meaningful_session_storage_change("C:/Users/test/.gemini/antigravity/brain/123/scratch/tmp.py", "tmp.py") is False
+    assert is_meaningful_session_storage_change("C:/Users/test/.gemini/antigravity/brain/123/.system_generated/tasks/task-1.log", "task-1.log") is False
+    assert is_meaningful_session_storage_change("C:/Users/test/.claude/projects/my-proj/agent-123.jsonl", "agent-123.jsonl") is False
+    assert is_meaningful_session_storage_change("C:/Users/test/.claude/projects/my-proj/.git/index", "index") is False
+    assert is_meaningful_session_storage_change("C:/Users/test/tmp_snapshots/snap.json", "snap.json") is False
+
+
+
+def test_incomplete_line_recovery_and_offset_safety(tmp_path: Path):
+    """
+    T1 验证：测试末行并发写入/截断时的 Incomplete Line Recovery 容错与增量游标保护。
+    确保半截行不会被当成空行吞掉，且后续写完整时能增量补齐解析。
+    """
+    from backend.adapters.antigravity_adapter import AntigravityAdapter
+
+    mock_root = tmp_path / "antigravity"
+    brain_dir = mock_root / "brain"
+    cid = "test-session-incomplete-recovery"
+    sess_dir = brain_dir / cid / ".system_generated" / "logs"
+    sess_dir.mkdir(parents=True)
+    tp = sess_dir / "transcript.jsonl"
+
+    adapter = AntigravityAdapter(agent_type="agy_ide", root_dir=mock_root)
+
+    # 1. 初始写入一条合法的用户提问
+    line1 = json.dumps({"step_index": 0, "type": "USER_INPUT", "source": "USER_EXPLICIT", "content": "你好"}) + "\n"
+    tp.write_text(line1, encoding="utf-8")
+
+    msgs1 = adapter.get_session_messages(cid)
+    assert len(msgs1) == 1
+    assert msgs1[0].content == "你好"
+
+    # 2. 模拟正在流式并发写入，追加了半截残缺的 JSON 行（不完整的大括号与未换行）
+    with open(tp, "a", encoding="utf-8") as f:
+        f.write('{"step_index": 1, "type": "PLANNER_RESPONSE", "source": "MODEL", "content": "正在思考')
+
+    # 读取时应安全降级，不抛异常，且不会吞掉游标
+    msgs2 = adapter.get_session_messages(cid)
+    assert len(msgs2) == 1
+
+    # 3. 外部进程将该行写完整并换行
+    with open(tp, "a", encoding="utf-8") as f:
+        f.write('中，回答完毕"}\n')
+
+    # 再次读取，增量游标安全从该行行首重新解析，第 2 步成功补齐
+    msgs3 = adapter.get_session_messages(cid)
+    assert len(msgs3) == 2
+    assert "正在思考中，回答完毕" in msgs3[1].content
+
+
+def test_inspect_transcript_tail_status_and_smooth_activity(tmp_path: Path):
+    """
+    T2 验证：测试结合末尾 Step 状态机与写入时间的平滑活跃态判定算法。
+    """
+    import os
+    import time
+    from backend.adapters.antigravity_adapter import inspect_transcript_tail_status
+
+    tp = tmp_path / "transcript.jsonl"
+
+    # 1. 末尾为 USER_INPUT（用户提问后等待模型长思考），即使 80 秒未写入，仍判定为活跃
+    tp.write_text(json.dumps({"step_index": 0, "type": "USER_INPUT", "content": "复杂算法设计"}) + "\n", encoding="utf-8")
+    past_80s = time.time() - 80.0
+    os.utime(tp, (past_80s, past_80s))
+    active, status = inspect_transcript_tail_status(tp)
+    assert active is True
+    assert status == "running"
+
+    # 2. 末尾为 RUNNING 状态的 PLANNER_RESPONSE，即使 120 秒未写入（长耗时工具执行），仍判定为活跃
+    tp.write_text(
+        json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "status": "RUNNING", "content": "执行构建"}) + "\n",
+        encoding="utf-8",
+    )
+    past_120s = time.time() - 120.0
+    os.utime(tp, (past_120s, past_120s))
+    active, status = inspect_transcript_tail_status(tp)
+    assert active is True
+    assert status == "running"
+
+    # 3. 明确 DONE 且已过去 20 秒（超过 15 秒缓冲），平滑退火判定为闲置
+    tp.write_text(
+        json.dumps({"step_index": 2, "type": "PLANNER_RESPONSE", "status": "DONE", "content": "全部完成"}) + "\n",
+        encoding="utf-8",
+    )
+    past_20s = time.time() - 20.0
+    os.utime(tp, (past_20s, past_20s))
+    active, status = inspect_transcript_tail_status(tp)
+    assert active is False
+    assert status == "idle"
+
+    # 4. 明确 DONE 处于 5 秒以内，保持活跃缓冲
+    past_5s = time.time() - 5.0
+    os.utime(tp, (past_5s, past_5s))
+    active, status = inspect_transcript_tail_status(tp)
+    assert active is True
+
+
+
 
 
 

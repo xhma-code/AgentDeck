@@ -127,10 +127,12 @@
         <div class="h-14 px-2.5 sm:px-4 flex items-center justify-between gap-2">
           <!-- 左侧：展开按钮 + 单行紧凑会话标题 -->
           <div class="flex items-center gap-2 min-w-0 flex-1">
-            <button onclick="window.appActions.toggleDrawer()"
-              class="md:hidden w-10 h-10 min-w-[40px] min-h-[40px] rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-200 flex items-center justify-center shrink-0 active:scale-95 transition"
+            <button id="mobile-menu-btn" onclick="window.appActions.toggleDrawer()"
+              class="md:hidden relative w-10 h-10 min-w-[40px] min-h-[40px] rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-200 flex items-center justify-center shrink-0 active:scale-95 transition"
               aria-label="打开菜单">
               <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+              <!-- 移动端后台活跃/未查看任务呼吸微标 -->
+              <span id="mobile-menu-badge" class="hidden absolute top-2 right-2 w-2 h-2 rounded-full pointer-events-none"></span>
             </button>
             <button id="desktop-sidebar-expand-btn" onclick="window.appActions.toggleSidebar()"
               class="w-10 h-10 sm:w-8 sm:h-8 min-w-[40px] min-h-[40px] sm:min-w-0 sm:min-h-0 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-zinc-100 items-center justify-center shrink-0 active:scale-95 transition"
@@ -157,12 +159,13 @@
 
           <!-- 右侧：连接状态、会话菜单与扫码按钮 -->
           <div class="flex items-center gap-1.5 shrink-0">
-            <!-- 运行中状态浮标（当后台存在其他进行中/待审批任务时在桌面端呈现，手机端隐藏避免挤占标题栏与显示无文字绿点） -->
+            <!-- 运行中/待审批/完成未看 快捷跳板（支持手机端紧凑胶囊与桌面端全尺寸展开） -->
             <button id="other-running-pill" onclick="window.appActions.jumpToRunningSession()"
-              class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs items-center gap-1.5 active:scale-95 transition"
-              title="点击跳转到正在执行的会话">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span id="other-running-text" class="text-[11px] font-medium hidden sm:inline">后台执行中</span>
+              class="hidden h-9 min-h-[36px] sm:h-8 sm:min-h-0 px-2 sm:px-2.5 rounded-lg border text-xs items-center gap-1.5 active:scale-95 transition cursor-pointer select-none"
+              title="点击快速跳转到活跃或待查看的会话">
+              <span id="other-running-dot" class="w-2 h-2 rounded-full shrink-0"></span>
+              <span id="other-running-text" class="text-[11px] font-medium hidden sm:inline"></span>
+              <span id="other-running-count" class="text-[11px] font-mono font-bold sm:hidden"></span>
             </button>
 
             <!-- Token 上下文占用胶囊 -->
@@ -236,8 +239,8 @@
       <!-- 对话卡片主视口 -->
       <div id="messages-container" class="flex-1 overflow-y-auto px-2.5 sm:px-5 py-3 scroll-smooth"></div>
 
-      <!-- 浮动快捷操作药丸组：锚定原 bottom-32 位置不往下移，收起与最新同款天蓝底色，紧凑靠拢 -->
-      <div class="absolute bottom-32 right-3 z-20 flex flex-col items-end gap-1.5 pointer-events-none">
+      <!-- 浮动快捷操作药丸组：自适应吸附在底部控制舱上方，杜绝打架遮挡 -->
+      <div id="floating-actions-container" class="absolute right-3 z-20 flex flex-col items-end gap-1.5 pointer-events-none transition-[bottom] duration-150">
         <button id="collapse-steps-pill" onclick="window.appActions.collapseCurrentExpandedSteps()"
           class="hidden pointer-events-auto px-2.5 py-1 rounded-full bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-[11px] shadow-lg flex items-center gap-1 active:scale-95 transition"
           title="收起执行步骤">

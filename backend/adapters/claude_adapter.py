@@ -591,20 +591,30 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                     inc_lines = inc_lines[:-1]
                     new_offset = max(cached[3], new_offset - incomplete_len)
 
-                for ln in inc_lines:
-                    self._parse_claude_record_line(
+                consumed_offset = cached[3]
+                for idx_offset, ln in enumerate(inc_lines):
+                    line_bytes = len(ln.encode("utf-8", errors="replace"))
+                    parsed_ok = self._parse_claude_record_line(
                         line=ln,
                         raw_session_id=raw_session_id,
                         items=items,
                         tool_id_map=tool_id_map,
                         step_idx_container=step_idx_container,
                     )
+                    if parsed_ok:
+                        consumed_offset += line_bytes
+                    else:
+                        if idx_offset == len(inc_lines) - 1 and ln.strip():
+                            logger.debug(f"增量读取时 Claude Code 末行并发写入中 ({raw_session_id[:8]})，游标保留在行首")
+                            break
+                        if not ln.strip():
+                            consumed_offset += line_bytes
 
                 self._messages_cache[raw_session_id] = (
                     mtime_ns,
                     fsize,
                     items,
-                    new_offset,
+                    consumed_offset,
                     step_idx_container[0],
                     tool_id_map,
                 )
@@ -635,20 +645,30 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             )
             return []
 
-        for line in lines:
-            self._parse_claude_record_line(
+        consumed_offset = 0
+        for idx, line in enumerate(lines):
+            line_bytes = len(line.encode("utf-8", errors="replace"))
+            parsed_ok = self._parse_claude_record_line(
                 line=line,
                 raw_session_id=raw_session_id,
                 items=items,
                 tool_id_map=tool_id_map,
                 step_idx_container=step_idx_container,
             )
+            if parsed_ok:
+                consumed_offset += line_bytes
+            else:
+                if idx == len(lines) - 1 and line.strip():
+                    logger.debug(f"全量读取时 Claude Code 末行并发写入中 ({raw_session_id[:8]})，游标保留在行首")
+                    break
+                if not line.strip():
+                    consumed_offset += line_bytes
 
         self._messages_cache[raw_session_id] = (
             mtime_ns,
             fsize,
             items,
-            byte_offset,
+            consumed_offset,
             step_idx_container[0],
             tool_id_map,
         )
