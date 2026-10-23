@@ -827,11 +827,15 @@ function handleRealtimeEvent(envelope) {
       if (state.optimisticMessages[uid]) {
         delete state.optimisticMessages[uid];
       }
-      const sess = state.sessions.find((s) => s.unified_id === uid);
+      const sess = (state.allSessions || state.sessions).find((s) => s.unified_id === uid);
       if (sess && sess.status === "running") {
         sess.status = "idle";
-        renderSessionList();
       }
+      if (uid !== state.selectedSessionId) {
+        markSessionCompletedUnread(uid);
+      }
+      renderSessionList();
+      renderOtherRunningPill();
       if (uid === state.selectedSessionId) {
         renderCurrentSessionHeader();
         renderLiveStreamOverlay();
@@ -987,32 +991,89 @@ function isSessionStatusActive(s) {
   return st === "running" || st === "desktop_active";
 }
 
-function renderOtherRunningPill() {
-  const pill = document.getElementById("other-running-pill");
-  const textEl = document.getElementById("other-running-text");
-  if (!pill) return;
-
-  const otherRunning = (state.allSessions || []).filter(
+function getPendingAttentionSessions() {
+  const all = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  const list = all.filter(
     (s) =>
+      s &&
       s.unified_id !== state.selectedSessionId &&
-      (isSessionStatusActive(s) || s.status === "waiting_approval")
+      (s.status === "waiting_approval" ||
+        isSessionStatusActive(s) ||
+        (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id)) ||
+        isSessionCompletedUnread(s))
   );
 
-  if (otherRunning.length === 0) {
+  const getWeight = (s) => {
+    if (s.status === "waiting_approval") return 3;
+    if (isSessionCompletedUnread(s)) return 2;
+    if (isSessionStatusActive(s) || (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id))) return 1;
+    return 0;
+  };
+
+  return list.sort((a, b) => {
+    const wa = getWeight(a);
+    const wb = getWeight(b);
+    if (wa !== wb) return wb - wa;
+    const ta = new Date(a.updated_at || 0).getTime();
+    const tb = new Date(b.updated_at || 0).getTime();
+    return tb - ta;
+  });
+}
+
+function renderOtherRunningPill() {
+  const pill = document.getElementById("other-running-pill");
+  const dotEl = document.getElementById("other-running-dot");
+  const textEl = document.getElementById("other-running-text");
+  const countEl = document.getElementById("other-running-count");
+  const mobileBadge = document.getElementById("mobile-menu-badge");
+  if (!pill) return;
+
+  const attentionList = getPendingAttentionSessions();
+  const count = attentionList.length;
+
+  if (count === 0) {
     pill.classList.add("hidden");
-    pill.classList.remove("flex", "sm:flex");
+    pill.classList.remove("flex");
+    if (mobileBadge) {
+      mobileBadge.classList.add("hidden");
+    }
     return;
   }
 
-  // 手机端始终保持隐藏（避免显示无文字绿色圆圈并挤压顶部标题栏），仅在 sm 屏幕及以上显示
-  pill.classList.add("hidden", "sm:flex");
-  pill.classList.remove("flex");
-  const count = otherRunning.length;
-  const hasApproval = otherRunning.some((s) => s.status === "waiting_approval");
+  pill.classList.remove("hidden");
+  pill.classList.add("flex");
+
+  const hasApproval = attentionList.some((s) => s.status === "waiting_approval");
+  const hasUnread = attentionList.some((s) => isSessionCompletedUnread(s));
+
+  let dotColorClass = "bg-emerald-400 animate-pulse";
+  let pillColorClass = "border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300";
+  let textDesc = `${count} 个后台运行中`;
+
+  if (hasApproval) {
+    dotColorClass = "bg-amber-400 animate-ping";
+    pillColorClass = "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300";
+    textDesc = `${count} 个待审批任务`;
+  } else if (hasUnread) {
+    dotColorClass = "bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.8)]";
+    pillColorClass = "border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300";
+    textDesc = `${count} 个完成待查看`;
+  }
+
+  pill.className = `h-9 min-h-[36px] sm:h-8 sm:min-h-0 px-2 sm:px-2.5 rounded-lg border text-xs flex items-center gap-1.5 active:scale-95 transition cursor-pointer select-none ${pillColorClass}`;
+  if (dotEl) {
+    dotEl.className = `w-2 h-2 rounded-full shrink-0 ${dotColorClass}`;
+  }
   if (textEl) {
-    textEl.textContent = hasApproval
-      ? `${count} 个待审批任务`
-      : `${count} 个后台运行中`;
+    textEl.textContent = textDesc;
+  }
+  if (countEl) {
+    countEl.textContent = String(count);
+  }
+
+  if (mobileBadge) {
+    mobileBadge.classList.remove("hidden");
+    mobileBadge.className = `absolute top-1.5 right-1.5 w-2 h-2 rounded-full pointer-events-none ${dotColorClass}`;
   }
 }
 
