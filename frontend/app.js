@@ -2094,19 +2094,19 @@ function renderCompactSessionItem(s, showProjectTag = true) {
   } else if (s.status === "running" || isWorking) {
     statusDotHtml = `
       <span class="relative flex h-2 w-2" title="运行中" aria-label="运行中">
-        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_var(--accent-emerald,#10b981)]"></span>
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse glow-emerald"></span>
       </span>
     `;
   } else if (isUnread) {
     statusDotHtml = `
       <span class="relative flex h-2 w-2 items-center justify-center" title="运行完成（未查看）" aria-label="未读完成">
-        <span class="w-2 h-2 rounded-full bg-sky-400 shadow-[0_0_8px_var(--accent-sky,#38bdf8)]"></span>
+        <span class="w-2 h-2 rounded-full bg-sky-400 glow-sky"></span>
       </span>
     `;
   } else if (s.status === "desktop_active") {
     statusDotHtml = `
       <span class="relative flex h-2 w-2" title="桌面端活跃" aria-label="桌面端活跃">
-        <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_var(--accent-cyan,#22d3ee)]"></span>
+        <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse glow-cyan"></span>
       </span>
     `;
   }
@@ -2201,13 +2201,7 @@ function renderSessionList() {
   }
 
   // 1. 动态提升会话（运行中 / 待审批 / 刚完成未查看）
-  const activeUnreadList = filtered.filter(
-    (s) =>
-      s.status === "waiting_approval" ||
-      isSessionStatusActive(s) ||
-      (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id)) ||
-      isSessionCompletedUnread(s)
-  );
+  const activeUnreadList = filtered.filter((s) => isSessionAttentionNeeded(s));
 
   activeUnreadList.sort((a, b) => {
     const wa = getSessionPriorityWeight(a);
