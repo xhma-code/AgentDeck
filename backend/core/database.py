@@ -262,6 +262,12 @@ class MetaDatabase:
             ).fetchone()
             return dict(row) if row else {}
 
+    def delete_session_meta(self, unified_id: str) -> bool:
+        """删除指定会话在数据库中的扩展元数据。"""
+        with self.connect() as conn:
+            conn.execute("DELETE FROM t_unified_session_meta WHERE unified_id = ?", (unified_id,))
+            return True
+
     def record_approval_log(
         self,
         unified_id: str,

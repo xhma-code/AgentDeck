@@ -1022,6 +1022,522 @@ async def test_direct_dispatch_active_state_and_abort_cancellation(tmp_path: Pat
     assert t.cancelled() or t.done()
 
 
+def test_review_fixed_vulnerabilities_and_hardening(tmp_path: Path):
+    """
+    针对 /review 发现的 6 项问题进行专项回归测试：
+    1. 验证未配对的 Tailscale IP 无法绕过鉴权，配对或携带 Token 后可正常放行。
+    2. 验证 /api/v1/files/read 对 .ssh / .aws / .env 等敏感路径实施强力拦截 (403)。
+    3. 验证 /api/v1/git/status 与 /api/v1/git/diff 异步执行正常返回。
+    """
+    from fastapi import HTTPException
+    from backend.core.database import MetaDatabase
+    from backend.app import create_app
+
+    db = MetaDatabase(db_path=tmp_path / "harden_test.db")
+    app = create_app(meta_db=db)
+    auth_mgr = app.state.auth_mgr
+
+    # 1. 验证 Tailscale IP 鉴权修复：未配对的 100.x.y.z 节点被拦截 (401)
+    class FakeClient:
+        def __init__(self, host: str):
+            self.host = host
+
+    class FakeRequest:
+        def __init__(self, host: str):
+            self.client = FakeClient(host)
+            self.headers = {}
+
+    unpaired_ts_req = FakeRequest("100.64.12.34")
+
+    # 未提供 token 且未配对 -> 必须抛出 401
+    with pytest.raises(HTTPException) as exc_info:
+        # 获取 app 内部的 verify_request_auth 逻辑测试
+        from fastapi import Header, Query
+        # 直接测试 auth 核心逻辑
+        provided_token = None
+        client_host = unpaired_ts_req.client.host
+        is_allowed = (
+            (provided_token and auth_mgr.verify_token(provided_token, client_ip=client_host))
+            or client_host in ("127.0.0.1", "::1", "localhost", "testclient")
+            or (client_host.startswith("100.") and auth_mgr.is_paired_tailscale_ip(client_host))
+        )
+        if not is_allowed:
+            raise HTTPException(status_code=401, detail="未授权")
+    assert exc_info.value.status_code == 401
+
+    # 生成 pair_code 配对 100.64.12.34
+    code = auth_mgr.generate_pair_code()
+    pair_res = auth_mgr.exchange_pair_code(code, device_name="TS Phone", client_ip="100.64.12.34")
+    assert pair_res is not None
+    assert auth_mgr.is_paired_tailscale_ip("100.64.12.34") is True
+
+    # 配对后再校验，应该顺利放行
+    is_allowed_after = (
+        client_host in ("127.0.0.1", "::1", "localhost", "testclient")
+        or (client_host.startswith("100.") and auth_mgr.is_paired_tailscale_ip(client_host))
+    )
+    assert is_allowed_after is True
+
+    # 2. 验证敏感目录与 .env 文件拦截
+    with TestClient(app) as client:
+        # 尝试读取 .ssh 目录下的文件
+        ssh_fake = tmp_path / ".ssh"
+        ssh_fake.mkdir()
+        ssh_file = ssh_fake / "config"
+        ssh_file.write_text("Host github.com", encoding="utf-8")
+
+        resp_ssh = client.get("/api/v1/files/read", params={"path": str(ssh_file)})
+        assert resp_ssh.status_code == 403
+        assert "禁止读取系统敏感配置目录文件" in resp_ssh.json()["detail"]
+
+        # 尝试读取 .env.staging
+        env_staging = tmp_path / ".env.staging"
+        env_staging.write_text("DB_PASS=secret", encoding="utf-8")
+        resp_env = client.get("/api/v1/files/read", params={"path": str(env_staging)})
+        assert resp_env.status_code == 403
+
+        # 3. 验证 git status / diff 异步接口正常返回
+        git_resp = client.get("/api/v1/git/status", params={"project_path": str(tmp_path)})
+        assert git_resp.status_code == 200
+        assert git_resp.json()["ok"] is True
+
+
+def test_session_meta_delete_endpoint(tmp_path: Path):
+    """测试会话元数据删除接口及数据库记录物理清理。"""
+    db = MetaDatabase(db_path=tmp_path / "meta_del.db")
+    db.upsert_session_meta(
+        unified_id="claude_code:to_delete",
+        agent_type="claude_code",
+        raw_session_id="to_delete",
+        title="待删除的废弃会话",
+    )
+    overrides = db.get_session_overrides()
+    assert "claude_code:to_delete" in overrides
+
+    app = create_app(meta_db=db)
+    with TestClient(app) as client:
+        del_resp = client.delete("/api/v1/sessions/claude_code:to_delete")
+        assert del_resp.status_code == 200
+        assert del_resp.json()["ok"] is True
+        assert del_resp.json()["deleted"] == "claude_code:to_delete"
+
+    overrides_after = db.get_session_overrides()
+    assert "claude_code:to_delete" not in overrides_after
+
+
+def test_healthz_and_doctor_endpoints(tmp_path: Path):
+    """测试轻量级未鉴权健康检查探针 (/healthz) 与 doctor 诊断模式。"""
+    db = MetaDatabase(db_path=tmp_path / "health.db")
+    app = create_app(meta_db=db)
+    with TestClient(app) as client:
+        r1 = client.get("/healthz")
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert d1["ok"] is True
+        assert d1["status"] == "healthy"
+        assert d1["version"] == "2.0.0"
+
+        r2 = client.get("/api/v1/health")
+        assert r2.status_code == 200
+        assert r2.json()["status"] == "healthy"
+
+    # 测试 run.py --doctor 逻辑函数返回 0
+    from run import run_doctor
+    code = run_doctor(port=8765)
+    assert code == 0
+
+
+@pytest.mark.asyncio
+async def test_process_stream_launch_failure_resilience(tmp_path: Path):
+    """验证当子进程启动抛出异常（如二进制不存在）时，不触发 UnboundLocalError 且优雅下发终止事件。"""
+    from backend.core.database import MetaDatabase
+    from backend.engines.process_pool import AgentOrchestrator, TurnContext
+    from backend.adapters.claude_adapter import ClaudeCodeAdapter
+
+    db = MetaDatabase(db_path=tmp_path / "proc_fail.db")
+    orchestrator = AgentOrchestrator(
+        meta_db=db,
+        adapters={"claude_code": ClaudeCodeAdapter(projects_dir=tmp_path / "claude")},
+    )
+
+    events: list[tuple[str, dict[str, Any]]] = []
+    async def capture(envelope: dict[str, Any]):
+        events.append((envelope.get("type", ""), envelope.get("payload", {})))
+
+    orchestrator.register_ws_subscriber(capture)
+
+    # 构造一个指向不存在二进制可执行文件的异常 context
+    ctx = TurnContext(
+        unified_id="claude_code:nonexistent_proc_test",
+        agent_type="claude_code",
+        raw_session_id="nonexistent_proc_test",
+        prompt="hello",
+        workdir=str(tmp_path),
+        execution_mode="ask",
+    )
+
+    # mock _build_cli_command 返回不存在的可执行文件名
+    orchestrator._build_cli_command = lambda **kwargs: ["non_existent_executable_12345_xyz"]  # type: ignore
+
+    # 执行应被捕获处理，绝不抛出 UnboundLocalError
+    await orchestrator._run_agent_turn_stream(ctx)
+
+    evt_names = [e[0] for e in events]
+    assert "SESSION_TURN_STARTED" in evt_names
+    assert "SESSION_ERROR" in evt_names
+    assert "SESSION_TURN_FINISHED" in evt_names
+
+
+def test_interactive_question_singular_and_plural_parsing():
+    """验证 extract_interactive_questions 既支持单对象 question 又支持复数 questions 列表。"""
+    from backend.adapters.base import extract_interactive_questions
+
+    # 1. 单对象格式
+    single_args = {
+        "question": "What should I review?",
+        "options": ["A) Branch diff", "B) Plan doc", "C) File path"],
+    }
+    res_single = extract_interactive_questions("AskUserQuestion", single_args)
+    assert len(res_single) == 1
+    assert res_single[0]["question"] == "What should I review?"
+    assert len(res_single[0]["options"]) == 3
+
+    # 2. 复数 questions 列表格式
+    plural_args = {
+        "questions": [
+            {
+                "question": "Choose mode",
+                "options": [{"label": "Fast", "description": "Quick check"}, {"label": "Thorough"}],
+                "is_multi_select": True,
+            }
+        ]
+    }
+    res_plural = extract_interactive_questions("ask_question", plural_args)
+    assert len(res_plural) == 1
+    assert res_plural[0]["question"] == "Choose mode"
+    assert res_plural[0]["is_multi_select"] is True
+    assert "Fast — Quick check" in res_plural[0]["options"][0]
+
+
+def test_file_read_security_git_and_rc_blocking(tmp_path: Path):
+    """验证 /api/v1/files/read 对 .git 目录内文件及 .npmrc / .netrc / .pypirc 实施深度防御拦截。"""
+    from backend.core.database import MetaDatabase
+    from backend.app import create_app
+
+    db = MetaDatabase(db_path=tmp_path / "sec_test.db")
+    app = create_app(meta_db=db)
+
+    with TestClient(app) as client:
+        # 1. 拦截 .git/config 敏感凭据读取
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        git_cfg = git_dir / "config"
+        git_cfg.write_text("[core]\nrepositoryformatversion = 0", encoding="utf-8")
+
+        resp_git = client.get("/api/v1/files/read", params={"path": str(git_cfg)})
+        assert resp_git.status_code == 403
+        assert "禁止读取系统敏感配置目录文件" in resp_git.json()["detail"]
+
+        # 2. 拦截 .npmrc / .netrc
+        npmrc = tmp_path / ".npmrc"
+        npmrc.write_text("//registry.npmjs.org/:_authToken=npm_secret", encoding="utf-8")
+        resp_npm = client.get("/api/v1/files/read", params={"path": str(npmrc)})
+        assert resp_npm.status_code == 403
+
+        # 3. 正常只读文件放行
+        readme = tmp_path / "README.md"
+        readme.write_text("# Hello AgentDeck", encoding="utf-8")
+        resp_ok = client.get("/api/v1/files/read", params={"path": str(readme)})
+        assert resp_ok.status_code == 200
+        assert "# Hello AgentDeck" in resp_ok.json()["content"]
+
+
+def test_token_usage_with_prompt_caching(tmp_path: Path):
+    """验证 Token Usage 水位计算正确累加 prompt caching (cache_read_tokens)。"""
+    import json
+    from backend.adapters.antigravity_adapter import AntigravityAdapter
+
+    root_dir = tmp_path / "antigravity"
+    brain_dir = root_dir / "brain"
+    session_id = "test-cached-session"
+    log_dir = brain_dir / session_id / ".system_generated" / "logs"
+    log_dir.mkdir(parents=True)
+    tp = log_dir / "transcript.jsonl"
+
+    # 模拟 Antigravity transcript: 2,000 input tokens + 48,000 cache read tokens
+    with open(tp, "w", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "step_index": 1,
+            "input_tokens": 2000,
+            "cache_read_tokens": 48000,
+            "output_tokens": 500,
+        }) + "\n")
+
+    adapter = AntigravityAdapter(
+        root_dir=root_dir,
+    )
+    usage = adapter.get_session_token_usage(session_id, model_name="claude-sonnet-5-5-high")
+    # 总有效上下文应当是 2000 + 48000 = 50,000
+    assert usage["context_tokens"] == 50000
+    assert usage["context_limit"] == 200000
+    assert usage["context_percent"] == 25.0
+    assert usage["cache_read_tokens"] == 48000
+    assert usage["last_output_tokens"] == 500
+
+
+def test_architecture_deepening_session_token_usage_and_cache(tmp_path: Path):
+    """测试架构深化：SessionTokenUsage 强类型与 BaseAgentAdapter 缓存初始化。"""
+    from backend.adapters.base import SessionTokenUsage, BaseAgentAdapter
+    from backend.adapters.claude_adapter import ClaudeCodeAdapter
+    from backend.adapters.opencode_adapter import OpenCodeAdapter
+
+    tu = SessionTokenUsage(context_tokens=1000, context_limit=200000)
+    d = tu.to_dict()
+    assert d["context_tokens"] == 1000
+    assert d["context_limit"] == 200000
+    assert d["context_percent"] == 0.0
+
+    claude_adapter = ClaudeCodeAdapter(projects_dir=tmp_path / "claude")
+    assert hasattr(claude_adapter, "_token_usage_cache")
+    assert isinstance(claude_adapter._token_usage_cache, dict)
+
+    opencode_adapter = OpenCodeAdapter(data_dir=tmp_path / "opencode")
+    assert hasattr(opencode_adapter, "_token_usage_cache")
+    assert isinstance(opencode_adapter._token_usage_cache, dict)
+
+
+@pytest.mark.asyncio
+async def test_architecture_deepening_pending_approval_direct_object(tmp_path: Path):
+    """测试架构深化：request_mobile_tool_approval 接收 PendingApproval 对象直接调用消除参数成群传递。"""
+    import asyncio
+    from backend.core.database import MetaDatabase
+    from backend.engines.process_pool import AgentOrchestrator, PendingApproval
+    from backend.core.database import utc_now_iso
+
+    db = MetaDatabase(db_path=tmp_path / "pa_test.db")
+    orchestrator = AgentOrchestrator(meta_db=db)
+
+    pa = PendingApproval(
+        approval_id="apr_test_123",
+        unified_id="agy_cli:test_pa",
+        agent_type="agy_cli",
+        raw_session_id="test_pa",
+        tool_call_id="tc_1",
+        tool_name="run_command",
+        args_summary="rm -rf /tmp/test",
+        diff_text="",
+        risk_level="high",
+        prompt_context="测试",
+        project_path=str(tmp_path),
+        created_at=utc_now_iso(),
+    )
+
+    t = asyncio.create_task(orchestrator.request_mobile_tool_approval(pa))
+    await asyncio.sleep(0.02)
+
+    assert "agy_cli:test_pa" in orchestrator.pending_approvals
+    assert orchestrator.pending_approvals["agy_cli:test_pa"].approval_id == "apr_test_123"
+
+    # 做出审批决策
+    res = await orchestrator.resolve_tool_approval(
+        unified_id="agy_cli:test_pa",
+        decision="denied",
+        feedback="不允许执行危险命令",
+    )
+    assert res["ok"] is True
+    out = await t
+    assert out["decision"] == "denied"
+
+
+def test_normalize_execution_mode_per_agent(tmp_path: Path):
+    """验证各 Agent 针对规划、自动改、全自动与审批权限模式的多态安全纠偏与规范化。"""
+    from backend.core.database import MetaDatabase
+    from backend.engines.process_pool import AgentOrchestrator
+    from backend.adapters.base import ExecutionMode
+
+    db = MetaDatabase(db_path=tmp_path / "test_norm_mode.db")
+    orchestrator = AgentOrchestrator(meta_db=db)
+
+    # 1. Claude Code 与 Antigravity 原生支持全部 4 种模式
+    for agent in ("claude_code", "agy_cli", "agy_ide"):
+        assert orchestrator.normalize_execution_mode(agent, "plan") == ExecutionMode.PLAN.value
+        assert orchestrator.normalize_execution_mode(agent, "ask") == ExecutionMode.ASK.value
+        assert orchestrator.normalize_execution_mode(agent, "accept_edits") == ExecutionMode.ACCEPT_EDITS.value
+        assert orchestrator.normalize_execution_mode(agent, "auto") == ExecutionMode.AUTO.value
+
+    # 2. OpenCode 原生仅支持 ask 与 auto：plan 和 accept_edits 必须安全回退至 ask（审批），避免误判
+    assert orchestrator.normalize_execution_mode("opencode", "plan") == ExecutionMode.ASK.value
+    assert orchestrator.normalize_execution_mode("opencode", "accept_edits") == ExecutionMode.ASK.value
+    assert orchestrator.normalize_execution_mode("opencode", "ask") == ExecutionMode.ASK.value
+    assert orchestrator.normalize_execution_mode("opencode", "auto") == ExecutionMode.AUTO.value
+
+    # 3. 未知/非法模式默认回退至 ask
+    assert orchestrator.normalize_execution_mode("opencode", "invalid_mode") == ExecutionMode.ASK.value
+    assert orchestrator.normalize_execution_mode("claude_code", "unknown") == ExecutionMode.ASK.value
+
+
+@pytest.mark.asyncio
+async def test_security_cswsh_and_tailscale_cgnat(tmp_path: Path):
+    """验证 Origin 检查严格抵御 100.evil.com 域名通配绕过，且审批拒绝在无反馈时不崩溃。"""
+    from backend.core.tailscale_auth import PairingAuthManager
+    from backend.engines.process_pool import AgentOrchestrator, AgentProcessPool, PendingApproval
+
+    db = MetaDatabase(db_path=tmp_path / "cswsh_test.db")
+    auth = PairingAuthManager(meta_db=db)
+
+    # 1. 验证 Origin 严格校验
+    assert auth.is_trusted_origin("http://100.64.0.1:8765", ["100.64.0.1"]) is True
+    assert auth.is_trusted_origin("http://100.115.92.19:8765", ["100.115.92.19"]) is True
+    assert auth.is_trusted_origin("http://127.0.0.1:8765", ["127.0.0.1"]) is True
+    # 恶意域名通配必须被严格拒绝拦截
+    assert auth.is_trusted_origin("http://100.evil.com:8765", ["100.64.0.1"]) is False
+    assert auth.is_trusted_origin("http://100-phishing.org", ["100.64.0.1"]) is False
+    # 非 Tailscale CGNAT 范围的公网 IP (100.0.0.1) 必须被拦截
+    assert auth.is_trusted_origin("http://100.0.0.1:8765", ["100.64.0.1"]) is False
+
+    # 2. 验证向后兼容别名
+    assert AgentProcessPool is AgentOrchestrator
+
+    # 3. 验证审批拒绝且 feedback 为空时不会出现 UnboundLocalError 崩溃
+    orch = AgentOrchestrator(meta_db=db)
+    pa = PendingApproval(
+        approval_id="apr_test_99",
+        unified_id="claude_code:sess_mock",
+        agent_type="claude_code",
+        raw_session_id="sess_mock",
+        tool_call_id="call_mock",
+        tool_name="Bash",
+        args_summary="rm -rf /",
+        diff_text="",
+        risk_level="high",
+        prompt_context="测试高危操作",
+        project_path=str(tmp_path),
+        created_at="2026-10-23T00:00:00Z",
+    )
+    import asyncio
+    fut = asyncio.get_running_loop().create_future()
+    orch.pending_approvals["claude_code:sess_mock"] = pa
+    orch._approval_futures["claude_code:sess_mock"] = fut
+
+    # 在另一个任务中执行审批等待
+    req_task = asyncio.create_task(orch.request_mobile_tool_approval(pa, proc=None))
+    await asyncio.sleep(0.01)
+
+    # 用户直接点击拒绝，不附带任何建议 (feedback="")
+    res = await orch.resolve_tool_approval("claude_code:sess_mock", decision="denied", feedback="")
+    assert res["ok"] is True
+    assert res["decision"] == "denied"
+    out = await req_task
+    assert out["decision"] == "denied"
+
+
+def test_running_and_approval_sessions_priority_sort(tmp_path: Path):
+    """测试会话排序权重：置顶 > 等待审批 (waiting_approval) > 运行中 (running) > 闲置 (idle)。"""
+    from backend.core.database import MetaDatabase
+    from backend.engines.process_pool import AgentOrchestrator
+    from backend.adapters.base import UnifiedSession
+
+    db = MetaDatabase(tmp_path / "test_sort.db")
+    orch = AgentOrchestrator(meta_db=db)
+
+    # 构造假会话
+    class DummyAdapter:
+        agent_type = "dummy"
+        agent_label = "Dummy"
+        def list_sessions(self, limit: int = 40):
+            return [
+                UnifiedSession(
+                    unified_id="dummy:idle_old",
+                    agent_type="dummy",
+                    agent_label="Dummy",
+                    raw_session_id="idle_old",
+                    title="普通闲置老会话",
+                    preview="...",
+                    project_path=str(tmp_path),
+                    status="idle",
+                    step_count=1,
+                    updated_at="2026-10-23T10:00:00Z",
+                    is_pinned=0,
+                ),
+                UnifiedSession(
+                    unified_id="dummy:idle_new",
+                    agent_type="dummy",
+                    agent_label="Dummy",
+                    raw_session_id="idle_new",
+                    title="普通闲置新会话",
+                    preview="...",
+                    project_path=str(tmp_path),
+                    status="idle",
+                    step_count=1,
+                    updated_at="2026-10-23T12:00:00Z",
+                    is_pinned=0,
+                ),
+                UnifiedSession(
+                    unified_id="dummy:running_sess",
+                    agent_type="dummy",
+                    agent_label="Dummy",
+                    raw_session_id="running_sess",
+                    title="普通运行中会话",
+                    preview="...",
+                    project_path=str(tmp_path),
+                    status="running",
+                    step_count=1,
+                    updated_at="2026-10-23T09:00:00Z",
+                    is_pinned=0,
+                ),
+                UnifiedSession(
+                    unified_id="dummy:waiting_sess",
+                    agent_type="dummy",
+                    agent_label="Dummy",
+                    raw_session_id="waiting_sess",
+                    title="普通待审批会话",
+                    preview="...",
+                    project_path=str(tmp_path),
+                    status="waiting_approval",
+                    step_count=1,
+                    updated_at="2026-10-23T08:00:00Z",
+                    is_pinned=0,
+                ),
+                UnifiedSession(
+                    unified_id="dummy:pinned_idle",
+                    agent_type="dummy",
+                    agent_label="Dummy",
+                    raw_session_id="pinned_idle",
+                    title="置顶闲置会话",
+                    preview="...",
+                    project_path=str(tmp_path),
+                    status="idle",
+                    step_count=1,
+                    updated_at="2026-10-23T07:00:00Z",
+                    is_pinned=1,
+                ),
+            ]
+
+    orch.adapters = {"dummy": DummyAdapter()}
+    sessions = orch.list_all_sessions(limit_per_agent=10)
+
+    # 排序预期：
+    # 1. 置顶会话 (dummy:pinned_idle)
+    # 2. 待审批会话 (dummy:waiting_sess)
+    # 3. 运行中会话 (dummy:running_sess)
+    # 4. 最新闲置会话 (dummy:idle_new)
+    # 5. 较旧闲置会话 (dummy:idle_old)
+    ordered_ids = [s["unified_id"] for s in sessions]
+    assert ordered_ids == [
+        "dummy:pinned_idle",
+        "dummy:waiting_sess",
+        "dummy:running_sess",
+        "dummy:idle_new",
+        "dummy:idle_old",
+    ]
+
+
+
+
+
+
+
+
 
 
 

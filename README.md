@@ -41,12 +41,39 @@ pip install -e ".[dev]"
 Windows 下可直接双击运行 `start.cmd`，或在终端执行：
 ```bash
 python run.py
+# 或安装后全局执行：
+agentdeck
 ```
+- **环境诊断与体检**：`python run.py --doctor`（或 `agentdeck --doctor`）
 - **仅本机调试**：`python run.py --local-only`
+- **源码热重载开发**：`python run.py --reload`
 - **自定义端口**：`python run.py --port 8766`
+- **查看版本号**：`python run.py --version`
 - **停止服务**：运行 `stop.cmd`（或在终端按 `Ctrl+C`）
 
-启动后终端将直接打印 **4 大 Agent 状态体检表** 与 **手机扫码配对二维码**，也可在电脑浏览器打开 `http://127.0.0.1:8765/` 查看高清 SVG 配对二维码。
+启动后终端将直接打印 **4 大 Agent 状态体检表** 与 **手机扫码配对二维码**，也可在电脑浏览器打开 `http://127.0.0.1:8765/` 查看图形化高清配对二维码。
+
+---
+
+## 📖 开发者接口与 API 文档
+
+AgentDeck 基于 FastAPI 提供了完备的 REST 与 WebSocket 接口，并内置可交互的 API 文档：
+- **Swagger UI 交互式文档**：启动后访问 [http://127.0.0.1:8765/docs](http://127.0.0.1:8765/docs)
+- **ReDoc 结构化文档**：[http://127.0.0.1:8765/redoc](http://127.0.0.1:8765/redoc)
+- **健康检查探针 (Health Check)**：
+  - `GET /healthz` 或 `GET /api/v1/health`：返回 `{"ok": true, "status": "healthy", "version": "2.0.0"}`（免鉴权，适用于 Docker/k8s/运维拨测）
+  - `GET /api/v1/system/status`：返回完整的 Tailscale 隧道与 4 大 Agent 健康体检表数据
+
+---
+
+## 🔧 常见问题与排查指南 (Troubleshooting)
+
+| 问题现象 | 常见原因 | 快速排查与解决办法 |
+| :--- | :--- | :--- |
+| **终端提示「未检测到活跃 Tailscale」** | 电脑未安装或未登录 Tailscale 客户端 | 运行 `tailscale up` 登录；此时服务将自动安全回退为仅 `127.0.0.1` 访问，本机电脑浏览器可正常调试。 |
+| **端口已被占用 (Errno 10048)** | 上次异常退出残留旧进程 | AgentDeck 启动时已内置自动释放端口；若仍被外部程序占用，可指定新端口：`python run.py --port 8766`。 |
+| **手机扫码提示「配对码已失效」** | 二维码配对码默认 60 秒有效期，超时未扫码 | 刷新电脑端 `http://127.0.0.1:8765/` 或重启服务重新生成配对二维码。 |
+| **手机无法打开电脑端 Tailscale IP** | 手机与电脑未加入同一个 Tailnet | 确认手机端 Tailscale App 已开启并连接至与电脑相同的账号，且未开启公司隔离防火墙规则。 |
 
 ---
 

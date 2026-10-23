@@ -9,18 +9,33 @@
 const DEFAULT_MODELS_BY_AGENT = {
   agy_cli: [
     { id: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)", tag: "推荐" },
+    { id: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)", tag: "" },
+    { id: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)", tag: "" },
     { id: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)", tag: "深度" },
+    { id: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)", tag: "" },
+    { id: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)", tag: "" },
     { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", tag: "旗舰" },
-    { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Med)", tag: "均衡" },
-    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash", tag: "极速" },
-    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B", tag: "" },
+    { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)", tag: "均衡" },
+    { id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)", tag: "" },
+    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速" },
+    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡" },
+    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快" },
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "" },
   ],
   agy_ide: [
     { id: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)", tag: "推荐" },
+    { id: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)", tag: "" },
+    { id: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)", tag: "" },
     { id: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)", tag: "深度" },
+    { id: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)", tag: "" },
+    { id: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)", tag: "" },
     { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", tag: "旗舰" },
-    { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Med)", tag: "均衡" },
-    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash", tag: "极速" },
+    { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)", tag: "均衡" },
+    { id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)", tag: "" },
+    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速" },
+    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡" },
+    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快" },
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "" },
   ],
   claude_code: [
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", tag: "默认" },
@@ -34,6 +49,31 @@ const DEFAULT_MODELS_BY_AGENT = {
     { id: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5", tag: "" },
     { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro", tag: "" },
     { id: "openai/gpt-5", label: "GPT-5", tag: "" },
+  ],
+};
+
+// 通用四项执行策略列表
+const ALL_EXECUTION_MODES = [
+  { value: "ask", label: "🛡️ 审批", fullLabel: "🛡️ 审批 (Ask)" },
+  { value: "plan", label: "📋 规划", fullLabel: "📋 规划 (Plan)" },
+  { value: "accept_edits", label: "✏️ 自动改", fullLabel: "✏️ 自动改 (Edit)" },
+  { value: "auto", label: "⚡ 全自动", fullLabel: "⚡ 全自动 (Auto)" },
+];
+
+// 各 Agent 原生真实支持的执行/权限策略白名单矩阵（避免不支持模式引发心智模型混淆与越权误判）
+const MODES_BY_AGENT = {
+  agy_cli: ALL_EXECUTION_MODES,
+  claude: ALL_EXECUTION_MODES,
+  claude_code: ALL_EXECUTION_MODES,
+  opencode: [
+    { value: "ask", label: "🛡️ 审批", fullLabel: "🛡️ 审批 (Ask)" },
+    { value: "auto", label: "⚡ 全自动", fullLabel: "⚡ 全自动 (Auto)" },
+  ],
+  agy_ide: [
+    { value: "ask", label: "🛡️ 审批", fullLabel: "🛡️ 审批 (克隆接管)" },
+    { value: "plan", label: "📋 规划", fullLabel: "📋 规划 (克隆接管)" },
+    { value: "accept_edits", label: "✏️ 自动改", fullLabel: "✏️ 自动改 (克隆接管)" },
+    { value: "auto", label: "⚡ 全自动", fullLabel: "⚡ 全自动 (克隆接管)" },
   ],
 };
 
@@ -64,6 +104,8 @@ const state = {
   drawerOpen: false,
   sidebarCollapsed: localStorage.getItem("agentdeck_sidebar_collapsed") === "1",
   streamingBuffer: {}, // unified_id -> string
+  pendingTurnThinking: {}, // unified_id -> timestamp (ms)
+  optimisticMessages: {}, // unified_id -> array of unconfirmed user message objects
   autoScrollLocked: false,
   expandedTurns: {}, // turnKey -> boolean
   expandedDetails: {}, // detailId -> boolean（保留已展开的思考/输出详情状态）
@@ -75,6 +117,8 @@ const state = {
   currentDocRawContent: "",
   workflows: [],
   slashMenuOpen: false,
+  slashHighlightIndex: 0,
+  filteredSlashCommands: [],
   denyFeedbackOpen: false,
   denyFeedbackText: "",
   questionSelections: {}, // `${turnKey}_q${qi}` -> string[]
@@ -82,6 +126,7 @@ const state = {
   currentGitStatus: null,
   gitDiffCache: {},
   gitExpandedDiffs: {},
+  currentTokenUsage: null,
   fullOutputStore: {}, // `${unifiedId}_${stepIndex}` -> full string
   persistedQuestionDecisions: (() => {
     try {
@@ -102,24 +147,24 @@ const GIT_STATUS_BADGES = {
 
 const AGENT_META = {
   agy_ide: {
-    label: "Antigravity IDE",
-    short: "IDE",
-    badgeClass: "bg-purple-500/20 text-purple-300 border-purple-500/40",
+    label: "Antigravity",
+    short: "Antigravity",
+    badgeClass: "bg-purple-500/15 text-purple-300 border-purple-500/30",
   },
   agy_cli: {
     label: "Antigravity CLI",
     short: "AGY",
-    badgeClass: "bg-sky-500/20 text-sky-300 border-sky-500/40",
+    badgeClass: "bg-sky-500/15 text-sky-300 border-sky-500/30",
   },
   claude_code: {
     label: "Claude Code",
     short: "Claude",
-    badgeClass: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+    badgeClass: "bg-amber-500/15 text-amber-300 border-amber-500/30",
   },
   opencode: {
     label: "OpenCode",
     short: "OC",
-    badgeClass: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
+    badgeClass: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
   },
 };
 
@@ -329,51 +374,89 @@ function handleRealtimeEvent(envelope) {
     return;
   }
 
-  if (
-    type === "STORAGE_UPDATED" ||
-    type === "SESSION_TURN_STARTED" ||
-    type === "SESSION_TURN_FINISHED" ||
-    type === "SESSION_ABORTED"
-  ) {
-    if (type === "SESSION_TURN_FINISHED" || type === "SESSION_ABORTED") {
-      if (payload && payload.unified_id) {
-        delete state.streamingBuffer[payload.unified_id];
+  if (type === "SESSION_TURN_STARTED") {
+    const uid = payload && payload.unified_id;
+    if (uid) {
+      if (!state.pendingTurnThinking[uid]) {
+        state.pendingTurnThinking[uid] = Date.now();
+      }
+      const sess = state.sessions.find((s) => s.unified_id === uid);
+      if (sess) {
+        sess.status = "running";
+        renderSessionList();
+      }
+      if (uid === state.selectedSessionId) {
+        renderCurrentSessionHeader();
+        renderLiveStreamOverlay();
       }
     }
-
-    if (type === "STORAGE_UPDATED") {
-      const affectedIds = (payload && payload.affected_session_ids) || [];
-      const affectedAgents = (payload && payload.affected_agents) || [];
-      for (const uid of affectedIds) {
-        if (state.sessionMessagesCache[uid] && uid !== state.selectedSessionId) {
-          state.sessionMessagesCache[uid].stale = true;
-        }
-      }
-      scheduleSilentSessionsRefresh(450);
-
-      if (state.selectedSessionId) {
-        const curAgent = state.selectedSessionId.split(":")[0];
-        const isCurrentSessionAffected =
-          affectedIds.includes(state.selectedSessionId) ||
-          (affectedIds.length === 0 &&
-            (affectedAgents.length === 0 || affectedAgents.includes(curAgent)));
-        if (isCurrentSessionAffected) {
-          scheduleSilentMessagesRefresh(state.selectedSessionId, 280);
-        }
-      }
-      return;
-    }
-
     loadSessions(true);
-    if (state.selectedSessionId && (!payload?.unified_id || payload.unified_id === state.selectedSessionId)) {
+    return;
+  }
+
+  if (type === "SESSION_TURN_FINISHED" || type === "SESSION_ABORTED") {
+    const uid = payload && payload.unified_id;
+    if (uid) {
+      delete state.pendingTurnThinking[uid];
+      delete state.streamingBuffer[uid];
+      if (state.optimisticMessages[uid]) {
+        delete state.optimisticMessages[uid];
+      }
+      const sess = state.sessions.find((s) => s.unified_id === uid);
+      if (sess && sess.status === "running") {
+        sess.status = "idle";
+        renderSessionList();
+      }
+      if (uid === state.selectedSessionId) {
+        renderCurrentSessionHeader();
+        renderLiveStreamOverlay();
+      }
+    }
+    loadSessions(true);
+    if (state.selectedSessionId && (!uid || uid === state.selectedSessionId)) {
       loadSessionMessages(state.selectedSessionId, { silent: true });
     }
     return;
   }
 
+  if (type === "STORAGE_UPDATED") {
+    const affectedIds = (payload && payload.affected_session_ids) || [];
+    const affectedAgents = (payload && payload.affected_agents) || [];
+    for (const uid of affectedIds) {
+      if (state.sessionMessagesCache[uid] && uid !== state.selectedSessionId) {
+        state.sessionMessagesCache[uid].stale = true;
+      }
+    }
+    scheduleSilentSessionsRefresh(450);
+
+    if (state.selectedSessionId) {
+      const curAgent = state.selectedSessionId.split(":")[0];
+      const isCurrentSessionAffected =
+        affectedIds.includes(state.selectedSessionId) ||
+        (affectedIds.length === 0 &&
+          (affectedAgents.length === 0 || affectedAgents.includes(curAgent)));
+      if (isCurrentSessionAffected) {
+        scheduleSilentMessagesRefresh(state.selectedSessionId, 280);
+      }
+    }
+    return;
+  }
+
   if (type === "SESSION_ERROR") {
+    const uid = payload && payload.unified_id;
+    if (uid) {
+      delete state.pendingTurnThinking[uid];
+      delete state.streamingBuffer[uid];
+      if (state.optimisticMessages[uid]) {
+        delete state.optimisticMessages[uid];
+      }
+      if (uid === state.selectedSessionId) {
+        renderLiveStreamOverlay();
+      }
+    }
     showToast(payload.error || "执行异常", "error");
     loadSessions();
+    return;
   }
 }
 
@@ -436,6 +519,99 @@ function computeSessionsSig(sessions, approvals) {
   return `${sPart}#${aPart}`;
 }
 
+function getSessionIdFromHash() {
+  const hash = window.location.hash || "";
+  const match = hash.match(/(?:^|[#&])session=([^&]+)/);
+  if (match && match[1]) {
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+function updateSessionHash(unifiedId) {
+  if (!unifiedId) return;
+  const targetHash = `session=${encodeURIComponent(unifiedId)}`;
+  const currentHash = window.location.hash.replace(/^#/, "");
+  if (currentHash !== targetHash) {
+    history.replaceState(null, "", `#${targetHash}`);
+  }
+}
+
+function isSessionStatusActive(s) {
+  if (!s || !s.status) return false;
+  const st = String(s.status).toLowerCase();
+  return st === "running" || st === "desktop_active";
+}
+
+function renderOtherRunningPill() {
+  const pill = document.getElementById("other-running-pill");
+  const textEl = document.getElementById("other-running-text");
+  if (!pill) return;
+
+  const otherRunning = (state.allSessions || []).filter(
+    (s) =>
+      s.unified_id !== state.selectedSessionId &&
+      (isSessionStatusActive(s) || s.status === "waiting_approval")
+  );
+
+  if (otherRunning.length === 0) {
+    pill.classList.add("hidden");
+    pill.classList.remove("flex");
+    return;
+  }
+
+  pill.classList.remove("hidden");
+  pill.classList.add("flex");
+  const count = otherRunning.length;
+  const hasApproval = otherRunning.some((s) => s.status === "waiting_approval");
+  if (textEl) {
+    textEl.textContent = hasApproval
+      ? `${count} 个待审批任务`
+      : `${count} 个后台运行中`;
+  }
+}
+
+function getLatestSession(list) {
+  if (!list || list.length === 0) return null;
+  if (list.length === 1) return list[0];
+  return [...list].sort((a, b) => {
+    const ta = new Date(a.updated_at || 0).getTime();
+    const tb = new Date(b.updated_at || 0).getTime();
+    return tb - ta;
+  })[0];
+}
+
+/**
+ * 首次进入页面或失去当前选中会话时的首选会话决策：
+ * 1. 优先进入运行中 / 进行中的会话（覆盖 running 与 desktop_active，其次 waiting_approval）
+ * 2. 若无进行中的会话，则进入收藏（置顶）的会话
+ * 3. 兜底进入列表第 1 个会话
+ */
+function pickDefaultSession(sessionList) {
+  if (!Array.isArray(sessionList) || sessionList.length === 0) {
+    return null;
+  }
+  const runningSessions = sessionList.filter((s) => isSessionStatusActive(s));
+  if (runningSessions.length > 0) {
+    return getLatestSession(runningSessions);
+  }
+  const waitingSessions = sessionList.filter(
+    (s) => String(s.status || "").toLowerCase() === "waiting_approval"
+  );
+  if (waitingSessions.length > 0) {
+    return getLatestSession(waitingSessions);
+  }
+  const pinnedSessions = sessionList.filter((s) => Boolean(s.is_pinned));
+  if (pinnedSessions.length > 0) {
+    return getLatestSession(pinnedSessions);
+  }
+  return sessionList[0];
+}
+
 async function loadSessions(silent = false) {
   try {
     // 始终拉取全量会话（limit=60），前端切换 Agent 标签时 0ms 纯内存过滤
@@ -450,17 +626,49 @@ async function loadSessions(silent = false) {
       state.pendingApprovals = data.pending_approvals;
     }
 
-    if (!state.selectedSessionId && state.allSessions.length > 0) {
-      state.lastSessionsSig = newSig;
-      selectSession(state.allSessions[0].unified_id);
-      return;
+    const hashId = getSessionIdFromHash();
+    const hashSess = hashId ? state.allSessions.find((s) => s.unified_id === hashId) : null;
+    const curSess = state.selectedSessionId
+      ? state.allSessions.find((s) => s.unified_id === state.selectedSessionId)
+      : null;
+
+    let targetSession = null;
+    let needsInitialSelect = false;
+
+    if (curSess) {
+      // 场景 A：当前内存中已有合法会话（心跳/轮询/WS重连，保持用户停留的会话不变）
+      targetSession = curSess;
+    } else if (hashSess) {
+      // 场景 B：页面加载或刷新时 URL Hash 存在指定会话，优先恢复（保持操作上下文连续性）
+      targetSession = hashSess;
+      needsInitialSelect = true;
+    } else if (state.allSessions.length > 0) {
+      // 场景 C：纯冷启动无 Hash 时，执行默认策略：运行中 > 收藏置顶 > 最近活跃
+      targetSession = pickDefaultSession(state.allSessions);
+      needsInitialSelect = true;
     }
 
-    if (!silent || newSig !== state.lastSessionsSig) {
+    const initialSessionId = targetSession ? targetSession.unified_id : null;
+    if (needsInitialSelect) {
+      state.selectedSessionId = initialSessionId;
+      if (targetSession && targetSession.project_path) {
+        const pKey = getProjectInfo(targetSession.project_path)?.key;
+        if (pKey) {
+          state.expandedProjects[pKey] = true;
+        }
+      }
+    }
+
+    if (!silent || newSig !== state.lastSessionsSig || needsInitialSelect) {
       state.lastSessionsSig = newSig;
       renderSessionList();
       renderCurrentSessionHeader();
       renderApprovalBanners();
+      renderOtherRunningPill();
+    }
+
+    if (needsInitialSelect && initialSessionId) {
+      selectSession(initialSessionId);
     }
   } catch (e) {
     console.error("加载会话失败:", e);
@@ -473,7 +681,7 @@ function updateSelectedSessionHighlight(prevId, nextId) {
       .querySelectorAll(`[data-session-item="${CSS.escape(prevId)}"]`)
       .forEach((el) => {
         el.className =
-          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 bg-slate-900/45 border-transparent hover:bg-slate-900 hover:border-slate-800 text-slate-300";
+          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 bg-zinc-900/45 border-transparent hover:bg-zinc-900 hover:border-zinc-800 text-zinc-300";
       });
   }
   if (nextId) {
@@ -481,7 +689,7 @@ function updateSelectedSessionHighlight(prevId, nextId) {
       .querySelectorAll(`[data-session-item="${CSS.escape(nextId)}"]`)
       .forEach((el) => {
         el.className =
-          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 bg-slate-800/95 border-sky-500/50 text-slate-100";
+          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 bg-zinc-800/95 border-sky-500/50 text-zinc-100";
       });
   }
 }
@@ -490,6 +698,11 @@ async function selectSession(unifiedId) {
   const prevId = state.selectedSessionId;
   const wasMobileDrawerOpen = state.drawerOpen && window.innerWidth < 768;
   state.selectedSessionId = unifiedId;
+  if (prevId !== unifiedId) {
+    state.codeBlockStore = {};
+    state.expandedCodeBlocks = {};
+  }
+  updateSessionHash(unifiedId);
   state.drawerOpen = false;
   state.autoScrollLocked = false;
 
@@ -506,7 +719,9 @@ async function selectSession(unifiedId) {
 
   // 1. 立即触发抽屉关闭动画与轻量高亮切换，避免同步重排卡住移动端滑出动画
   updateDrawerVisibility();
-  if (needFullSidebarRender) {
+  const sessionListContainer = document.getElementById("session-list-container");
+  const isListEmpty = !sessionListContainer || sessionListContainer.children.length === 0;
+  if (needFullSidebarRender || isListEmpty) {
     renderSessionList();
   } else {
     updateSelectedSessionHighlight(prevId, unifiedId);
@@ -514,20 +729,51 @@ async function selectSession(unifiedId) {
   renderCurrentSessionHeader();
   renderApprovalBanners();
   updateGitStatusBadge();
+  renderLiveStreamOverlay();
+
+  // 若会话所属项目发生变化，在后台异步获取该工作区专属的 Skills 与 Workflows
+  if (sess && sess.project_path) {
+    apiFetch(`/api/v1/workflows?project_path=${encodeURIComponent(sess.project_path)}`)
+      .then((res) => {
+        if (res && res.ok && Array.isArray(res.workflows)) {
+          state.workflows = res.workflows;
+        }
+      })
+      .catch(() => {});
+  }
 
   // 2. 检查前端内存缓存（Stale-While-Revalidate 秒开）
   const cached = state.sessionMessagesCache[unifiedId];
   const mountCachedOrLoad = async () => {
     if (state.selectedSessionId !== unifiedId) return;
+
+    // 若当前会话存在待确认的乐观用户消息（如刚新建并提交首条指令），优先直出避免骨架屏闪烁
+    const optList = state.optimisticMessages[unifiedId] || [];
+    if (optList.length > 0 && (!cached || !cached.messages || cached.messages.length === 0)) {
+      state.messages = [...optList];
+      state.loadingMessages = false;
+      renderMessagesList();
+      renderLiveStreamOverlay();
+      loadSessionMessages(unifiedId, { silent: true });
+      return;
+    }
+
     if (cached && Array.isArray(cached.messages) && cached.messages.length > 0) {
       state.messages = cached.messages;
       state.hasMoreMessages = Boolean(cached.hasMore);
       state.totalMessagesCount = cached.totalCount || cached.messages.length;
+      state.currentTokenUsage = cached.tokenUsage || null;
+      const modelSelect = document.getElementById("model-select");
+      if (modelSelect && sess) {
+        renderModelOptionsForAgent(modelSelect, sess.agent_type, sess.model_name || cached.modelName);
+      }
       state.loadingMessages = false;
       renderMessagesList();
       // 后台静默同步最新消息
       loadSessionMessages(unifiedId, { silent: true });
     } else {
+      state.currentTokenUsage = null;
+      renderTokenUsage();
       await loadSessionMessages(unifiedId, { silent: false });
     }
   };
@@ -564,6 +810,23 @@ async function loadSessionMessages(unifiedId, options = false) {
     const hasMore = Boolean(data.has_more);
     const totalCount = data.total_count || incoming.length;
 
+    // 检查后端返回的活跃执行态并联动思考计时器
+    if (data.is_running) {
+      if (!state.pendingTurnThinking[unifiedId]) {
+        state.pendingTurnThinking[unifiedId] = Date.now();
+      }
+      const sess = state.sessions.find((s) => s.unified_id === unifiedId);
+      if (sess && sess.status !== "running") {
+        sess.status = "running";
+        renderSessionList();
+      }
+    } else {
+      const optList = state.optimisticMessages[unifiedId] || [];
+      if (optList.length === 0) {
+        delete state.pendingTurnThinking[unifiedId];
+      }
+    }
+
     // 写入内存缓存
     const prevCache = state.sessionMessagesCache[unifiedId];
     let mergedMessages = incoming;
@@ -581,6 +844,26 @@ async function loadSessionMessages(unifiedId, options = false) {
       if (olderLoaded.length > 0) {
         mergedMessages = [...olderLoaded, ...incoming];
         mergedHasMore = prevCache.hasMore;
+      }
+    }
+
+    // 检查并合并尚未被后端日志落盘返回的本地乐观用户消息，保证用户发送后绝对不闪退
+    const optList = state.optimisticMessages[unifiedId] || [];
+    if (optList.length > 0) {
+      const stillPending = [];
+      for (const opt of optList) {
+        const found = incoming.some(
+          (inc) =>
+            inc.role === "user" &&
+            String(inc.content || "").trim() === String(opt.content || "").trim()
+        );
+        if (!found) {
+          stillPending.push(opt);
+        }
+      }
+      state.optimisticMessages[unifiedId] = stillPending;
+      if (stillPending.length > 0) {
+        mergedMessages = [...mergedMessages, ...stillPending];
       }
     }
 
@@ -603,6 +886,7 @@ async function loadSessionMessages(unifiedId, options = false) {
       hasMore: mergedHasMore,
       totalCount,
       modelName: data.model_name || "",
+      tokenUsage: data.token_usage || null,
       sig: newSig,
       updatedAt: Date.now(),
     };
@@ -612,6 +896,14 @@ async function loadSessionMessages(unifiedId, options = false) {
       state.messages = mergedMessages;
       state.hasMoreMessages = mergedHasMore;
       state.totalMessagesCount = totalCount;
+      if (data.token_usage) {
+        state.currentTokenUsage = data.token_usage;
+        const modelSelect = document.getElementById("model-select");
+        const sess = state.allSessions.find((s) => s.unified_id === unifiedId);
+        if (modelSelect && sess) {
+          renderModelOptionsForAgent(modelSelect, sess.agent_type, sess.model_name || data.model_name);
+        }
+      }
       if (data.model_name) {
         const sess = state.allSessions.find((s) => s.unified_id === unifiedId);
         if (sess) sess.model_name = data.model_name;
@@ -619,6 +911,9 @@ async function loadSessionMessages(unifiedId, options = false) {
       state.loadingMessages = false;
       if (!silent || wasLoading || newSig !== oldSig) {
         renderMessagesList();
+        renderCurrentSessionHeader();
+      } else {
+        renderLiveStreamOverlay();
         renderCurrentSessionHeader();
       }
     }
@@ -703,13 +998,14 @@ async function handleSendPrompt(customPrompt = null) {
     inputEl.value = "";
     inputEl.style.height = "auto";
   }
+  updatePromptActionBtnState();
 
   const modelSelect = document.getElementById("model-select");
   const modeSelect = document.getElementById("execution-mode-select");
   const chosenModel = modelSelect ? modelSelect.value : "";
   const chosenMode = modeSelect ? modeSelect.value : "ask";
 
-  state.messages.push({
+  const optMsg = {
     item_id: `optimistic_${Date.now()}`,
     step_index: state.messages.length + 1,
     role: "user",
@@ -718,9 +1014,27 @@ async function handleSendPrompt(customPrompt = null) {
     thinking: "",
     tool_calls: [],
     status: "RUNNING",
-  });
+  };
+
+  if (!state.optimisticMessages[state.selectedSessionId]) {
+    state.optimisticMessages[state.selectedSessionId] = [];
+  }
+  state.optimisticMessages[state.selectedSessionId].push(optMsg);
+
+  state.messages.push(optMsg);
+  state.pendingTurnThinking[state.selectedSessionId] = Date.now();
   state.autoScrollLocked = false;
+
+  const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+  if (curSess) {
+    curSess.status = "running";
+    curSess.preview = text;
+    renderSessionList();
+    renderCurrentSessionHeader();
+  }
+
   renderMessagesList();
+  renderLiveStreamOverlay();
 
   try {
     const res = await apiFetch(
@@ -738,7 +1052,16 @@ async function handleSendPrompt(customPrompt = null) {
 
     if (res.forked_from && res.unified_id && res.unified_id !== state.selectedSessionId) {
       showToast("已克隆至 AGY CLI 继续", "info");
+      const oldUid = state.selectedSessionId;
       state.selectedSessionId = res.unified_id;
+      if (state.optimisticMessages[oldUid]) {
+        state.optimisticMessages[res.unified_id] = state.optimisticMessages[oldUid];
+        delete state.optimisticMessages[oldUid];
+      }
+      if (state.pendingTurnThinking[oldUid]) {
+        state.pendingTurnThinking[res.unified_id] = state.pendingTurnThinking[oldUid];
+        delete state.pendingTurnThinking[oldUid];
+      }
     }
     await loadSessions();
     await loadSessionMessages(state.selectedSessionId, true);
@@ -750,12 +1073,24 @@ async function handleSendPrompt(customPrompt = null) {
 async function handleAbortCurrentSession() {
   if (!state.selectedSessionId) return;
   try {
+    delete state.pendingTurnThinking[state.selectedSessionId];
+    delete state.streamingBuffer[state.selectedSessionId];
+    if (state.optimisticMessages[state.selectedSessionId]) {
+      delete state.optimisticMessages[state.selectedSessionId];
+    }
+    const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+    if (curSess && curSess.status === "running") {
+      curSess.status = "idle";
+    }
+    updatePromptActionBtnState();
     await apiFetch(
       `/api/v1/sessions/${encodeURIComponent(state.selectedSessionId)}/abort`,
       { method: "POST" }
     );
     showToast("已中断进程", "info");
     await loadSessions();
+    renderCurrentSessionHeader();
+    renderLiveStreamOverlay();
   } catch (err) {
     console.error("中断会话失败:", err);
   }
@@ -881,7 +1216,8 @@ function escapeHtml(str) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function formatRelativeTime(isoStr) {
@@ -926,7 +1262,7 @@ function renderCompactSessionItem(s, showProjectTag = true) {
   const meta = AGENT_META[s.agent_type] || AGENT_META.claude_code;
   const isSelected = s.unified_id === state.selectedSessionId;
 
-  let dotCls = "bg-slate-600";
+  let dotCls = "bg-zinc-600";
   if (s.status === "waiting_approval") {
     dotCls = "bg-amber-400 animate-ping";
   } else if (s.status === "running") {
@@ -939,8 +1275,8 @@ function renderCompactSessionItem(s, showProjectTag = true) {
     <div data-session-item="${escapeHtml(s.unified_id)}" onclick="window.appActions.selectSession('${escapeHtml(s.unified_id)}')"
       class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 ${
         isSelected
-          ? "bg-slate-800/95 border-sky-500/50 text-slate-100"
-          : "bg-slate-900/45 border-transparent hover:bg-slate-900 hover:border-slate-800 text-slate-300"
+          ? "bg-zinc-800/95 border-sky-500/50 text-zinc-100"
+          : "bg-zinc-900/45 border-transparent hover:bg-zinc-900 hover:border-zinc-800 text-zinc-300"
       }">
       <div class="flex items-center gap-1.5 min-w-0 flex-1">
         <span class="w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}"></span>
@@ -952,16 +1288,16 @@ function renderCompactSessionItem(s, showProjectTag = true) {
       <div class="flex items-center gap-1 shrink-0">
         ${
           showProjectTag && s.is_project && s.project_name
-            ? `<span class="text-[9px] text-slate-500 font-mono max-w-[68px] truncate hidden sm:inline">${escapeHtml(
+            ? `<span class="text-[9px] text-zinc-500 font-mono max-w-[68px] truncate hidden sm:inline">${escapeHtml(
                 s.project_name
               )}</span>`
             : ""
         }
-        <span class="text-[10px] text-slate-500 tabular-nums">${formatRelativeTime(s.updated_at)}</span>
+        <span class="text-[10px] text-zinc-500 tabular-nums">${formatRelativeTime(s.updated_at)}</span>
         <button onclick="window.appActions.togglePin('${escapeHtml(s.unified_id)}', ${s.is_pinned ? 1 : 0}, event)"
-          class="p-0.5 rounded hover:bg-slate-700/60 text-[11px] ${
-            s.is_pinned ? "text-amber-400" : "text-slate-600 opacity-0 group-hover:opacity-100"
-          }" title="置顶">
+          class="p-1 rounded hover:bg-zinc-800 text-xs transition ${
+            s.is_pinned ? "text-amber-400 opacity-100" : "text-zinc-500 opacity-50 hover:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+          }" title="置顶" aria-label="置顶">
           ★
         </button>
       </div>
@@ -976,12 +1312,36 @@ function renderCompactSessionItem(s, showProjectTag = true) {
  * 2. 📁 项目 (Projects) —— 仅收录含 .git/pyproject.toml/pom.xml 等工程特征或手动添加的真正项目，支持「＋ 新建」与「× 移出项目」
  * 3. 💬 临时与最近对话 (Conversations) —— 收纳 Home/System32/Downloads 等散落临时会话与最近对话，自动隐藏无意义噪音目录名
  */
+function sortSessions(list) {
+  if (!Array.isArray(list)) return [];
+  return [...list].sort((a, b) => {
+    const pinA = Number(a.is_pinned || 0);
+    const pinB = Number(b.is_pinned || 0);
+    if (pinA !== pinB) return pinB - pinA;
+
+    const getStatusWeight = (s) => {
+      const st = String(s?.status || "").toLowerCase();
+      if (st === "waiting_approval") return 2;
+      if (st === "running" || st === "desktop_active") return 1;
+      return 0;
+    };
+    const swA = getStatusWeight(a);
+    const swB = getStatusWeight(b);
+    if (swA !== swB) return swB - swA;
+
+    const ta = new Date(a.updated_at || 0).getTime();
+    const tb = new Date(b.updated_at || 0).getTime();
+    return tb - ta;
+  });
+}
+
 function renderSessionList() {
   const container = document.getElementById("session-list-container");
   if (!container) return;
 
   const q = state.searchQuery.trim().toLowerCase();
-  const sourceList = state.allSessions.length > 0 ? state.allSessions : state.sessions;
+  const rawList = state.allSessions.length > 0 ? state.allSessions : state.sessions;
+  const sourceList = sortSessions(rawList);
   const filtered = sourceList.filter((s) => {
     if (state.activeFilter !== "all" && s.agent_type !== state.activeFilter) {
       return false;
@@ -996,7 +1356,7 @@ function renderSessionList() {
 
   if (filtered.length === 0) {
     container.innerHTML = `
-      <div class="p-6 text-center text-slate-500 text-xs">
+      <div class="p-6 text-center text-zinc-500 text-xs">
         <p class="mb-2">无匹配对话</p>
         <button onclick="window.appActions.openNewSessionModal()"
           class="px-2.5 py-1 rounded-lg bg-sky-500/20 text-sky-300 border border-sky-500/30 text-xs">
@@ -1059,7 +1419,7 @@ function renderSessionList() {
   if (pinnedList.length > 0) {
     html += `
       <div>
-        <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 flex items-center justify-between">
+        <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center justify-between">
           <span>★ 置顶</span>
           <span>${pinnedList.length}</span>
         </div>
@@ -1073,24 +1433,24 @@ function renderSessionList() {
   // --- 区块 2：项目 (Projects) ---
   html += `
     <div>
-      <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 flex items-center justify-between">
+      <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center justify-between">
         <span>📁 项目</span>
-        <button onclick="window.appActions.openNewSessionModal()" class="text-slate-400 hover:text-sky-400 text-xs" title="添加项目或新建对话">＋</button>
+        <button onclick="window.appActions.openNewSessionModal()" class="text-zinc-400 hover:text-sky-400 text-xs" title="添加项目或新建对话">＋</button>
       </div>
       <div class="space-y-1">
         ${
           projects.length === 0
-            ? `<div class="px-2 py-2 text-[11px] text-slate-600">暂无工程项目</div>`
+            ? `<div class="px-2 py-2 text-[11px] text-zinc-600">暂无工程项目</div>`
             : projects
                 .map((proj) => {
                   const isOpen = !!state.expandedProjects[proj.key] || !!q;
                   const visibleConvs = proj.sessions.slice(0, 8);
                   return `
-                    <div class="group/proj rounded-lg bg-slate-900/35 border border-slate-900">
+                    <div class="group/proj rounded-lg bg-zinc-900/35 border border-zinc-900">
                       <div onclick="window.appActions.toggleProject('${escapeHtml(proj.key)}')"
-                        class="cursor-pointer px-2 py-1.5 flex items-center justify-between gap-1.5 rounded-lg hover:bg-slate-900 text-xs text-slate-200">
+                        class="cursor-pointer px-2 py-1.5 flex items-center justify-between gap-1.5 rounded-lg hover:bg-zinc-900 text-xs text-zinc-200">
                         <div class="flex items-center gap-1.5 min-w-0 flex-1">
-                          <span class="text-[10px] text-slate-500 transition-transform ${
+                          <span class="text-[10px] text-zinc-500 transition-transform ${
                             isOpen ? "rotate-90" : ""
                           }">▸</span>
                           <span class="text-sky-400/90 shrink-0">📂</span>
@@ -1100,24 +1460,24 @@ function renderSessionList() {
                           <button onclick="window.appActions.newProjectSession('${escapeHtml(
                             proj.path
                           )}', event)"
-                            class="w-4 h-4 rounded hover:bg-slate-800 text-slate-400 hover:text-sky-400 flex items-center justify-center text-xs"
+                            class="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-400 hover:text-sky-400 flex items-center justify-center text-xs"
                             title="在此项目新建对话">＋</button>
                           <button onclick="window.appActions.hideProject('${escapeHtml(
                             proj.path
-                          )}', event)"
-                            class="w-4 h-4 rounded hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 flex items-center justify-center text-[11px]"
+                          )}', event, '${escapeJsSingleQuote(proj.name)}')"
+                            class="w-4 h-4 rounded hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 flex items-center justify-center text-[11px]"
                             title="从项目列表移出 (不删对话)">×</button>
-                          <span class="text-[10px] text-slate-500 tabular-nums min-w-[14px] text-right">${
+                          <span class="text-[10px] text-zinc-500 tabular-nums min-w-[14px] text-right">${
                             proj.sessions.length
                           }</span>
                         </div>
                       </div>
                       ${
                         isOpen
-                          ? `<div class="pl-3 pr-1 pb-1 space-y-0.5 border-l border-slate-800/80 ml-3 mb-1">
+                          ? `<div class="pl-3 pr-1 pb-1 space-y-0.5 border-l border-zinc-800/80 ml-3 mb-1">
                               ${
                                 visibleConvs.length === 0
-                                  ? `<div class="px-2 py-1 text-[10px] text-slate-600 italic">无对话</div>`
+                                  ? `<div class="px-2 py-1 text-[10px] text-zinc-600 italic">无对话</div>`
                                   : visibleConvs
                                       .map((c) => renderCompactSessionItem(c, false))
                                       .join("")
@@ -1137,7 +1497,7 @@ function renderSessionList() {
   // --- 区块 3：临时与最近对话 (Conversations) ---
   html += `
     <div>
-      <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 flex items-center justify-between">
+      <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center justify-between">
         <span>💬 临时与最近对话</span>
         <span>${recentDisplayList.length}</span>
       </div>
@@ -1150,86 +1510,243 @@ function renderSessionList() {
   container.innerHTML = html;
 }
 
+const MODEL_CONTEXT_LIMITS = {
+  "claude-sonnet-5-5-high": 200000,
+  "claude-opus-5-5-high": 200000,
+  "claude-sonnet-5-5-medium": 200000,
+  "claude-sonnet-4-6": 200000,
+  "claude-opus-4-7": 200000,
+  "claude-haiku-4-5-20251001": 200000,
+  "gemini-4-argon-high": 1000000,
+  "gemini-4-argon-medium": 1000000,
+  "gemini-3.8-flash-high": 1000000,
+  "gemini-2.5-pro": 1000000,
+  "gemini-2.5-flash": 1000000,
+  "gpt-oss-120b-medium": 128000,
+  "gpt-4o": 128000,
+  "gpt-4o-mini": 128000,
+};
+
+function getModelContextLimit(modelId) {
+  if (!modelId) return 200000;
+  const m = String(modelId).toLowerCase();
+  if (MODEL_CONTEXT_LIMITS[m]) return MODEL_CONTEXT_LIMITS[m];
+  for (const [k, v] of Object.entries(MODEL_CONTEXT_LIMITS)) {
+    if (m.includes(k) || k.includes(m)) return v;
+  }
+  if (m.includes("gemini")) return 1000000;
+  if (m.includes("claude")) return 200000;
+  return 200000;
+}
+
 function renderModelOptionsForAgent(selectEl, agentType, selectedModelId = "") {
   if (!selectEl) return;
+  const list = state.modelsByAgent[agentType];
   const models =
-    state.modelsByAgent[agentType] ||
-    DEFAULT_MODELS_BY_AGENT[agentType] ||
-    DEFAULT_MODELS_BY_AGENT.agy_cli;
+    Array.isArray(list) && list.length > 0
+      ? list
+      : DEFAULT_MODELS_BY_AGENT[agentType] || DEFAULT_MODELS_BY_AGENT.agy_cli;
 
   const activeId = selectedModelId || (models[0] ? models[0].id : "");
-  selectEl.innerHTML = models
+  if (selectEl.tagName === "SELECT") {
+    const usage = state.currentTokenUsage;
+    const currentTokens = usage ? usage.context_tokens || 0 : 0;
+    selectEl.innerHTML = models
+      .map((m) => {
+        const tagSuffix = m.tag ? ` · ${m.tag}` : "";
+        const limit = getModelContextLimit(m.id);
+        let quotaPart = "";
+        if (currentTokens > 0) {
+          const pct = Math.round((currentTokens / limit) * 1000) / 10;
+          quotaPart = ` [水位 ${pct}% · ${formatTokenCount(currentTokens)}/${formatTokenCount(limit)}]`;
+        } else {
+          quotaPart = ` [容量 ${formatTokenCount(limit)}]`;
+        }
+        const sel = m.id === activeId ? "selected" : "";
+        return `<option value="${escapeHtml(m.id)}" ${sel}>${escapeHtml(
+          m.label + tagSuffix + quotaPart
+        )}</option>`;
+      })
+      .join("");
+  } else {
+    selectEl.value = activeId;
+  }
+  renderModelPicker();
+}
+
+function renderModeOptionsForAgent(selectEl, agentType, selectedMode = "ask", isShort = false) {
+  if (!selectEl) return "ask";
+  const normalizedType = agentType === "claude" ? "claude_code" : (agentType || "agy_cli");
+  const list = MODES_BY_AGENT[normalizedType] || MODES_BY_AGENT.agy_cli;
+
+  // 校验当前选中的模式是否受该 Agent 支持；若不支持，安全回退至 ask（审批）
+  const isSupported = list.some((m) => m.value === selectedMode);
+  const activeMode = isSupported ? selectedMode : (list[0]?.value || "ask");
+
+  selectEl.innerHTML = list
     .map((m) => {
-      const tagSuffix = m.tag ? ` · ${m.tag}` : "";
-      const sel = m.id === activeId ? "selected" : "";
-      return `<option value="${escapeHtml(m.id)}" ${sel}>${escapeHtml(
-        m.label + tagSuffix
-      )}</option>`;
+      const text = isShort ? m.label : m.fullLabel;
+      const sel = m.value === activeMode ? "selected" : "";
+      return `<option value="${escapeHtml(m.value)}" ${sel}>${escapeHtml(text)}</option>`;
     })
     .join("");
+
+  selectEl.value = activeMode;
+  return activeMode;
+}
+
+function renderModelPicker() {
+  const btn = document.getElementById("model-picker-btn");
+  const labelEl = document.getElementById("model-picker-label");
+  const popover = document.getElementById("model-picker-popover");
+  const hiddenInput = document.getElementById("model-select");
+  if (!btn || !labelEl) return;
+
+  const sess =
+    state.sessions.find((s) => s.unified_id === state.selectedSessionId) ||
+    state.allSessions.find((s) => s.unified_id === state.selectedSessionId);
+  const agentType = sess?.agent_type || "agy_cli";
+  const list = state.modelsByAgent[agentType];
+  const models =
+    Array.isArray(list) && list.length > 0
+      ? list
+      : DEFAULT_MODELS_BY_AGENT[agentType] || DEFAULT_MODELS_BY_AGENT.agy_cli;
+
+  const activeId = sess?.model_name || (models[0] ? models[0].id : "");
+  if (hiddenInput) hiddenInput.value = activeId;
+
+  const activeModel = models.find((m) => m.id === activeId) || models[0];
+  if (activeModel) {
+    labelEl.textContent = activeModel.label;
+  }
+
+  if (!popover) return;
+
+  popover.innerHTML = `
+    <div class="px-3 py-2 text-[10px] text-zinc-400 font-semibold uppercase tracking-wider border-b border-zinc-800 flex items-center justify-between sticky top-0 z-10 select-none" style="background-color: #09090b !important;">
+      <span class="flex items-center gap-1.5 font-medium text-zinc-200">
+        <span class="text-sky-400">🧠</span>
+        <span>可用模型 (${models.length})</span>
+      </span>
+      <span class="text-[10px] text-zinc-400 font-mono">余量</span>
+    </div>
+    <div class="p-1 space-y-0.5" style="background-color: #09090b !important;">
+      ${models
+        .map((m) => {
+          const isSelected = m.id === activeId;
+          const quotaVal = typeof m.quota === "number" ? m.quota : 1.0;
+          const pct = Math.round(quotaVal * 100);
+
+          let barColorCls = "bg-emerald-400";
+          let textColorCls = "text-emerald-400";
+          if (pct <= 20) {
+            barColorCls = "bg-rose-500";
+            textColorCls = "text-rose-400";
+          } else if (pct <= 50) {
+            barColorCls = "bg-amber-400";
+            textColorCls = "text-amber-400";
+          }
+
+          return `
+            <div onclick="window.appActions.selectModel('${escapeJsSingleQuote(m.id)}', event)"
+              class="w-full flex items-center justify-between px-2.5 py-2 text-xs rounded-lg cursor-pointer transition select-none ${
+                isSelected
+                  ? "bg-zinc-800 border border-zinc-700/80 text-white"
+                  : "hover:bg-zinc-900 border border-transparent text-zinc-300"
+              }">
+              <!-- 左侧：选中圆点 + 模型名称 + 标签 + 推荐星 -->
+              <div class="flex items-center gap-2 min-w-0 flex-1 pr-2">
+                <div class="w-1.5 h-1.5 rounded-full shrink-0 ${
+                  isSelected ? "bg-sky-400 ring-2 ring-sky-400/40" : "bg-zinc-700"
+                }"></div>
+                <span class="truncate font-medium text-zinc-100 ${isSelected ? "text-white font-semibold" : ""}">${escapeHtml(m.label)}</span>
+                ${
+                  m.tag
+                    ? `<span class="text-[9px] px-1 py-0.2 rounded font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30 shrink-0">${escapeHtml(
+                        m.tag
+                      )}</span>`
+                    : ""
+                }
+                ${
+                  m.is_recommended
+                    ? `<span class="text-amber-400 text-[10px] shrink-0" title="推荐">★</span>`
+                    : ""
+                }
+              </div>
+
+              <!-- 右侧：模型右侧直接显示进度条与百分比数值 -->
+              <div class="flex items-center gap-1.5 shrink-0">
+                <div class="w-10 sm:w-12 h-1.5 rounded-full bg-zinc-800 overflow-hidden shrink-0">
+                  <div class="h-full rounded-full transition-all duration-300 ${barColorCls}" style="width: ${pct}%"></div>
+                </div>
+                <span class="text-[11px] font-mono font-medium ${textColorCls} w-8 text-right shrink-0">${pct}%</span>
+              </div>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
 }
 
 function renderCurrentSessionHeader() {
   const titleEl = document.getElementById("current-session-title");
   const subtitleEl = document.getElementById("current-session-subtitle");
   const modeSelect = document.getElementById("execution-mode-select");
-  const modelSelect = document.getElementById("model-select");
-  const abortBtn = document.getElementById("abort-session-btn");
-  const splitBrainBanner = document.getElementById("split-brain-banner");
+  const headerLogo = document.getElementById("header-logo-icon");
 
   const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
   if (!sess) {
-    if (titleEl) titleEl.textContent = "选择或新建对话";
-    if (subtitleEl) subtitleEl.textContent = "AGY · Claude · OpenCode";
-    if (abortBtn) abortBtn.classList.add("hidden");
-    if (splitBrainBanner) splitBrainBanner.classList.add("hidden");
-    renderModelOptionsForAgent(modelSelect, "agy_cli", "");
+    if (titleEl) titleEl.textContent = "未选择对话";
+    if (subtitleEl) subtitleEl.textContent = "AgentDeck";
+    if (headerLogo) headerLogo.classList.remove("has-session-hidden-mobile");
+    renderModelPicker();
+    updatePromptActionBtnState();
     return;
   }
 
+  // 手机端已选择具体会话后，隐藏顶栏会话名称前的系统钻石图标以释放横向排版空间
+  if (headerLogo) {
+    headerLogo.classList.add("has-session-hidden-mobile");
+  }
+
   const meta = AGENT_META[sess.agent_type] || AGENT_META.claude_code;
-  const proj = getProjectInfo(sess.project_path);
 
   if (titleEl) {
     titleEl.innerHTML = `
-      <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
+      <span class="px-1.5 py-0.5 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
         ${meta.short}
       </span>
-      <span class="truncate">${escapeHtml(sess.title)}</span>
+      <span class="truncate font-medium">${escapeHtml(sess.title)}</span>
     `;
   }
   if (subtitleEl) {
     subtitleEl.textContent =
       sess.is_project && sess.project_name
-        ? `📁 ${sess.project_name}`
-        : `临时对话 · #${sess.raw_session_id.slice(0, 8)}`;
+        ? `· 📁 ${sess.project_name}`
+        : `· #${sess.raw_session_id.slice(0, 8)}`;
   }
   if (modeSelect) {
-    modeSelect.value = sess.execution_mode || "ask";
-  }
-  if (modelSelect) {
-    renderModelOptionsForAgent(modelSelect, sess.agent_type, sess.model_name);
-  }
-  if (abortBtn) {
-    if (sess.status === "running" || sess.status === "waiting_approval") {
-      abortBtn.classList.remove("hidden");
-    } else {
-      abortBtn.classList.add("hidden");
+    const activeMode = renderModeOptionsForAgent(modeSelect, sess.agent_type, sess.execution_mode || "ask", true);
+    // 若原存储的模式不受该 Agent 支持且发生了自动回退，静默同步更新后端元数据持久化
+    if (sess.execution_mode && sess.execution_mode !== activeMode) {
+      sess.execution_mode = activeMode;
+      apiFetch(`/api/v1/sessions/${encodeURIComponent(sess.unified_id)}/meta`, {
+        method: "PATCH",
+        body: JSON.stringify({ execution_mode: activeMode }),
+      }).catch((err) => console.warn("静默同步纠偏模式失败:", err));
     }
   }
-  if (splitBrainBanner) {
-    if (sess.agent_type === "agy_ide") {
-      splitBrainBanner.classList.remove("hidden");
-    } else {
-      splitBrainBanner.classList.add("hidden");
-    }
-  }
+  renderModelPicker();
+  updatePromptActionBtnState();
+  renderOtherRunningPill();
 }
 
 function escapeJsSingleQuote(str) {
   return String(str || "")
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "\\'")
+    .replace(/"/g, "&quot;")
     .replace(/\r/g, "")
     .replace(/\n/g, "\\n");
 }
@@ -1345,7 +1862,7 @@ function renderInlineMarkdown(rawLine) {
 
   // 4. 加粗 **...**、斜体 *...*、删除线 ~~...~~
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  text = text.replace(/~~([^~]+)~~/g, '<del class="text-slate-500">$1</del>');
+  text = text.replace(/~~([^~]+)~~/g, '<del class="text-zinc-500">$1</del>');
   text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
 
   // 5. 还原行内代码与链接
@@ -1385,12 +1902,12 @@ function renderMarkdownHtml(rawMd, scopeKey = "md") {
         <div class="md-code-header">
           <div class="flex items-center gap-2">
             <span class="text-sky-400 font-semibold uppercase">${escapeHtml(displayLang)}</span>
-            <span class="text-[10px] text-slate-500">${lineCount} 行</span>
+            <span class="text-[10px] text-zinc-500">${lineCount} 行</span>
           </div>
           <button type="button" onclick="window.appActions.copyCodeBlock('${escapeJsSingleQuote(
             codeId
           )}', this)"
-            class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] transition active:scale-95">
+            class="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] transition active:scale-95">
             📋 复制
           </button>
         </div>
@@ -1404,7 +1921,7 @@ function renderMarkdownHtml(rawMd, scopeKey = "md") {
             ? `<button id="code-btn-${escapeHtml(codeId)}" type="button" data-line-count="${lineCount}" onclick="window.appActions.toggleCodeBlock('${escapeJsSingleQuote(
                 codeId
               )}')"
-                class="w-full py-1.5 bg-slate-900/95 hover:bg-slate-800/90 border-t border-slate-800/80 text-sky-400 text-[11px] font-medium text-center transition">
+                class="w-full py-1.5 bg-zinc-900/95 hover:bg-zinc-800/90 border-t border-zinc-800/80 text-sky-400 text-[11px] font-medium text-center transition">
                 ${isExpanded ? "⬆ 收起代码" : `⬇ 展开全部代码 (共 ${lineCount} 行)`}
               </button>`
             : ""
@@ -1488,7 +2005,7 @@ function renderMarkdownHtml(rawMd, scopeKey = "md") {
         out.push(`
           <div class="md-alert md-alert-${kind}">
             <div class="md-alert-title"><span>${alertMeta.icon}</span><span>${alertMeta.label}</span></div>
-            <div class="space-y-1 text-slate-200">${bodyHtml}</div>
+            <div class="space-y-1 text-zinc-200">${bodyHtml}</div>
           </div>
         `);
       } else {
@@ -1560,13 +2077,13 @@ function renderMarkdownHtml(rawMd, scopeKey = "md") {
           itemsHtml.push(
             `<li class="list-none -ml-4 flex items-start gap-1.5"><span>${
               checked ? "☑️" : "⬜"
-            }</span><span class="${checked ? "line-through text-slate-400" : ""}">${renderInlineMarkdown(
+            }</span><span class="${checked ? "line-through text-zinc-400" : ""}">${renderInlineMarkdown(
               taskMatch[2]
             )}</span></li>`
           );
         } else if (indentLen >= 2) {
           itemsHtml.push(
-            `<li class="list-none ml-3 flex items-start gap-1.5 text-slate-300"><span class="text-sky-400/80 select-none">•</span><span class="flex-1">${renderInlineMarkdown(
+            `<li class="list-none ml-3 flex items-start gap-1.5 text-zinc-300"><span class="text-sky-400/80 select-none">•</span><span class="flex-1">${renderInlineMarkdown(
               rawItem
             )}</span></li>`
           );
@@ -1612,9 +2129,9 @@ function renderUnifiedDiffHtml(diffText) {
   const lines = diffText.split("\n");
   const renderedLines = lines
     .map((line) => {
-      let cls = "diff-line text-slate-300";
+      let cls = "diff-line text-zinc-300";
       if (line.startsWith("+++") || line.startsWith("---")) {
-        cls = "diff-line text-slate-400 font-semibold";
+        cls = "diff-line text-zinc-400 font-semibold";
       } else if (line.startsWith("@@")) {
         cls = "diff-line diff-line-hunk";
       } else if (line.startsWith("+")) {
@@ -1628,7 +2145,7 @@ function renderUnifiedDiffHtml(diffText) {
 
   return `
     <div class="mt-1.5">
-      <div class="flex items-center justify-between text-[10px] text-slate-400 mb-1">
+      <div class="flex items-center justify-between text-[10px] text-zinc-400 mb-1">
         <span>📄 代码变更 Diff</span>
         <button type="button" onclick="window.appActions.toggleWordWrap()" class="text-sky-400 hover:underline">
           ${state.wordWrapDiff ? "横向滚动" : "自动换行"}
@@ -1820,14 +2337,14 @@ function renderTurnProcessBar(turn) {
     );
   }
   if (toolCount > 0) {
-    badges.push(`<span class="text-[11px] text-slate-400">🔧 ${toolCount} 次调用</span>`);
+    badges.push(`<span class="text-[11px] text-zinc-400">🔧 ${toolCount} 次调用</span>`);
   }
   if (thinkingCount > 0) {
-    badges.push(`<span class="text-[11px] text-slate-400">💭 ${thinkingCount} 次思考</span>`);
+    badges.push(`<span class="text-[11px] text-zinc-400">💭 ${thinkingCount} 次思考</span>`);
   }
 
   const detailsHtml = isExpanded
-    ? `<div class="mt-2 pt-2 border-t border-slate-800/80 space-y-2">
+    ? `<div class="mt-2 pt-2 border-t border-zinc-800/80 space-y-2">
         ${processRecords
           .map((rec) => {
             const thinkDetailId = `${turnKey}_think_${rec.step_index}`;
@@ -1844,11 +2361,11 @@ function renderTurnProcessBar(turn) {
                   isThinkOpen ? "open" : ""
                 } ontoggle="window.appActions.onDetailToggle(this, '${escapeJsSingleQuote(
                   thinkDetailId
-                )}')" class="rounded-lg bg-slate-950/80 border border-slate-800/80 px-2.5 py-1.5 text-[11px] text-slate-400">
-                  <summary class="cursor-pointer select-none font-medium text-slate-300">
+                )}')" class="rounded-lg bg-zinc-950/80 border border-zinc-800/80 px-2.5 py-1.5 text-[11px] text-zinc-400">
+                  <summary class="cursor-pointer select-none font-medium text-zinc-300">
                     💭 思考过程 (${rec.thinking.length}字)
                   </summary>
-                  <div data-lazy-slot class="mt-1.5 pt-1.5 border-t border-slate-800/70 whitespace-pre-wrap leading-relaxed text-slate-400 font-mono text-[11px] max-h-52 overflow-y-auto">${
+                  <div data-lazy-slot class="mt-1.5 pt-1.5 border-t border-zinc-800/70 whitespace-pre-wrap leading-relaxed text-zinc-400 font-mono text-[11px] max-h-52 overflow-y-auto">${
                     isThinkOpen ? escapeHtml(rec.thinking) : ""
                   }</div>
                 </details>
@@ -1857,7 +2374,7 @@ function renderTurnProcessBar(turn) {
 
             const noteHtml = rec.intermediateNote
               ? `
-                <div class="px-2.5 py-1.5 rounded-lg bg-slate-900/70 border border-slate-800/60 text-xs text-slate-300">
+                <div class="px-2.5 py-1.5 rounded-lg bg-zinc-900/70 border border-zinc-800/60 text-xs text-zinc-300">
                   <span class="text-[10px] text-sky-400 font-semibold mr-1">💬 过程说明:</span>
                   ${escapeHtml(rec.intermediateNote)}
                 </div>
@@ -1888,19 +2405,19 @@ function renderTurnProcessBar(turn) {
                 const diffLineCount = tc.diff_text ? tc.diff_text.split("\n").length : 0;
 
                 return `
-                  <div class="rounded-lg bg-slate-950/90 border ${
-                    isHigh ? "border-rose-500/45" : "border-slate-800/90"
+                  <div class="rounded-lg bg-zinc-950/90 border ${
+                    isHigh ? "border-rose-500/45" : "border-zinc-800/90"
                   } p-2 text-xs">
                     <div class="flex items-center justify-between gap-2">
                       <div class="flex items-center gap-1.5 min-w-0">
-                        <span class="px-1.5 py-0.5 rounded bg-slate-800 text-sky-300 font-mono font-semibold text-[10px] shrink-0">
+                        <span class="px-1.5 py-0.5 rounded bg-zinc-800 text-sky-300 font-mono font-semibold text-[10px] shrink-0">
                           🔧 ${escapeHtml(tc.name)}
                         </span>
-                        <span class="font-mono text-[11px] text-slate-300 truncate">
+                        <span class="font-mono text-[11px] text-zinc-300 truncate">
                           ${escapeHtml(tc.args_summary)}
                         </span>
                       </div>
-                      <span class="text-[9px] text-slate-500 font-mono shrink-0">${escapeHtml(
+                      <span class="text-[9px] text-zinc-500 font-mono shrink-0">${escapeHtml(
                         tc.status || "DONE"
                       )}</span>
                     </div>
@@ -1911,7 +2428,7 @@ function renderTurnProcessBar(turn) {
                             isDiffOpen ? "open" : ""
                           } ontoggle="window.appActions.onDetailToggle(this, '${escapeJsSingleQuote(
                             diffDetailId
-                          )}')" class="mt-1.5 text-[10px] text-slate-400">
+                          )}')" class="mt-1.5 text-[10px] text-zinc-400">
                             <summary class="cursor-pointer text-emerald-300/90 hover:text-emerald-200 select-none font-medium">
                               📝 查看代码变更 Diff (${diffLineCount}行)
                             </summary>
@@ -1929,8 +2446,8 @@ function renderTurnProcessBar(turn) {
                             isOutOpen ? "open" : ""
                           } ontoggle="window.appActions.onDetailToggle(this, '${escapeJsSingleQuote(
                             outDetailId
-                          )}')" class="mt-1.5 text-[10px] text-slate-400">
-                            <summary class="cursor-pointer text-slate-400 hover:text-slate-200 select-none flex items-center justify-between">
+                          )}')" class="mt-1.5 text-[10px] text-zinc-400">
+                            <summary class="cursor-pointer text-zinc-400 hover:text-zinc-200 select-none flex items-center justify-between">
                               <span>📤 查看执行输出 ${
                                 tc.is_truncated ? `(${tc.full_output_len}字·已截断)` : ""
                               }</span>
@@ -1942,7 +2459,7 @@ function renderTurnProcessBar(turn) {
                                   : ""
                               }
                             </summary>
-                            <pre data-lazy-slot class="mt-1 p-2 rounded bg-black/70 overflow-x-auto font-mono text-[10px] text-slate-300 whitespace-pre-wrap break-all max-h-44 overflow-y-auto">${
+                            <pre data-lazy-slot class="mt-1 p-2 rounded bg-black/70 overflow-x-auto font-mono text-[10px] text-zinc-300 whitespace-pre-wrap break-all max-h-44 overflow-y-auto">${
                               isOutOpen ? escapeHtml(tc.output) : ""
                             }</pre>
                           </details>
@@ -1961,11 +2478,11 @@ function renderTurnProcessBar(turn) {
     : "";
 
   return `
-    <div id="turn-process-wrap-${escapeHtml(turnKey)}" class="mb-2.5 rounded-xl bg-slate-900/65 border border-slate-800/85 px-3 py-2">
+    <div id="turn-process-wrap-${escapeHtml(turnKey)}" class="mb-2.5 rounded-xl bg-zinc-900/65 border border-zinc-800/85 px-3 py-2">
       <div onclick="window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}')"
         class="cursor-pointer select-none flex items-center justify-between gap-2">
         <div class="flex items-center gap-1.5 flex-wrap min-w-0">
-          <span class="text-xs font-semibold text-slate-200 flex items-center gap-1 shrink-0">
+          <span class="text-xs font-semibold text-zinc-200 flex items-center gap-1 shrink-0">
             <span class="text-sky-400">⚡</span>
             <span>已收纳 ${totalActions} 个执行步骤</span>
           </span>
@@ -1994,10 +2511,10 @@ function renderQuestionOptionsHtml(turnKey, qi, q) {
           )}', ${qi}, '${escapeJsSingleQuote(opt)}', ${isMulti})"
           class="text-left text-xs px-2.5 py-1.5 rounded-lg border transition-all active:scale-95 flex items-center gap-1.5 ${
             isSelected
-              ? "bg-sky-500 text-slate-950 font-bold border-sky-400 shadow-sm"
-              : "bg-slate-900/80 hover:bg-slate-800 text-slate-200 border-slate-700/80"
+              ? "bg-sky-500 text-zinc-950 font-bold border-sky-400 shadow-sm"
+              : "bg-zinc-900/80 hover:bg-zinc-800 text-zinc-200 border-zinc-700/80"
           }">
-          <span class="text-[10px] ${isSelected ? "text-slate-950" : "text-sky-400"}">${
+          <span class="text-[10px] ${isSelected ? "text-zinc-950" : "text-sky-400"}">${
         isSelected ? (isMulti ? "☑" : "●") : isMulti ? "☐" : "○"
       }</span>
           <span class="break-words">${escapeHtml(opt)}</span>
@@ -2022,12 +2539,12 @@ function renderInteractiveQuestionsCard(turn, isLatestTurn) {
       : `✓ 已完成的交互问答 (共 ${questions.length} 项)`;
 
     return `
-      <details class="mt-2 rounded-xl bg-slate-950/70 border border-slate-800/80 px-3 py-2 text-xs text-slate-400">
-        <summary class="cursor-pointer select-none font-medium text-slate-300 hover:text-sky-300 flex items-center justify-between">
+      <details class="mt-2 rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2 text-xs text-zinc-400">
+        <summary class="cursor-pointer select-none font-medium text-zinc-300 hover:text-sky-300 flex items-center justify-between">
           <span class="${decision ? "text-sky-300 font-semibold" : ""}">${summaryTitle}</span>
-          <span class="text-[10px] text-slate-500">查看明细 ▾</span>
+          <span class="text-[10px] text-zinc-500">查看明细 ▾</span>
         </summary>
-        <div class="mt-2 pt-2 border-t border-slate-800/70 space-y-2">
+        <div class="mt-2 pt-2 border-t border-zinc-800/70 space-y-2">
           ${
             decision
               ? `<div class="p-2 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-200 text-xs">
@@ -2041,10 +2558,10 @@ function renderInteractiveQuestionsCard(turn, isLatestTurn) {
             .map(
               (q, qi) => `
                 <div>
-                  <div class="font-semibold text-slate-200">Q${qi + 1}: ${escapeHtml(q.question)}</div>
+                  <div class="font-semibold text-zinc-200">Q${qi + 1}: ${escapeHtml(q.question)}</div>
                   ${
                     q.options && q.options.length > 0
-                      ? `<div class="mt-1 pl-3 text-[11px] text-slate-400 space-y-0.5">
+                      ? `<div class="mt-1 pl-3 text-[11px] text-zinc-400 space-y-0.5">
                           ${q.options.map((opt) => `<div>• ${escapeHtml(opt)}</div>`).join("")}
                         </div>`
                       : ""
@@ -2067,12 +2584,12 @@ function renderInteractiveQuestionsCard(turn, isLatestTurn) {
 
       return `
         <div class="space-y-1.5 pt-1.5 first:pt-0">
-          <div class="text-xs font-semibold text-slate-100 flex items-start gap-1.5">
+          <div class="text-xs font-semibold text-zinc-100 flex items-start gap-1.5">
             <span class="text-sky-400 shrink-0">Q${qi + 1}:</span>
             <span class="whitespace-pre-wrap">${escapeHtml(q.question)}</span>
             ${
               isMulti
-                ? `<span class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[9px] shrink-0">多选</span>`
+                ? `<span class="px-1 py-0.5 rounded bg-zinc-800 text-zinc-400 text-[9px] shrink-0">多选</span>`
                 : ""
             }
           </div>
@@ -2084,32 +2601,32 @@ function renderInteractiveQuestionsCard(turn, isLatestTurn) {
               oninput="window.appActions.setQuestionWriteIn('${escapeJsSingleQuote(
                 turnKey
               )}', ${qi}, this.value)"
-              class="w-full px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500" />
+              class="w-full px-2.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500" />
           </div>
         </div>
       `;
     })
-    .join('<div class="border-t border-slate-800/60 my-2"></div>');
+    .join('<div class="border-t border-zinc-800/60 my-2"></div>');
 
   return `
-    <div class="mt-2.5 rounded-xl bg-slate-900/90 border border-sky-500/40 p-3 shadow-lg space-y-2">
-      <div class="flex items-center justify-between text-xs text-sky-400 font-semibold border-b border-slate-800 pb-1.5">
+    <div class="mt-2.5 rounded-xl bg-zinc-900/90 border border-sky-500/40 p-3 shadow-lg space-y-2">
+      <div class="flex items-center justify-between text-xs text-sky-400 font-semibold border-b border-zinc-800 pb-1.5">
         <span class="flex items-center gap-1.5">
           <span class="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>
           <span>❓ Agent 正在向您提问确认</span>
         </span>
-        <span class="text-[10px] text-slate-400">单手点选即答</span>
+        <span class="text-[10px] text-zinc-400">单手点选即答</span>
       </div>
       <div class="space-y-2">${questionsHtml}</div>
-      <div class="flex items-center justify-end gap-2 pt-1 border-t border-slate-800/80">
+      <div class="flex items-center justify-end gap-2 pt-1 border-t border-zinc-800/80">
         <button type="button"
           onclick="window.appActions.skipQuestionAnswers('${escapeJsSingleQuote(turnKey)}')"
-          class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition">
+          class="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition">
           按推荐执行
         </button>
         <button type="button"
           onclick="window.appActions.submitQuestionAnswers('${escapeJsSingleQuote(turnKey)}')"
-          class="px-3.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs shadow transition active:scale-95 flex items-center gap-1">
+          class="px-3.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs shadow transition active:scale-95 flex items-center gap-1">
           <span>✓ 发送回答</span>
         </button>
       </div>
@@ -2130,7 +2647,7 @@ function renderMdDocQuickCards(mdFiles) {
               <span class="text-base">📄</span>
               <div class="min-w-0">
                 <div class="text-xs font-semibold text-sky-300 truncate">${escapeHtml(doc.name)}</div>
-                <div class="text-[10px] text-slate-400">点击全屏阅读 Markdown 文档</div>
+                <div class="text-[10px] text-zinc-400">点击全屏阅读 Markdown 文档</div>
               </div>
             </button>
           `
@@ -2155,18 +2672,18 @@ function renderMessagesList() {
     return;
   }
 
-  if (!state.selectedSessionId || state.messages.length === 0) {
+  if (!state.selectedSessionId) {
     container.innerHTML = `
-      <div class="h-full flex flex-col items-center justify-center p-6 text-center text-slate-400">
-        <div class="w-10 h-10 rounded-xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-center text-xl mb-2.5">
-          ⚡
+      <div class="h-full flex flex-col items-center justify-center p-6 text-center text-zinc-400">
+        <div class="w-12 h-12 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-sky-400 mb-3 shadow-sm">
+          <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
         </div>
-        <div class="text-sm font-medium text-slate-200 mb-1">选择对话或直接发消息</div>
-        <p class="text-xs text-slate-500 max-w-xs mb-3">
-          支持 Antigravity IDE / CLI · Claude Code · OpenCode
+        <div class="text-sm font-semibold text-zinc-100 mb-1">选择对话或直接发消息</div>
+        <p class="text-xs text-zinc-500 max-w-xs mb-4">
+          多 Agent 移动控制台 · Antigravity / Claude Code / OpenCode
         </p>
         <button onclick="window.appActions.openNewSessionModal()"
-          class="px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs transition">
+          class="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs transition active:scale-95 shadow">
           + 新建对话
         </button>
       </div>
@@ -2174,14 +2691,66 @@ function renderMessagesList() {
     return;
   }
 
+  const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+  const isWorking = isSessionWorking(state.selectedSessionId);
+
+  if (state.messages.length === 0) {
+    if (!isWorking) {
+      const pPath = curSess?.project_path || "未绑定目录";
+      const agentLabel = (AGENT_META[curSess?.agent_type] || AGENT_META.claude_code).label;
+      container.innerHTML = `
+        <div class="h-full flex flex-col items-center justify-center p-6 text-center text-zinc-400 max-w-md mx-auto">
+          <div class="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-sky-400 mb-2.5 shadow-sm">
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+          </div>
+          <div class="text-sm font-semibold text-zinc-100 mb-1">${escapeHtml(curSess?.title || "新会话")}</div>
+          <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-zinc-900 border border-zinc-800 text-[11px] font-mono text-zinc-400 mb-4 max-w-full truncate">
+            <span class="text-sky-400 font-sans font-medium">${escapeHtml(agentLabel)}</span>
+            <span class="text-zinc-600">·</span>
+            <span class="truncate">${escapeHtml(pPath)}</span>
+          </div>
+          <div class="w-full space-y-2 text-left">
+            <div class="text-[11px] font-medium text-zinc-500 px-1">快速开始 / Starter Prompts：</div>
+            <button onclick="window.appActions.fillPromptAndSend('查看当前代码仓库的 Git 状态与最近修改差异')"
+              class="w-full p-2.5 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 transition text-left flex items-center justify-between group active:scale-[0.99]">
+              <span>🔍 查看当前 Git 改动与状态差异</span>
+              <span class="text-sky-400 text-xs group-hover:translate-x-0.5 transition-transform">→</span>
+            </button>
+            <button onclick="window.appActions.fillPromptAndSend('帮我审查当前项目的代码架构并指出潜在漏洞与优化点')"
+              class="w-full p-2.5 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 transition text-left flex items-center justify-between group active:scale-[0.99]">
+              <span>📋 审查项目代码架构并指出缺陷</span>
+              <span class="text-sky-400 text-xs group-hover:translate-x-0.5 transition-transform">→</span>
+            </button>
+            <button onclick="window.appActions.fillPromptAndSend('梳理当前项目的开发计划与待办实施清单')"
+              class="w-full p-2.5 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 transition text-left flex items-center justify-between group active:scale-[0.99]">
+              <span>⚡ 梳理接下来待办任务与规划 (/plan)</span>
+              <span class="text-sky-400 text-xs group-hover:translate-x-0.5 transition-transform">→</span>
+            </button>
+          </div>
+        </div>
+      `;
+      return;
+    }
+  }
+
   const turns = groupMessagesIntoTurns(state.messages);
+  const lastTurn = turns[turns.length - 1];
+  const thinkingStart = state.pendingTurnThinking ? state.pendingTurnThinking[state.selectedSessionId] : null;
+  if (thinkingStart && lastTurn && (lastTurn.type === "agent" || lastTurn.type === "assistant")) {
+    const turnTime = new Date(lastTurn.createdAt || 0).getTime();
+    const lastStep = lastTurn.primarySteps ? lastTurn.primarySteps[lastTurn.primarySteps.length - 1] : null;
+    const isLastStepRunning = lastStep && lastStep.status === "RUNNING";
+    if (turnTime >= thinkingStart - 1000 && !isLastStepRunning && !isSessionWorking(state.selectedSessionId)) {
+      delete state.pendingTurnThinking[state.selectedSessionId];
+    }
+  }
   state.turnsMap = {};
 
   const olderBannerHtml = state.hasMoreMessages
     ? `
       <div class="mb-4 text-center">
         <button id="load-older-messages-btn" type="button" onclick="window.appActions.loadOlderMessages()"
-          class="px-3.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-xs text-sky-300 font-medium transition active:scale-95">
+          class="px-3.5 py-1.5 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700/80 text-xs text-sky-300 font-medium transition active:scale-95">
           ↑ 加载更早消息 (已显示 ${state.messages.length}/${state.totalMessagesCount || "?"} 条)
         </button>
       </div>
@@ -2202,10 +2771,10 @@ function renderMessagesList() {
 
         return `
           <div class="flex justify-end mb-4">
-            <div class="max-w-[88%] sm:max-w-[76%] rounded-2xl rounded-tr-sm bg-sky-500/20 border border-sky-500/35 px-3.5 py-2.5 text-slate-100 shadow-sm">
+            <div class="max-w-[88%] sm:max-w-[76%] rounded-2xl rounded-tr-sm bg-zinc-900 border border-zinc-800 px-3.5 py-2.5 text-zinc-100 shadow-sm">
               <div id="user-msg-text-${escapeHtml(
                 m.item_id
-              )}" class="text-[14px] leading-relaxed whitespace-pre-wrap break-words">${escapeHtml(
+              )}" class="text-xs sm:text-[13px] leading-relaxed whitespace-pre-wrap break-words">${escapeHtml(
           displayUserText
         )}</div>
               ${
@@ -2214,12 +2783,12 @@ function renderMessagesList() {
                       m.item_id
                     )}" type="button" onclick="window.appActions.toggleUserMessage('${escapeJsSingleQuote(
                       m.item_id
-                    )}')" class="mt-1 text-[11px] text-sky-300 font-medium hover:underline">
+                    )}')" class="mt-1 text-[11px] text-sky-400 font-medium hover:underline">
                       ${isUserExpanded ? "收起 ▴" : `展开全部 (${rawUserText.length}字) ▾`}
                     </button>`
                   : ""
               }
-              <div class="text-[10px] text-sky-300/60 text-right mt-1">${formatRelativeTime(
+              <div class="text-[10px] text-zinc-500 text-right mt-1">${formatRelativeTime(
                 m.created_at
               )}</div>
             </div>
@@ -2227,25 +2796,18 @@ function renderMessagesList() {
         `;
       }
 
-      // Assistant Turn（沉浸式全宽文档流版式）
+      // Assistant Turn（沉浸式全宽文档流版式，无突兀分割线）
       const processBarHtml = renderTurnProcessBar(t);
       const mdBodyHtml = t.primarySteps
         .map((ps) => renderMarkdownHtml(ps.content, `${t.turnKey}_s${ps.step_index}`))
-        .join('<hr class="my-3 border-slate-800/80" />');
+        .join('<div class="my-3"></div>');
 
-      // 若本轮仅有工具/思考过程而尚无最终文字输出，展示最后一步简短状态说明，杜绝空白
+      // 若本轮仅有中间过程说明而尚无最终正文，展示过程说明
       let fallbackStatusHtml = "";
       if (!mdBodyHtml && t.processRecords.length > 0) {
         const lastRec = t.processRecords[t.processRecords.length - 1];
         if (lastRec.intermediateNote) {
           fallbackStatusHtml = renderMarkdownHtml(lastRec.intermediateNote, `${t.turnKey}_note`);
-        } else if (lastRec.tool_calls && lastRec.tool_calls.length > 0) {
-          const lastTc = lastRec.tool_calls[lastRec.tool_calls.length - 1];
-          fallbackStatusHtml = `
-            <div class="text-xs text-slate-400 italic">
-              已完成工具调用 <code class="md-inline-code">${escapeHtml(lastTc.name)}</code>，点击上方折叠栏可查看详情。
-            </div>
-          `;
         }
       }
 
@@ -2257,7 +2819,7 @@ function renderMessagesList() {
           : "";
 
       return `
-        <article class="mb-5 pb-4 border-b border-slate-800/60 last:border-b-0">
+        <article class="mb-6">
           ${processBarHtml}
           ${
             mdBodyHtml || fallbackStatusHtml
@@ -2266,10 +2828,7 @@ function renderMessagesList() {
           }
           ${questionsCardHtml ? `<div class="px-1 sm:px-2">${questionsCardHtml}</div>` : ""}
           ${mdCardsHtml ? `<div class="px-1 sm:px-2">${mdCardsHtml}</div>` : ""}
-          <div class="px-1 sm:px-2 mt-2 text-[10px] text-slate-500 flex items-center justify-between">
-            <span>步骤 #${t.firstStepIndex}${
-        t.lastStepIndex > t.firstStepIndex ? `~${t.lastStepIndex}` : ""
-      }</span>
+          <div class="px-1 sm:px-2 mt-1.5 text-[10px] text-zinc-600 text-right">
             <span>${formatRelativeTime(t.createdAt)}</span>
           </div>
         </article>
@@ -2278,7 +2837,7 @@ function renderMessagesList() {
     .join("");
 
   container.innerHTML =
-    `<div class="max-w-3xl mx-auto">` +
+    `<div class="max-w-5xl mx-auto">` +
     olderBannerHtml +
     html +
     `<div id="live-stream-overlay-slot"></div><div id="messages-bottom-anchor"></div></div>`;
@@ -2289,23 +2848,125 @@ function renderMessagesList() {
   }
 }
 
+function isSessionWorking(unifiedId) {
+  if (!unifiedId) return false;
+  // 1. 内存中记录了正在等待回复的时间戳
+  if (state.pendingTurnThinking && state.pendingTurnThinking[unifiedId]) {
+    return true;
+  }
+  // 2. 正在接收流式缓冲区输出
+  if (state.streamingBuffer && state.streamingBuffer[unifiedId]) {
+    return true;
+  }
+  // 3. 本地存在未确认的乐观消息
+  const optList = state.optimisticMessages ? state.optimisticMessages[unifiedId] : null;
+  if (optList && optList.length > 0) {
+    return true;
+  }
+  // 4. 会话列表中的状态为 running 或 desktop_active（覆盖桌面端 Antigravity IDE 与 CLI 活跃任务）
+  const sess = state.sessions.find((s) => s.unified_id === unifiedId);
+  if (sess && (sess.status === "running" || sess.status === "desktop_active")) {
+    return true;
+  }
+  const allSess = state.allSessions.find((s) => s.unified_id === unifiedId);
+  if (allSess && (allSess.status === "running" || allSess.status === "desktop_active")) {
+    return true;
+  }
+  // 5. 若当前选中的正是该会话，检查最新一条消息或其步骤是否为 RUNNING
+  if (state.selectedSessionId === unifiedId && state.messages && state.messages.length > 0) {
+    const lastMsg = state.messages[state.messages.length - 1];
+    if (lastMsg && lastMsg.status === "RUNNING") {
+      return true;
+    }
+    if (lastMsg && Array.isArray(lastMsg.tool_calls)) {
+      const hasRunningTool = lastMsg.tool_calls.some(
+        (tc) => tc && (tc.status === "RUNNING" || tc.status === "PENDING")
+      );
+      if (hasRunningTool) return true;
+    }
+  }
+  return false;
+}
+
+function formatElapsedSec(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s < 10 ? "0" : ""}${s}`;
+}
+
+function updatePromptActionBtnState() {
+  const btn = document.getElementById("prompt-action-btn");
+  const btnText = document.getElementById("prompt-action-btn-text");
+  const inputEl = document.getElementById("prompt-input");
+  if (!btn) return;
+
+  const isWorking = isSessionWorking(state.selectedSessionId);
+  const hasText = Boolean(inputEl && inputEl.value.trim().length > 0);
+
+  // 运行中的会话：如果无输入内容显示「中断」，如果有输入内容显示「发送」（跟客户端交互完全一致）
+  if (isWorking && !hasText) {
+    btn.dataset.action = "abort";
+    btn.className =
+      "shrink-0 h-10 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center";
+    if (btnText) {
+      btnText.textContent = "中断";
+    }
+    btn.setAttribute("title", "中断当前执行 (SIGINT)");
+  } else {
+    btn.dataset.action = "send";
+    btn.className =
+      "shrink-0 h-10 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center";
+    if (btnText) {
+      btnText.textContent = "发送";
+    }
+    btn.setAttribute("title", "发送指令");
+  }
+}
+
+function handlePromptAction() {
+  const btn = document.getElementById("prompt-action-btn");
+  const action = btn?.dataset?.action || "send";
+  if (action === "abort") {
+    handleAbortCurrentSession();
+  } else {
+    handleSendPrompt(null);
+  }
+}
+
 function renderLiveStreamOverlay() {
   const slot = document.getElementById("live-stream-overlay-slot");
+  updatePromptActionBtnState();
   if (!slot || !state.selectedSessionId) return;
+
+  const isWorking = isSessionWorking(state.selectedSessionId);
   const liveText = state.streamingBuffer[state.selectedSessionId];
-  if (!liveText) {
+
+  if (!isWorking && !liveText) {
     slot.innerHTML = "";
     return;
   }
+
+  // Agent 工作中，在对话区域显示 Working... 与实时生成流
   slot.innerHTML = `
-    <div class="mb-4 rounded-2xl bg-slate-900/95 border border-sky-500/40 px-3.5 py-2.5">
-      <div class="flex items-center gap-1.5 text-sky-400 text-xs font-semibold mb-1.5">
-        <span class="w-1.5 h-1.5 rounded-full bg-sky-400 animate-ping"></span>
-        <span>Agent 正在输出...</span>
+    <div class="mb-4 rounded-xl bg-zinc-900/60 border border-zinc-800/80 px-3 py-2 text-xs text-zinc-300 shadow-sm transition-all">
+      <div class="flex items-center gap-2 font-mono text-[11px] text-sky-400">
+        <span class="relative flex h-2 w-2">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2 w-2 bg-sky-400"></span>
+        </span>
+        <span class="tracking-wider font-semibold">Working...</span>
       </div>
-      ${renderMarkdownHtml(liveText.slice(-2400), "live_stream")}
+      ${
+        liveText
+          ? `<div class="mt-2 text-xs text-zinc-200 border-t border-zinc-800/60 pt-2">${renderMarkdownHtml(
+              liveText.slice(-3000),
+              "live_stream"
+            )}</div>`
+          : ""
+      }
     </div>
   `;
+
   if (!state.autoScrollLocked) {
     scrollToBottom();
   }
@@ -2340,7 +3001,7 @@ function renderApprovalBanners() {
         <span class="text-amber-300/80 truncate">(${escapeHtml(list[0].tool_name)})</span>
       </div>
       <button onclick="window.appActions.selectSession('${escapeHtml(list[0].unified_id)}')"
-        class="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-semibold shrink-0">
+        class="px-2 py-0.5 rounded bg-amber-400 text-zinc-950 font-semibold shrink-0">
         处理
       </button>
     </div>
@@ -2352,10 +3013,11 @@ function renderApprovalBanners() {
 
   bottomBar.classList.remove("hidden");
   bottomBar.innerHTML = `
-    <div class="p-2.5 bg-slate-900/98 border-t-2 ${
+    <div class="p-2.5 bg-zinc-900/98 border-t-2 ${
       isHighRisk ? "border-rose-500" : "border-amber-500"
     } shadow-2xl">
-      <div class="flex items-center justify-between gap-2 mb-1">
+      <div class="max-w-5xl mx-auto">
+        <div class="flex items-center justify-between gap-2 mb-1">
         <div class="flex items-center gap-1.5">
           <span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${
             isHighRisk
@@ -2364,13 +3026,13 @@ function renderApprovalBanners() {
           }">
             ${isHighRisk ? "⚠️ 高危拦截" : "🛡️ 权限审批"}
           </span>
-          <span class="font-mono text-xs font-semibold text-slate-200">${escapeHtml(
+          <span class="font-mono text-xs font-semibold text-zinc-200">${escapeHtml(
             activeApproval.tool_name
           )}</span>
         </div>
       </div>
 
-      <div class="font-mono text-[11px] text-slate-200 bg-black/60 border border-slate-800 rounded-lg px-2 py-1 mb-1.5 break-all max-h-20 overflow-y-auto">
+      <div class="font-mono text-[11px] text-zinc-200 bg-black/60 border border-zinc-800 rounded-lg px-2 py-1 mb-1.5 break-all max-h-20 overflow-y-auto">
         ${escapeHtml(activeApproval.args_summary)}
       </div>
 
@@ -2379,20 +3041,20 @@ function renderApprovalBanners() {
       ${
         state.denyFeedbackOpen
           ? `
-            <div class="mt-2 p-2 rounded-xl bg-slate-950 border border-rose-500/40 space-y-2">
+            <div class="mt-2 p-2 rounded-xl bg-zinc-950 border border-rose-500/40 space-y-2">
               <div class="text-[11px] text-rose-300 font-semibold flex items-center justify-between">
                 <span>✕ 拒绝原因与指导意见 (将传给 Agent 调整方案)</span>
-                <button type="button" onclick="window.appActions.toggleDenyFeedback(false)" class="text-slate-400 hover:text-white px-1">收起</button>
+                <button type="button" onclick="window.appActions.toggleDenyFeedback(false)" class="text-zinc-400 hover:text-white px-1">收起</button>
               </div>
               <textarea id="deny-feedback-input" rows="2"
                 placeholder="告诉 Agent 为什么拒绝或应该改成什么方案（例如：不要删这个函数，改成可选参数）..."
-                class="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-rose-400 resize-none"></textarea>
+                class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-rose-400 resize-none"></textarea>
               <div class="flex items-center justify-end gap-2">
                 <button type="button"
                   onclick="window.appActions.submitApproval('${escapeHtml(
                     activeApproval.unified_id
                   )}', 'denied')"
-                  class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">
+                  class="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs">
                   直接拒绝
                 </button>
                 <button type="button"
@@ -2423,7 +3085,7 @@ function renderApprovalBanners() {
                       onpointerup="window.appActions.cancelHold(this)"
                       onpointerleave="window.appActions.cancelHold(this)"
                       onpointercancel="window.appActions.cancelHold(this)"
-                      class="hold-approve-btn col-span-8 min-h-[42px] rounded-xl bg-amber-500 text-slate-950 font-bold text-xs shadow-lg">
+                      class="hold-approve-btn col-span-8 min-h-[42px] rounded-xl bg-amber-500 text-zinc-950 font-bold text-xs shadow-lg">
                       <div class="hold-progress-fill"></div>
                       <span class="relative z-10">⚡ 长按 0.8s 允许</span>
                     </button>
@@ -2432,13 +3094,13 @@ function renderApprovalBanners() {
                     <button onclick="window.appActions.submitApproval('${escapeHtml(
                       activeApproval.unified_id
                     )}', 'approve_session_edits')"
-                      class="col-span-3 min-h-[42px] rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-medium text-[11px] active:scale-95 transition">
+                      class="col-span-3 min-h-[42px] rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 font-medium text-[11px] active:scale-95 transition">
                       免审
                     </button>
                     <button onclick="window.appActions.submitApproval('${escapeHtml(
                       activeApproval.unified_id
                     )}', 'approved')"
-                      class="col-span-5 min-h-[42px] rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-lg active:scale-95 transition">
+                      class="col-span-5 min-h-[42px] rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs shadow-lg active:scale-95 transition">
                       ✓ 允许
                     </button>
                   `
@@ -2446,6 +3108,7 @@ function renderApprovalBanners() {
             </div>
           `
       }
+      </div>
     </div>
   `;
 }
@@ -2459,7 +3122,7 @@ function renderQrModalContent() {
 
   box.innerHTML = `
     <div class="space-y-3">
-      <div class="flex flex-col items-center bg-slate-950/90 border border-slate-800 rounded-xl p-3">
+      <div class="flex flex-col items-center bg-zinc-950/90 border border-zinc-800 rounded-xl p-3">
         <div class="bg-white p-2 rounded-xl mb-2 shadow">
           <img src="${qrImgUrl}" alt="QR" class="w-40 h-40 block" />
         </div>
@@ -2468,13 +3131,13 @@ function renderQrModalContent() {
         </div>
       </div>
 
-      <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-800/60 border border-slate-700/60">
-        <span class="text-xs font-medium text-slate-200">💻 PC 防休眠锁</span>
+      <div class="flex items-center justify-between p-2.5 rounded-xl bg-zinc-800/60 border border-zinc-700/60">
+        <span class="text-xs font-medium text-zinc-200">💻 PC 防休眠锁</span>
         <button onclick="window.appActions.toggleAwakeLock(${!awake_lock_active})"
           class="px-2.5 py-1 rounded-lg text-xs font-semibold ${
             awake_lock_active
               ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-              : "bg-slate-700 text-slate-300"
+              : "bg-zinc-700 text-zinc-300"
           }">
           ${awake_lock_active ? "已开启" : "已关闭"}
         </button>
@@ -2484,11 +3147,11 @@ function renderQrModalContent() {
         ${(agents_health || [])
           .map(
             (a) => `
-              <div class="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-950/70 border border-slate-800 text-xs">
-                <span class="font-medium ${a.ready ? "text-emerald-300" : "text-slate-400"}">
+              <div class="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-zinc-950/70 border border-zinc-800 text-xs">
+                <span class="font-medium ${a.ready ? "text-emerald-300" : "text-zinc-400"}">
                   ${a.ready ? "✓" : "!"} ${escapeHtml(a.agent_label)}
                 </span>
-                <span class="text-[10px] text-slate-400 truncate max-w-[60%]">
+                <span class="text-[10px] text-zinc-400 truncate max-w-[60%]">
                   ${escapeHtml(a.description)}
                 </span>
               </div>
@@ -2515,6 +3178,148 @@ function updateDrawerVisibility() {
 
   // 通过 body 类名与纯 CSS 媒体查询解耦桌面端展开按钮的显示状态
   document.body.classList.toggle("sidebar-is-collapsed", !!state.sidebarCollapsed);
+}
+
+// 移动端向右滑动展开菜单手势支持
+function initDrawerSwipeGestures() {
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let touchStartTime = 0;
+  let isScrollingVertical = false;
+  let isGestureLocked = false;
+  let isIgnoredTarget = false;
+
+  const isModalOpen = () => {
+    const modalIds = [
+      "new-session-modal",
+      "qr-modal",
+      "git-status-modal",
+      "token-usage-modal",
+      "rename-modal",
+    ];
+    for (const id of modalIds) {
+      const el = document.getElementById(id);
+      if (el && !el.classList.contains("hidden")) return true;
+    }
+    return false;
+  };
+
+  const isHorizontalScrollable = (el) => {
+    let cur = el;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      const tag = cur.tagName ? cur.tagName.toLowerCase() : "";
+      if (
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        cur.isContentEditable
+      ) {
+        return true;
+      }
+      if (
+        cur.classList?.contains("overflow-x-auto") ||
+        cur.classList?.contains("unified-diff-box") ||
+        cur.classList?.contains("no-scrollbar")
+      ) {
+        if (cur.scrollWidth > cur.clientWidth + 5) {
+          return true;
+        }
+      }
+      const style = window.getComputedStyle(cur);
+      if (
+        (style.overflowX === "auto" || style.overflowX === "scroll") &&
+        cur.scrollWidth > cur.clientWidth + 5
+      ) {
+        return true;
+      }
+      cur = cur.parentElement;
+    }
+    return false;
+  };
+
+  window.addEventListener(
+    "touchstart",
+    (e) => {
+      if (window.innerWidth >= 768 || e.touches.length !== 1) {
+        isIgnoredTarget = true;
+        return;
+      }
+
+      if (isModalOpen()) {
+        isIgnoredTarget = true;
+        return;
+      }
+
+      const touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      touchStartTime = Date.now();
+      isScrollingVertical = false;
+      isGestureLocked = false;
+
+      if (isHorizontalScrollable(e.target)) {
+        isIgnoredTarget = true;
+      } else {
+        isIgnoredTarget = false;
+      }
+    },
+    { passive: true }
+  );
+
+  window.addEventListener(
+    "touchmove",
+    (e) => {
+      if (isIgnoredTarget || e.touches.length !== 1) return;
+
+      const touch = e.touches[0];
+      const deltaX = touch.clientX - touchStartX;
+      const deltaY = touch.clientY - touchStartY;
+
+      if (!isGestureLocked) {
+        const absX = Math.abs(deltaX);
+        const absY = Math.abs(deltaY);
+        if (absX > 8 || absY > 8) {
+          if (absY >= absX) {
+            isScrollingVertical = true;
+          } else {
+            isScrollingVertical = false;
+          }
+          isGestureLocked = true;
+        }
+      }
+    },
+    { passive: true }
+  );
+
+  window.addEventListener(
+    "touchend",
+    (e) => {
+      if (isIgnoredTarget || isScrollingVertical) return;
+
+      const touch = e.changedTouches[0];
+      if (!touch) return;
+
+      const deltaX = touch.clientX - touchStartX;
+      const deltaY = touch.clientY - touchStartY;
+      const absX = Math.abs(deltaX);
+      const absY = Math.abs(deltaY);
+      const deltaTime = Date.now() - touchStartTime;
+
+      if (absX <= absY * 1.2) return;
+
+      const isQuickSwipe = deltaTime < 350 && absX >= 40;
+      const isLongSwipe = absX >= 75;
+
+      if (!isQuickSwipe && !isLongSwipe) return;
+
+      if (!state.drawerOpen && deltaX > 0) {
+        window.appActions.toggleDrawer(true);
+      } else if (state.drawerOpen && deltaX < 0) {
+        window.appActions.toggleDrawer(false);
+      }
+    },
+    { passive: true }
+  );
 }
 
 function openNewSessionModal(prefillPrompt = "", prefillProjectPath = "") {
@@ -2556,6 +3361,8 @@ function openNewSessionModal(prefillPrompt = "", prefillProjectPath = "") {
 
   const agType = agentSelect ? agentSelect.value : "agy_cli";
   renderModelOptionsForAgent(modelSelect, agType, "");
+  const newModeSelect = document.getElementById("new-session-mode");
+  renderModeOptionsForAgent(newModeSelect, agType, "ask", false);
 
   if (promptInput) {
     promptInput.value = prefillPrompt || "";
@@ -2598,9 +3405,27 @@ async function confirmCreateNewSession() {
 
   document.getElementById("new-session-modal").classList.add("hidden");
   document.getElementById("new-session-prompt").value = "";
-  await loadSessions();
   if (res.unified_id) {
+    if (initialPrompt) {
+      if (!state.optimisticMessages[res.unified_id]) {
+        state.optimisticMessages[res.unified_id] = [];
+      }
+      state.optimisticMessages[res.unified_id].push({
+        item_id: `optimistic_${Date.now()}`,
+        step_index: 1,
+        role: "user",
+        created_at: new Date().toISOString(),
+        content: initialPrompt,
+        thinking: "",
+        tool_calls: [],
+        status: "RUNNING",
+      });
+      state.pendingTurnThinking[res.unified_id] = Date.now();
+    }
+    await loadSessions();
     await selectSession(res.unified_id);
+  } else {
+    await loadSessions();
   }
 }
 
@@ -2613,7 +3438,7 @@ function showToast(message, type = "info") {
       ? "bg-rose-950/95 border-rose-500/60 text-rose-200"
       : type === "success"
       ? "bg-emerald-950/95 border-emerald-500/60 text-emerald-200"
-      : "bg-slate-900/95 border-sky-500/50 text-sky-200";
+      : "bg-zinc-900/95 border-sky-500/50 text-sky-200";
   el.className = `px-3 py-2 rounded-xl border shadow-xl text-xs font-medium transition-all ${colorCls}`;
   el.textContent = message;
   container.appendChild(el);
@@ -2625,6 +3450,19 @@ function showToast(message, type = "info") {
 // --- 暴露给模板的事件动作集 ---
 window.appActions = {
   selectSession,
+  jumpToRunningSession() {
+    const otherRunning = (state.allSessions || []).filter(
+      (s) =>
+        s.unified_id !== state.selectedSessionId &&
+        (isSessionStatusActive(s) || s.status === "waiting_approval")
+    );
+    if (otherRunning.length > 0) {
+      const target = getLatestSession(otherRunning);
+      if (target) {
+        selectSession(target.unified_id);
+      }
+    }
+  },
   togglePin: handleTogglePin,
   toggleProject(projectKey) {
     state.expandedProjects[projectKey] = !state.expandedProjects[projectKey];
@@ -2634,14 +3472,19 @@ window.appActions = {
     if (ev) ev.stopPropagation();
     openNewSessionModal("", projectPath);
   },
-  async hideProject(projectPath, ev) {
+  async hideProject(projectPath, ev, projectName = "") {
     if (ev) ev.stopPropagation();
+    const nameHint = projectName ? `“${projectName}”` : "该项目";
+    const confirmed = window.confirm(
+      `确定要从左侧项目列表移出 ${nameHint} 吗？\n\n提示：仅从项目列表隐藏，不会删除任何代码文件与历史对话记录。`
+    );
+    if (!confirmed) return;
     try {
       await apiFetch("/api/v1/workspaces/hide", {
         method: "POST",
         body: JSON.stringify({ workspace_path: projectPath }),
       });
-      showToast("已从项目列表移出", "info");
+      showToast(`已从项目列表移出 ${nameHint}`, "info");
       await Promise.all([loadWorkspaces(), loadSessions()]);
     } catch (err) {
       console.error("从项目列表移出失败:", err);
@@ -2650,22 +3493,101 @@ window.appActions = {
   onNewSessionAgentChange(agentType) {
     const modelSelect = document.getElementById("new-session-model");
     renderModelOptionsForAgent(modelSelect, agentType, "");
+    const modeSelect = document.getElementById("new-session-mode");
+    renderModeOptionsForAgent(modeSelect, agentType, modeSelect ? modeSelect.value : "ask", false);
   },
   setFilter(f) {
     state.activeFilter = f;
     document.querySelectorAll("[data-agent-tab]").forEach((btn) => {
       if (btn.getAttribute("data-agent-tab") === f) {
         btn.className =
-          "px-2 py-1 rounded-md bg-sky-500 text-slate-950 font-semibold text-[11px] shrink-0 transition";
+          "px-2.5 py-1.5 sm:py-1 rounded-lg bg-sky-500 text-zinc-950 font-semibold text-[11px] shrink-0 transition active:scale-95";
       } else {
         btn.className =
-          "px-2 py-1 rounded-md bg-slate-900 text-slate-300 hover:bg-slate-800 text-[11px] shrink-0 transition";
+          "px-2.5 py-1.5 sm:py-1 rounded-lg bg-zinc-900 text-zinc-300 hover:bg-zinc-800 text-[11px] shrink-0 transition active:scale-95";
       }
     });
     // 0ms 纯前端内存过滤，不发同步阻塞请求、不跳走当前正在查看的对话
     renderSessionList();
     // 后台静默同步最新列表
     loadSessions(true);
+  },
+  fillPromptAndSend(text) {
+    const input = document.getElementById("prompt-input");
+    if (input) input.value = text;
+    handleSendPrompt(text);
+  },
+  toggleSessionMenu(ev) {
+    if (ev) ev.stopPropagation();
+    const menu = document.getElementById("session-action-menu");
+    if (!menu) return;
+    const isHidden = menu.classList.contains("hidden");
+    if (isHidden) {
+      const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+      const isPinned = curSess ? !!curSess.is_pinned : false;
+      const icon = document.getElementById("session-menu-pin-icon");
+      const text = document.getElementById("session-menu-pin-text");
+      if (icon) icon.className = isPinned ? "text-amber-400 text-xs" : "text-zinc-400 text-xs";
+      if (text) text.textContent = isPinned ? "取消置顶" : "置顶此对话";
+      menu.classList.remove("hidden");
+    } else {
+      menu.classList.add("hidden");
+    }
+  },
+  async toggleCurrentPin() {
+    const menu = document.getElementById("session-action-menu");
+    if (menu) menu.classList.add("hidden");
+    const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+    if (!curSess) return;
+    await handleTogglePin(curSess.unified_id, !!curSess.is_pinned);
+  },
+  async renameCurrentSession() {
+    const menu = document.getElementById("session-action-menu");
+    if (menu) menu.classList.add("hidden");
+    const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+    if (!curSess) return;
+    const newTitle = window.prompt("重命名当前对话：", curSess.title);
+    if (!newTitle || !newTitle.trim() || newTitle.trim() === curSess.title) return;
+    try {
+      await apiFetch(`/api/v1/sessions/${encodeURIComponent(curSess.unified_id)}/meta`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: newTitle.trim() }),
+      });
+      curSess.title = newTitle.trim();
+      renderCurrentSessionHeader();
+      renderSessionList();
+      showToast("会话已重命名", "success");
+    } catch (err) {
+      showToast(`重命名失败: ${err.message}`, "error");
+    }
+  },
+  async deleteCurrentSession() {
+    const menu = document.getElementById("session-action-menu");
+    if (menu) menu.classList.add("hidden");
+    const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+    if (!curSess) return;
+    if (!window.confirm(`确定删除会话「${curSess.title}」？此操作不可逆。`)) return;
+    try {
+      await apiFetch(`/api/v1/sessions/${encodeURIComponent(curSess.unified_id)}`, {
+        method: "DELETE",
+      });
+      showToast("会话已删除", "success");
+      state.sessions = state.sessions.filter((s) => s.unified_id !== curSess.unified_id);
+      state.allSessions = state.allSessions.filter((s) => s.unified_id !== curSess.unified_id);
+      const nextSess = pickDefaultSession(state.sessions);
+      state.selectedSessionId = nextSess?.unified_id || null;
+      renderSessionList();
+      renderCurrentSessionHeader();
+      if (state.selectedSessionId) {
+        selectSession(state.selectedSessionId);
+      } else {
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+        state.messages = [];
+        renderMessagesList();
+      }
+    } catch (err) {
+      showToast(`删除失败: ${err.message}`, "error");
+    }
   },
   loadOlderMessages,
   onDetailToggle(detailsEl, detailId) {
@@ -2708,6 +3630,7 @@ window.appActions = {
     document.getElementById("new-session-modal").classList.add("hidden");
   },
   confirmCreateNewSession,
+  handlePromptAction,
   sendPrompt: () => handleSendPrompt(null),
   abortSession: handleAbortCurrentSession,
   changeMode: (el) => handleModeChange(el.value),
@@ -3089,8 +4012,8 @@ window.appActions = {
 
       bodyEl.innerHTML = `
         <div class="space-y-2">
-          <div class="flex items-center justify-between pb-2 border-b border-slate-800">
-            <span class="text-xs text-slate-400">全局未提交修改 Diff ${
+          <div class="flex items-center justify-between pb-2 border-b border-zinc-800">
+            <span class="text-xs text-zinc-400">全局未提交修改 Diff ${
               res.is_truncated ? "（已截断展示前 48KB）" : ""
             }</span>
             <button onclick="window.appActions.openGitStatusModal()" class="text-xs text-sky-400 hover:underline">返回文件列表</button>
@@ -3098,7 +4021,7 @@ window.appActions = {
           ${renderUnifiedDiffHtml(displayDiff || "无未提交代码改动")}
           ${
             isHuge && !state.expandHugeFullDiff
-              ? `<div class="p-3 text-center bg-slate-900/60 rounded-xl border border-slate-800 text-xs text-slate-400">
+              ? `<div class="p-3 text-center bg-zinc-900/60 rounded-xl border border-zinc-800 text-xs text-zinc-400">
                   已折叠剩余 ${lines.length - 400} 行以保证移动端流畅度。
                   <button onclick="state.expandHugeFullDiff = true; window.appActions.viewFullGitDiff()" class="text-sky-400 underline font-medium ml-1">
                     仍要展示全部
@@ -3112,7 +4035,184 @@ window.appActions = {
       bodyEl.innerHTML = `<div class="p-4 text-xs text-rose-400">加载失败</div>`;
     }
   },
+  openTokenUsageModal() {
+    const modal = document.getElementById("token-usage-modal");
+    if (!modal) return;
+    const usage = state.currentTokenUsage || {};
+    const ctx = usage.context_tokens || 0;
+    const limit = usage.context_limit || 200000;
+    const pct = typeof usage.context_percent === "number" ? usage.context_percent : Math.round((ctx / limit) * 1000) / 10;
+
+    const pctEl = document.getElementById("modal-token-pct");
+    const barEl = document.getElementById("modal-token-bar");
+    const ctxEl = document.getElementById("modal-token-context");
+    const limitEl = document.getElementById("modal-token-limit");
+    const inEl = document.getElementById("modal-token-input");
+    const outEl = document.getElementById("modal-token-output");
+    const totEl = document.getElementById("modal-token-total");
+    const cacheEl = document.getElementById("modal-token-cache");
+    const tipEl = document.getElementById("modal-token-tip");
+
+    if (pctEl) pctEl.textContent = `${pct}%`;
+    if (barEl) {
+      barEl.style.width = `${Math.min(pct, 100)}%`;
+      barEl.className = pct >= 85 ? "h-full bg-rose-500 rounded-full" : pct >= 60 ? "h-full bg-amber-500 rounded-full" : "h-full bg-sky-500 rounded-full";
+    }
+    if (ctxEl) ctxEl.textContent = `${ctx.toLocaleString()} tokens`;
+    if (limitEl) limitEl.textContent = `上限 ${limit.toLocaleString()} (${formatTokenCount(limit)})`;
+    if (inEl) inEl.textContent = `${ctx.toLocaleString()}`;
+    if (outEl) outEl.textContent = `${(usage.last_output_tokens || 0).toLocaleString()}`;
+    if (totEl) totEl.textContent = `${(usage.total_tokens || 0).toLocaleString()}`;
+    if (cacheEl) cacheEl.textContent = `${formatTokenCount(usage.cache_read_tokens || 0)}`;
+
+    if (tipEl) {
+      if (pct < 60) {
+        tipEl.innerHTML = `<span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1"></span> <span class="text-zinc-200 font-medium">上下文健康</span>：模型注意力聚焦，多轮长代码与工具调用表现最佳。`;
+      } else if (pct < 85) {
+        tipEl.innerHTML = `<span class="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 mr-1"></span> <span class="text-amber-300 font-medium">上下文适中</span>：已产生较多上下文信息。若要开展全新大任务，可适时考虑开启新会话或输入 <span class="font-mono text-sky-400">/compact</span> 压缩。`;
+      } else {
+        tipEl.innerHTML = `<span class="inline-block w-1.5 h-1.5 rounded-full bg-rose-400 mr-1"></span> <span class="text-rose-300 font-medium">临近窗口上限</span>：剩余容量不足 15%！建议输入 <span class="font-mono text-sky-400">/compact</span> 总结上下文释放空间，或新建对话继续。`;
+      }
+    }
+
+    modal.classList.remove("hidden");
+  },
+  closeTokenUsageModal() {
+    const modal = document.getElementById("token-usage-modal");
+    if (modal) modal.classList.add("hidden");
+  },
+  toggleModelPicker(e, forceOpen) {
+    if (e) {
+      if (typeof e.stopPropagation === "function") e.stopPropagation();
+      if (typeof e.preventDefault === "function") e.preventDefault();
+    }
+    const popover = document.getElementById("model-picker-popover");
+    const btn = document.getElementById("model-picker-btn");
+    const arrow = document.getElementById("model-picker-arrow");
+    if (!popover || !btn) return;
+    const isHidden = popover.classList.contains("hidden");
+    const open = forceOpen !== undefined ? Boolean(forceOpen) : isHidden;
+    if (open) {
+      renderModelPicker();
+      const rect = btn.getBoundingClientRect();
+      const popoverWidth = Math.min(340, window.innerWidth - 16);
+      popover.style.width = `${popoverWidth}px`;
+      popover.style.backgroundColor = "#09090b";
+      // fixed 定位向上弹出：bottom 距离视口底部
+      popover.style.bottom = `${Math.max(10, window.innerHeight - rect.top + 6)}px`;
+      // 左侧对齐，并保持在屏幕左右视口安全边距内
+      const maxLeft = window.innerWidth - popoverWidth - 8;
+      const left = Math.max(8, Math.min(rect.left, maxLeft));
+      popover.style.left = `${left}px`;
+
+      popover.classList.remove("hidden");
+      btn.classList.add("border-sky-500/50", "bg-zinc-800");
+      if (arrow) arrow.classList.add("rotate-180");
+    } else {
+      popover.classList.add("hidden");
+      btn.classList.remove("border-sky-500/50", "bg-zinc-800");
+      if (arrow) arrow.classList.remove("rotate-180");
+    }
+  },
+  async selectModel(modelId, e) {
+    if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+    const popover = document.getElementById("model-picker-popover");
+    const btn = document.getElementById("model-picker-btn");
+    const arrow = document.getElementById("model-picker-arrow");
+    if (popover) popover.classList.add("hidden");
+    if (btn) btn.classList.remove("border-sky-500/50", "bg-zinc-800");
+    if (arrow) arrow.classList.remove("rotate-180");
+
+    const hiddenInput = document.getElementById("model-select");
+    if (hiddenInput) hiddenInput.value = modelId;
+
+    const sess =
+      state.sessions.find((s) => s.unified_id === state.selectedSessionId) ||
+      state.allSessions.find((s) => s.unified_id === state.selectedSessionId);
+    if (sess) {
+      sess.model_name = modelId;
+    }
+    renderModelPicker();
+
+    if (!sess) return;
+    try {
+      await apiFetch(`/api/v1/sessions/${encodeURIComponent(sess.unified_id)}/meta`, {
+        method: "PATCH",
+        body: JSON.stringify({ model_name: modelId }),
+      });
+      showToast(`已切换模型为: ${modelId}`, "success");
+    } catch (_) {
+      showToast("切换模型失败", "error");
+    }
+  },
 };
+
+function formatTokenCount(n) {
+  const num = Number(n) || 0;
+  if (num >= 1000000) {
+    return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+  }
+  if (num >= 1000) {
+    return (num / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+  }
+  return String(num);
+}
+
+function renderTokenUsage() {
+  const pill = document.getElementById("token-usage-pill");
+  if (!pill) return;
+  const usage = state.currentTokenUsage;
+  if (!usage || (!usage.context_tokens && !usage.total_tokens)) {
+    pill.classList.add("hidden");
+    pill.classList.remove("flex");
+    return;
+  }
+
+  pill.classList.remove("hidden");
+  pill.classList.add("flex");
+
+  const ctx = usage.context_tokens || 0;
+  const limit = usage.context_limit || 200000;
+  const pct = typeof usage.context_percent === "number" ? usage.context_percent : Math.round((ctx / limit) * 1000) / 10;
+
+  const txtEl = document.getElementById("token-usage-text");
+  const pctEl = document.getElementById("token-usage-pct");
+  const dotEl = document.getElementById("token-usage-dot");
+
+  if (txtEl) txtEl.textContent = `${formatTokenCount(ctx)} / ${formatTokenCount(limit)}`;
+  if (pctEl) {
+    pctEl.textContent = `${pct}%`;
+    if (pct < 60) {
+      pctEl.className = "text-[9px] px-1 py-0.2 rounded font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30";
+      if (dotEl) dotEl.className = "w-1.5 h-1.5 rounded-full bg-sky-400";
+    } else if (pct < 85) {
+      pctEl.className = "text-[9px] px-1 py-0.2 rounded font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30";
+      if (dotEl) dotEl.className = "w-1.5 h-1.5 rounded-full bg-amber-400";
+    } else {
+      pctEl.className = "text-[9px] px-1 py-0.2 rounded font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse";
+      if (dotEl) dotEl.className = "w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping";
+    }
+  }
+}
+
+function highlightSlashItem(idx) {
+  state.slashHighlightIndex = idx;
+  const popover = document.getElementById("slash-popover");
+  if (!popover) return;
+  const items = popover.querySelectorAll("[data-slash-idx]");
+  items.forEach((el) => {
+    const i = parseInt(el.getAttribute("data-slash-idx"), 10);
+    if (i === idx) {
+      el.classList.add("bg-zinc-800", "border-zinc-700/80");
+      el.classList.remove("hover:bg-zinc-900", "border-transparent");
+      el.scrollIntoView({ block: "nearest" });
+    } else {
+      el.classList.remove("bg-zinc-800", "border-zinc-700/80");
+      el.classList.add("hover:bg-zinc-900", "border-transparent");
+    }
+  });
+}
+window.highlightSlashItem = highlightSlashItem;
 
 function renderSlashMenu(filterQuery = "") {
   const popover = document.getElementById("slash-popover");
@@ -3122,11 +4222,15 @@ function renderSlashMenu(filterQuery = "") {
 
   const filtered = list.filter((item) => {
     if (!q) return true;
-    return (
-      item.command.toLowerCase().includes(q) ||
-      (item.label || "").toLowerCase().includes(q)
-    );
+    const cmdClean = item.command.replace(/^\//, "").toLowerCase();
+    const lblClean = (item.label || "").toLowerCase();
+    return cmdClean.includes(q) || lblClean.includes(q);
   });
+
+  state.filteredSlashCommands = filtered;
+  if (state.slashHighlightIndex >= filtered.length) {
+    state.slashHighlightIndex = 0;
+  }
 
   if (!state.slashMenuOpen && !filterQuery.startsWith("/")) {
     popover.classList.add("hidden");
@@ -3134,32 +4238,69 @@ function renderSlashMenu(filterQuery = "") {
   }
 
   if (filtered.length === 0) {
-    popover.innerHTML = `<div class="px-3 py-2 text-xs text-slate-500">无匹配快捷指令</div>`;
+    popover.innerHTML = `
+      <div class="px-3 py-2.5 text-xs text-zinc-500 flex items-center justify-between">
+        <span>无匹配技能或指令</span>
+        <span class="text-[10px] text-zinc-600 font-mono">共 ${list.length} 个全部可用</span>
+      </div>`;
     popover.classList.remove("hidden");
     return;
   }
 
-  popover.innerHTML = filtered
-    .map((item) => {
-      const isQuick = item.category === "quick";
-      return `
-        <div onclick="window.appActions.selectSlashCommand('${escapeJsSingleQuote(
-          item.command
-        )}')"
-          class="cursor-pointer px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center justify-between gap-2 text-xs transition active:scale-98">
-          <div class="flex items-center gap-1.5 min-w-0">
-            <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold shrink-0 ${
-              isQuick
-                ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
-                : "bg-sky-500/15 text-sky-300 border border-sky-500/30"
-            }">${escapeHtml(item.command)}</span>
-            <span class="text-slate-200 truncate">${escapeHtml(item.label)}</span>
-          </div>
-          <span class="text-[10px] text-slate-500 shrink-0">${isQuick ? "一键发送" : "填入"}</span>
-        </div>
-      `;
-    })
-    .join("");
+  popover.innerHTML = `
+    <div class="px-2.5 py-1 text-[11px] text-zinc-400 font-medium border-b border-zinc-800/80 flex items-center justify-between sticky top-0 bg-zinc-950/95 backdrop-blur z-10 select-none">
+      <span class="flex items-center gap-1.5 font-medium text-zinc-300">
+        <span class="text-sky-400">⚡</span>
+        <span>可用技能与指令 (Skills & Commands)</span>
+      </span>
+      <span class="text-[10px] text-zinc-500 font-mono">${filtered.length} / ${list.length}</span>
+    </div>
+    <div class="p-1 space-y-0.5">
+      ${filtered
+        .map((item, idx) => {
+          const isQuick = item.category === "quick";
+          const isSkill = item.category === "skill" || item.category === "builtin" || item.category === "project";
+          
+          let badgeCls = "bg-sky-500/15 text-sky-300 border-sky-500/30";
+          let badgeText = "指令";
+          if (isQuick) {
+            badgeCls = "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+            badgeText = "快捷";
+          } else if (item.category === "builtin") {
+            badgeCls = "bg-cyan-500/15 text-cyan-300 border-cyan-500/30";
+            badgeText = "内置";
+          } else if (item.category === "project") {
+            badgeCls = "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+            badgeText = "项目";
+          } else if (isSkill) {
+            badgeCls = "bg-purple-500/15 text-purple-300 border-purple-500/30";
+            badgeText = "技能";
+          }
+
+          const isHigh = idx === state.slashHighlightIndex;
+          return `
+            <div id="slash-item-${idx}"
+              data-slash-idx="${idx}"
+              onclick="window.appActions.selectSlashCommand('${escapeJsSingleQuote(item.command)}')"
+              onmouseenter="window.highlightSlashItem(${idx})"
+              class="cursor-pointer px-2 py-1.5 rounded-lg flex items-center justify-between gap-2 text-xs transition border ${
+                isHigh ? "bg-zinc-800 border-zinc-700/80" : "hover:bg-zinc-900 border-transparent"
+              }">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold shrink-0 border ${badgeCls}">${escapeHtml(
+            item.command
+          )}</span>
+                <span class="text-zinc-200 truncate text-[11px] sm:text-xs">${escapeHtml(item.label)}</span>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <span class="text-[9px] text-zinc-500 font-medium px-1 py-0.5 rounded bg-zinc-900 border border-zinc-800">${badgeText}</span>
+              </div>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
   popover.classList.remove("hidden");
 }
 
@@ -3185,7 +4326,7 @@ async function updateGitStatusBadge() {
       badge.className = `px-1.5 py-0.5 rounded-full text-[10px] font-mono font-semibold ${
         count > 0
           ? "bg-amber-500/25 text-amber-300 border border-amber-500/40 animate-pulse"
-          : "bg-slate-800 text-slate-400 border border-slate-700"
+          : "bg-zinc-800 text-zinc-400 border border-zinc-700"
       }`;
     } else {
       btn.classList.add("hidden");
@@ -3212,7 +4353,7 @@ function renderGitStatusBody(data) {
   if (!bodyEl) return;
 
   if (!data.is_git_repo) {
-    bodyEl.innerHTML = `<div class="p-6 text-center text-slate-500 text-xs">当前工作区非 Git 仓库</div>`;
+    bodyEl.innerHTML = `<div class="p-6 text-center text-zinc-500 text-xs">当前工作区非 Git 仓库</div>`;
     return;
   }
 
@@ -3224,9 +4365,9 @@ function renderGitStatusBody(data) {
       : files
           .map((f) => {
             const isExp = !!state.gitExpandedDiffs[f.path];
-            const badgeCls = GIT_STATUS_BADGES[f.status] || "bg-slate-800 text-slate-300 border-slate-700";
+            const badgeCls = GIT_STATUS_BADGES[f.status] || "bg-zinc-800 text-zinc-300 border-zinc-700";
             return `
-              <div class="rounded-xl bg-slate-900/70 border border-slate-800 p-2.5 text-xs space-y-1.5">
+              <div class="rounded-xl bg-zinc-900/70 border border-zinc-800 p-2.5 text-xs space-y-1.5">
                 <div onclick="window.appActions.toggleGitFileDiff('${escapeJsSingleQuote(
                   f.path
                 )}')"
@@ -3235,14 +4376,14 @@ function renderGitStatusBody(data) {
                     <span class="w-5 h-5 rounded flex items-center justify-center font-bold font-mono text-[10px] border ${badgeCls}">
                       ${escapeHtml(f.status)}
                     </span>
-                    <span class="font-mono text-xs text-slate-200 truncate">${escapeHtml(
+                    <span class="font-mono text-xs text-zinc-200 truncate">${escapeHtml(
                       f.path
                     )}</span>
                   </div>
                   <div class="flex items-center gap-1.5 shrink-0 font-mono text-[10px]">
                     ${f.additions > 0 ? `<span class="text-emerald-400">+${f.additions}</span>` : ""}
                     ${f.deletions > 0 ? `<span class="text-rose-400">-${f.deletions}</span>` : ""}
-                    <span class="text-slate-500">${isExp ? "▲" : "▼"}</span>
+                    <span class="text-zinc-500">${isExp ? "▲" : "▼"}</span>
                   </div>
                 </div>
                 <div id="${gitPathToSlotId(f.path)}">
@@ -3259,17 +4400,17 @@ function renderGitStatusBody(data) {
 
   bodyEl.innerHTML = `
     <div class="space-y-3 pb-6">
-      <div class="flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+      <div class="flex items-center justify-between p-3 rounded-xl bg-zinc-950 border border-zinc-800 text-xs">
         <div class="flex items-center gap-2">
           <span class="px-2 py-0.5 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30 font-mono font-semibold">
             🌿 ${escapeHtml(data.branch || "HEAD")}
           </span>
-          <span class="text-slate-400">${data.changed_count} 个未提交变更文件</span>
+          <span class="text-zinc-400">${data.changed_count} 个未提交变更文件</span>
         </div>
         ${
           files.length > 0
             ? `<button onclick="window.appActions.viewFullGitDiff()"
-                class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 text-xs transition">
+                class="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-sky-300 text-xs transition">
                 查看汇总 Diff
               </button>`
             : ""
@@ -3283,9 +4424,27 @@ function renderGitStatusBody(data) {
 // --- 初始化入口 ---
 window.addEventListener("DOMContentLoaded", async () => {
   updateDrawerVisibility();
+  initDrawerSwipeGestures();
   await checkAndExchangePairCode();
   await Promise.all([loadSystemStatus(), loadWorkspaces(), loadSessions()]);
   connectWebSocket();
+
+  window.addEventListener("hashchange", () => {
+    const hashId = getSessionIdFromHash();
+    if (hashId && hashId !== state.selectedSessionId) {
+      if (state.allSessions.some((s) => s.unified_id === hashId)) {
+        selectSession(hashId);
+      }
+    }
+  });
+
+  setInterval(() => {
+    if (state.selectedSessionId) {
+      if (isSessionWorking(state.selectedSessionId)) {
+        renderLiveStreamOverlay();
+      }
+    }
+  }, 1000);
 
   const searchInput = document.getElementById("session-search-input");
   if (searchInput) {
@@ -3298,12 +4457,53 @@ window.addEventListener("DOMContentLoaded", async () => {
   const promptInput = document.getElementById("prompt-input");
   if (promptInput) {
     promptInput.addEventListener("keydown", (e) => {
+      const popover = document.getElementById("slash-popover");
+      const isPopoverVisible = state.slashMenuOpen && popover && !popover.classList.contains("hidden");
+      const filtered = state.filteredSlashCommands || [];
+
+      // 当弹出菜单展示时支持键盘 ↑ ↓ 导航与 Enter / Tab 快速补全选中
+      if (isPopoverVisible && filtered.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          const nextIdx = (state.slashHighlightIndex + 1) % filtered.length;
+          highlightSlashItem(nextIdx);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          const prevIdx = (state.slashHighlightIndex - 1 + filtered.length) % filtered.length;
+          highlightSlashItem(prevIdx);
+          return;
+        }
+        if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey) {
+          e.preventDefault();
+          const chosen = filtered[state.slashHighlightIndex] || filtered[0];
+          if (chosen) {
+            window.appActions.selectSlashCommand(chosen.command);
+          }
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          state.slashMenuOpen = false;
+          popover.classList.add("hidden");
+          return;
+        }
+      }
+
       if (e.key === "Enter" && !e.shiftKey && window.innerWidth >= 768) {
         e.preventDefault();
+        const btn = document.getElementById("prompt-action-btn");
+        if (btn?.dataset?.action === "abort" && !promptInput.value.trim()) {
+          // 当前为中断态且无内容输入时，按 Enter 不误触发中断
+          return;
+        }
         handleSendPrompt(null);
       }
     });
+
     promptInput.addEventListener("input", (e) => {
+      updatePromptActionBtnState();
       const val = e.target.value;
       if (val.startsWith("/")) {
         state.slashMenuOpen = true;
@@ -3316,12 +4516,30 @@ window.addEventListener("DOMContentLoaded", async () => {
   }
 
   document.addEventListener("click", (e) => {
+    const modelPopover = document.getElementById("model-picker-popover");
+    const modelBtn = document.getElementById("model-picker-btn");
+    const modelArrow = document.getElementById("model-picker-arrow");
+    if (modelPopover && !modelPopover.classList.contains("hidden")) {
+      if (!modelPopover.contains(e.target) && !modelBtn?.contains(e.target)) {
+        modelPopover.classList.add("hidden");
+        if (modelBtn) modelBtn.classList.remove("border-sky-500/50", "bg-zinc-800");
+        if (modelArrow) modelArrow.classList.remove("rotate-180");
+      }
+    }
+
     const popover = document.getElementById("slash-popover");
     const input = document.getElementById("prompt-input");
-    if (!popover || !input) return;
-    if (!popover.contains(e.target) && e.target !== input && !e.target.closest("button[onclick*='toggleSlashMenu']")) {
+    if (popover && input && !popover.contains(e.target) && e.target !== input) {
       state.slashMenuOpen = false;
       popover.classList.add("hidden");
+    }
+
+    const sessionMenu = document.getElementById("session-action-menu");
+    const sessionMenuBtn = document.getElementById("session-options-menu-btn");
+    if (sessionMenu && !sessionMenu.classList.contains("hidden")) {
+      if (!sessionMenu.contains(e.target) && (!sessionMenuBtn || !sessionMenuBtn.contains(e.target))) {
+        sessionMenu.classList.add("hidden");
+      }
     }
   });
 

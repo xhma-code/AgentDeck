@@ -12,6 +12,14 @@ dependencies = [
     "qrcode>=7.4.2",
 ]
 
+[project.scripts]
+agentdeck = "run:main"
+
+[project.urls]
+Homepage = "https://github.com/xhma-code/AgentDeck"
+Documentation = "https://github.com/xhma-code/AgentDeck#readme"
+Issues = "https://github.com/xhma-code/AgentDeck/issues"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",

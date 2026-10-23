@@ -62,7 +62,6 @@ HIGH_RISK_PATTERNS = re.compile(
 from backend.core.workspace import (
     ADHOC_DIR_NAMES,
     PROJECT_MARKER_NAMES,
-    _DIR_MARKER_CACHE,
     decode_workspace_uri,
     discover_quick_workflows,
     evaluate_project_dir,
@@ -240,8 +239,12 @@ def extract_interactive_questions(tool_name: str, raw_args: Any) -> list[dict[st
     else:
         return []
 
-    q_list = args.get("questions") or []
-    if not isinstance(q_list, list):
+    q_list = args.get("questions")
+    if q_list is None and "question" in args:
+        q_list = [args]
+    elif isinstance(q_list, dict):
+        q_list = [q_list]
+    elif not isinstance(q_list, list):
         return []
 
     extracted: list[dict[str, Any]] = []
@@ -340,11 +343,39 @@ class UnifiedSession:
         return asdict(self)
 
 
+@dataclass
+class SessionTokenUsage:
+    """统一会话 Token 用量与上下文水位快照。"""
+
+    context_tokens: int = 0
+    context_limit: int = 200_000
+    context_percent: float = 0.0
+    total_tokens: int = 0
+    last_output_tokens: int = 0
+    cache_read_tokens: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 class BaseAgentAdapter(ABC):
     """Agent 适配器抽象基类。"""
 
     agent_type: str
     agent_label: str
+
+    def __init__(self) -> None:
+        self._token_usage_cache: dict[str, tuple[int, dict[str, Any]]] = {}
+
+    @property
+    def supported_modes(self) -> set[str]:
+        """该 Agent 原生真实支持的执行策略集合，默认支持全部四种模式。"""
+        return {
+            ExecutionMode.ASK.value,
+            ExecutionMode.PLAN.value,
+            ExecutionMode.ACCEPT_EDITS.value,
+            ExecutionMode.AUTO.value,
+        }
 
     @abstractmethod
     def is_available(self) -> tuple[bool, str]:
@@ -431,4 +462,58 @@ class BaseAgentAdapter(ABC):
         子类根据各 Agent 原生流格式（Claude tool_use / AGY tool_calls / OpenCode tool）实现解析。
         """
         return []
+
+    def get_session_token_usage(
+        self, raw_session_id: str, model_name: str = ""
+    ) -> dict[str, Any]:
+        """提取当前会话的最新上下文 Token 水位与总用量统计。"""
+        limit = resolve_model_context_limit(model_name)
+        return SessionTokenUsage(context_limit=limit).to_dict()
+
+
+MODEL_CONTEXT_LIMITS: dict[str, int] = {
+    # Claude 模型族 (默认 200k)
+    "claude-sonnet-5-5-high": 200_000,
+    "claude-sonnet-5-5-medium": 200_000,
+    "claude-sonnet-5-5-low": 200_000,
+    "claude-opus-5-5-high": 200_000,
+    "claude-opus-5-5-medium": 200_000,
+    "claude-opus-5-5-low": 200_000,
+    "claude-sonnet-4-6": 200_000,
+    "claude-opus-4-7": 200_000,
+    "claude-haiku-4-5-20251001": 200_000,
+    # Gemini 模型族 (默认 1M)
+    "gemini-4-argon-high": 1_000_000,
+    "gemini-4-argon-medium": 1_000_000,
+    "gemini-4-argon-low": 1_000_000,
+    "gemini-3.8-flash-high": 1_000_000,
+    "gemini-3.8-flash-medium": 1_000_000,
+    "gemini-3.8-flash-low": 1_000_000,
+    "gemini-2.5-pro": 1_000_000,
+    "gemini-2.5-flash": 1_000_000,
+    # OpenAI / OpenCode 模型族 (默认 128k - 200k)
+    "gpt-oss-120b-medium": 128_000,
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "o1": 200_000,
+    "o3-mini": 200_000,
+}
+DEFAULT_MODEL_CONTEXT_LIMIT = 200_000
+
+
+def resolve_model_context_limit(model_name: str = "") -> int:
+    """根据模型名称智能推断上下文窗口限制，默认兜底 200k。"""
+    if not model_name:
+        return DEFAULT_MODEL_CONTEXT_LIMIT
+    m_clean = model_name.strip().lower()
+    if m_clean in MODEL_CONTEXT_LIMITS:
+        return MODEL_CONTEXT_LIMITS[m_clean]
+    for k, v in MODEL_CONTEXT_LIMITS.items():
+        if k in m_clean or m_clean in k:
+            return v
+    if "gemini" in m_clean:
+        return 1_000_000
+    if "claude" in m_clean:
+        return 200_000
+    return DEFAULT_MODEL_CONTEXT_LIMIT
 

@@ -7,18 +7,19 @@
  */
 
 :root {
-  --bg-canvas: #090d16;
-  --bg-code: #060911;
-  --bg-code-card: #050811;
-  --bg-surface: #111827;
-  --bg-elevated: #1e293b;
-  --bg-glass: rgba(15, 23, 42, 0.92);
-  --border-subtle: rgba(148, 163, 184, 0.14);
+  color-scheme: dark;
+  --bg-canvas: #000000;
+  --bg-code: #050507;
+  --bg-code-card: #09090b;
+  --bg-surface: #0c0c0e;
+  --bg-elevated: #141418;
+  --bg-glass: rgba(0, 0, 0, 0.88);
+  --border-subtle: rgba(255, 255, 255, 0.08);
   --border-focus: rgba(56, 189, 248, 0.55);
 
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
 
   --accent-sky: #38bdf8;
   --accent-indigo: #6366f1;
@@ -32,15 +33,52 @@
   --diff-del-bg: rgba(244, 63, 94, 0.14);
   --diff-del-text: #fda4af;
 
-  --radius-sm: 0.5rem;
-  --radius-md: 0.75rem;
-  --radius-lg: 1rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
   --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) #000000;
+}
+
+/* 统一深色模式下所有 select 下拉选项样式，杜绝操作系统原生白底灰字 */
+select,
+option,
+optgroup {
+  background-color: #18181b !important;
+  color: #f4f4f5 !important;
+}
+
+select option {
+  background-color: #18181b !important;
+  color: #f4f4f5 !important;
+  padding: 6px 10px;
+}
+
+select option:checked,
+select option:hover {
+  background-color: #27272a !important;
+  color: #38bdf8 !important;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: #000000;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
 }
 
 html,
@@ -52,8 +90,15 @@ body {
   overflow: hidden;
   background-color: var(--bg-canvas);
   color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  letter-spacing: -0.011em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 消除菜单栏与右侧内容显示区域之间的任何白色/灰色分割线 */
+#sidebar-drawer {
+  border-right: none !important;
 }
 
 /* 移动端顶部与底部安全区适配（防刘海屏/状态栏遮挡顶部菜单） */
@@ -78,6 +123,25 @@ body {
   scrollbar-width: none;
 }
 
+/* 网页最右侧的主视口消息滚动条（#messages-container）：黑色底色 + 低调微光细滑块，告别突兀白条 */
+#messages-container {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.08) #000000;
+}
+#messages-container::-webkit-scrollbar {
+  width: 5px;
+}
+#messages-container::-webkit-scrollbar-track {
+  background: #000000;
+}
+#messages-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 9999px;
+}
+#messages-container:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+}
+
 /* 左侧菜单栏极简隐形细滚动条：默认完全透明，悬停时仅浮现 4px 低对比暗色细线 */
 .subtle-scrollbar,
 #session-list-container {
@@ -86,7 +150,7 @@ body {
 }
 .subtle-scrollbar:hover,
 #session-list-container:hover {
-  scrollbar-color: rgba(148, 163, 184, 0.16) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
 .subtle-scrollbar::-webkit-scrollbar,
 #session-list-container::-webkit-scrollbar {
@@ -104,11 +168,11 @@ body {
 }
 .subtle-scrollbar:hover::-webkit-scrollbar-thumb,
 #session-list-container:hover::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.16);
+  background: rgba(255, 255, 255, 0.12);
 }
 .subtle-scrollbar::-webkit-scrollbar-thumb:hover,
 #session-list-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 /* 桌面端左侧菜单栏收起与展开过渡及按钮显隐纯 CSS 控制 */
@@ -116,8 +180,34 @@ body {
   display: none;
 }
 
+#header-logo-icon {
+  display: inline-flex;
+}
+
+/* 手机端移动屏幕适配：
+   1. 选择好对话后，隐藏顶栏会话名称前的系统图标
+   2. 彻底隐藏右上角的 Git 状态与变更显示（仅在桌面网页端保留） */
+@media (max-width: 767.98px) {
+  #header-logo-icon.has-session-hidden-mobile {
+    display: none !important;
+  }
+  #git-status-btn {
+    display: none !important;
+  }
+}
+
 @media (min-width: 768px) {
+  #desktop-sidebar-expand-btn {
+    display: none;
+  }
   body.sidebar-is-collapsed #desktop-sidebar-expand-btn {
+    display: inline-flex;
+  }
+
+  #header-logo-icon {
+    display: none;
+  }
+  body.sidebar-is-collapsed #header-logo-icon {
     display: inline-flex;
   }
 
@@ -139,7 +229,7 @@ body {
 
 /* 窄屏单列 Unified Diff 样式 */
 .unified-diff-box {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.75rem;
   line-height: 1.45;
   background: var(--bg-code);
@@ -206,20 +296,20 @@ body {
 }
 
 /* ==========================================================================
-   移动端沉浸式 GFM Markdown 文档流排版 (.md-prose)
-   手机端正文字号 14.5px (0.906rem)，行高 1.72，兼顾长时间阅读舒适度与信息密度
+   移动端与桌面端沉浸式 GFM Markdown 排版 (.md-prose)
+   字号 13px (0.8125rem)，行高 1.55，对齐 Antigravity-Deck 紧凑精致规范
    ========================================================================== */
 .md-prose {
-  font-size: 0.90625rem; /* 14.5px */
-  line-height: 1.72;
-  color: #e2e8f0;
+  font-size: 0.8125rem; /* 13px */
+  line-height: 1.55;
+  color: #e4e4e7;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
 
 @media (min-width: 640px) {
   .md-prose {
-    font-size: 0.9375rem; /* 15px */
+    font-size: 0.8125rem; /* 13px 紧凑精致 */
   }
 }
 
@@ -232,48 +322,44 @@ body {
 }
 
 .md-prose p {
-  margin-top: 0.55rem;
-  margin-bottom: 0.55rem;
+  margin-top: 0.35rem;
+  margin-bottom: 0.35rem;
 }
 
 .md-prose h1,
 .md-prose h2,
 .md-prose h3,
 .md-prose h4 {
-  color: #f8fafc;
-  font-weight: 700;
+  color: #fafafa;
+  font-weight: 600;
   line-height: 1.35;
   letter-spacing: -0.01em;
 }
 
 .md-prose h1 {
-  font-size: 1.2rem;
-  margin-top: 1.15rem;
-  margin-bottom: 0.55rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  font-size: 1rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.35rem;
 }
 
 .md-prose h2 {
-  font-size: 1.08rem;
-  margin-top: 1rem;
-  margin-bottom: 0.45rem;
-  padding-bottom: 0.25rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  font-size: 0.9375rem;
+  margin-top: 0.65rem;
+  margin-bottom: 0.3rem;
 }
 
 .md-prose h3 {
-  font-size: 0.98rem;
-  margin-top: 0.85rem;
-  margin-bottom: 0.35rem;
-  color: #f1f5f9;
+  font-size: 0.875rem;
+  margin-top: 0.55rem;
+  margin-bottom: 0.25rem;
+  color: #f4f4f5;
 }
 
 .md-prose h4 {
-  font-size: 0.92rem;
-  margin-top: 0.7rem;
-  margin-bottom: 0.25rem;
-  color: #cbd5e1;
+  font-size: 0.8125rem;
+  margin-top: 0.45rem;
+  margin-bottom: 0.2rem;
+  color: #d4d4d8;
 }
 
 .md-prose strong {
@@ -313,13 +399,13 @@ body {
 
 .md-prose hr {
   border: 0;
-  border-top: 1px solid rgba(148, 163, 184, 0.16);
-  margin: 0.95rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  margin: 0.65rem 0;
 }
 
 /* 行内代码胶囊 */
 .md-inline-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.8125rem;
   background: rgba(30, 41, 59, 0.85);
   color: #7dd3fc;
@@ -334,7 +420,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.78rem;
   background: rgba(14, 165, 233, 0.14);
   color: #38bdf8;
@@ -399,33 +485,33 @@ body {
 
 /* 窄屏友好的横向滚动表格 */
 .md-table-wrap {
-  margin: 0.7rem 0;
+  margin: 0.55rem 0;
   width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 0.6rem;
-  background: rgba(9, 13, 22, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  background: #09090b;
 }
 
 .md-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   line-height: 1.45;
 }
 
 .md-table th,
 .md-table td {
-  padding: 0.45rem 0.65rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  padding: 0.35rem 0.55rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   text-align: left;
   vertical-align: top;
 }
 
 .md-table th {
-  background: rgba(30, 41, 59, 0.75);
-  color: #f8fafc;
+  background: #121215;
+  color: #f4f4f5;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -435,14 +521,14 @@ body {
 }
 
 .md-table tr:nth-child(even) td {
-  background: rgba(15, 23, 42, 0.35);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 /* 围栏代码块与超过 15 行自动折叠 */
 .md-code-card {
-  margin: 0.7rem 0;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 0.65rem;
+  margin: 0.55rem 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
   background: var(--bg-code-card);
   overflow: hidden;
 }
@@ -451,22 +537,22 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.35rem 0.7rem;
-  background: rgba(15, 23, 42, 0.95);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.72rem;
-  color: #94a3b8;
+  padding: 0.3rem 0.6rem;
+  background: #101014;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.7rem;
+  color: #a1a1aa;
 }
 
 .md-code-body {
   position: relative;
-  padding: 0.65rem 0.75rem;
+  padding: 0.5rem 0.65rem;
   overflow-x: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.78rem;
-  line-height: 1.5;
-  color: #e2e8f0;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: #e4e4e7;
   white-space: pre;
   -webkit-overflow-scrolling: touch;
 }
@@ -482,8 +568,32 @@ body {
   right: 0;
   bottom: 0;
   height: 3.5rem;
-  background: linear-gradient(to bottom, rgba(5, 8, 17, 0), rgba(5, 8, 17, 0.96));
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0), rgba(9, 9, 11, 0.98));
   pointer-events: none;
+}
+
+/* 无障碍聚焦环规范：鼠标点击不显示生硬粗边，键盘 Tab 键导航时呈现发光 Sky 环 */
+:focus-visible {
+  outline: 2px solid var(--border-focus) !important;
+  outline-offset: 1px !important;
+}
+
+/* 即时思考微动效脉冲卡片 */
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 0.98; transform: scale(1); }
+  50% { opacity: 0.70; transform: scale(0.998); }
+}
+.live-thinking-pulse {
+  animation: pulse-subtle 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* 移动端触摸热区辅助 */
+@media (max-width: 767px) {
+  .touch-target-expand {
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+  }
 }
 
 /* 轻量代码语法高亮 Token 颜色 */
@@ -492,3 +602,15 @@ body {
 .tok-cmt { color: #64748b; font-style: italic; }
 .tok-num { color: #fbbf24; }
 .tok-fn { color: #38bdf8; }
+
+/* Antigravity-Deck 风格：Agent is working... 状态条与微光扫过动效 */
+@keyframes agent-shimmer-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.agent-working-shimmer {
+  width: 45%;
+  animation: agent-shimmer-slide 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+

@@ -25,18 +25,20 @@ from typing import Any, Optional
 
 from backend.adapters.base import (
     BaseAgentAdapter,
+    SessionTokenUsage,
     UnifiedMessageItem,
     UnifiedSession,
     UnifiedToolCall,
     classify_tool_risk,
-    decode_workspace_uri,
     extract_interactive_questions,
     extract_tool_file_path,
     extract_tool_summary_and_diff,
+    resolve_model_context_limit,
     truncate_large_output,
 )
 from backend.core.database import safe_query_external_sqlite, utc_now_iso
 from backend.core.logger import log_structured_error, logger
+from backend.core.workspace import decode_workspace_uri
 
 USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
 
@@ -86,6 +88,7 @@ class AntigravityAdapter(BaseAgentAdapter):
         agent_label: str = "Antigravity IDE",
         root_dir: Optional[Path] = None,
     ) -> None:
+        super().__init__()
         self.agent_type = agent_type
         self.agent_label = agent_label
         default_dir = (
@@ -541,15 +544,18 @@ class AntigravityAdapter(BaseAgentAdapter):
         if clean_model == "default":
             clean_model = ""
         bin_path = str(self.cli_bin or "agy")
-        cmd = [
-            bin_path,
+        if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd.exe", "/c", bin_path]
+        else:
+            cmd = [bin_path]
+        cmd.extend([
             "-p",
             prompt,
             "--output-format",
             "stream-json",
             "--conversation",
             raw_session_id,
-        ]
+        ])
         if clean_model:
             cmd.extend(["--model", clean_model])
         if execution_mode == "plan":
@@ -589,6 +595,115 @@ class AntigravityAdapter(BaseAgentAdapter):
         if ev_type in ("permission_request", "control_request", "tool_call"):
             tool_blocks.append(event)
         return tool_blocks
+
+    def get_session_token_usage(
+        self, raw_session_id: str, model_name: str = ""
+    ) -> dict[str, Any]:
+        """从 Antigravity brain transcript.jsonl 中提取会话 Token 统计与上下文水位（带 mtime 内存缓存）。"""
+        limit = resolve_model_context_limit(model_name)
+        tp = (
+            self.brain_dir
+            / raw_session_id
+            / ".system_generated"
+            / "logs"
+            / "transcript.jsonl"
+        )
+        if not tp.is_file():
+            return SessionTokenUsage(context_limit=limit).to_dict()
+
+        cache_key = str(tp)
+        try:
+            mtime = tp.stat().st_mtime_ns
+        except Exception:
+            mtime = 0
+
+        cached = self._token_usage_cache.get(cache_key)
+        if cached and cached[0] == mtime:
+            res = dict(cached[1])
+            res["context_limit"] = limit
+            res["context_percent"] = (
+                round((res["context_tokens"] / limit) * 100, 1) if limit > 0 else 0.0
+            )
+            return res
+
+        latest_input = 0
+        latest_output = 0
+        latest_cache_read = 0
+        total_input = 0
+        total_output = 0
+        total_cache_read = 0
+
+        try:
+            with open(tp, "r", encoding="utf-8", errors="replace") as f:
+                # 若日志文件超过 512KB，直接偏移至尾部 256KB 进行最新 token 解析，消除大文件 I/O 阻塞
+                try:
+                    fsize = tp.stat().st_size
+                    if fsize > 512 * 1024:
+                        f.seek(fsize - 256 * 1024)
+                        f.readline()  # 舍弃可能被切断的首行残缺数据
+                except OSError:
+                    pass
+
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                        in_tokens = record.get("input_tokens") or 0
+                        out_tokens = record.get("output_tokens") or 0
+                        cr_tokens = record.get("cache_read_tokens") or 0
+                        if in_tokens or out_tokens or cr_tokens:
+                            latest_input = in_tokens
+                            latest_output = out_tokens
+                            latest_cache_read = cr_tokens
+                            total_input += in_tokens
+                            total_output += out_tokens
+                            total_cache_read += cr_tokens
+                    except json.JSONDecodeError:
+                        continue
+        except OSError as exc:
+            logger.debug(f"读取 Antigravity 会话 transcript 跳过: {exc}")
+
+        latest_context = latest_input + latest_cache_read
+        pct = round((latest_context / limit) * 100, 1) if limit > 0 else 0.0
+        data = {
+            "context_tokens": latest_context,
+            "context_limit": limit,
+            "context_percent": pct,
+            "total_tokens": total_input + total_output,
+            "last_output_tokens": latest_output,
+            "cache_read_tokens": total_cache_read,
+        }
+        self._token_usage_cache[cache_key] = (mtime, data)
+        return data
+
+    def get_available_models_with_quota(self) -> list[dict[str, Any]]:
+        """将 LS 实时 quota 剩余比例合并进 AGENT_MODELS 清单。"""
+        configs = self.ls_bridge.get_cascade_model_configs()
+        q_map: dict[str, dict[str, Any]] = {}
+        for c in configs:
+            if c.get("modelId"):
+                q_map[c["modelId"].lower()] = c
+            if c.get("label"):
+                q_map[c["label"].lower()] = c
+
+        from backend.engines.process_pool import AGENT_MODELS
+        base_models = AGENT_MODELS.get(self.agent_type, [])
+        merged: list[dict[str, Any]] = []
+        for bm in base_models:
+            item = dict(bm)
+            matched = q_map.get(bm["id"].lower()) or q_map.get(bm["label"].lower())
+            if matched:
+                item["quota"] = matched["quota"]
+                item["reset_time"] = matched.get("reset_time")
+                if matched.get("tag") and not item.get("tag"):
+                    item["tag"] = matched["tag"]
+                if matched.get("is_recommended"):
+                    item["is_recommended"] = True
+            else:
+                item["quota"] = 1.0
+            merged.append(item)
+        return merged
 
 
 
@@ -846,7 +961,7 @@ class AntigravityLanguageServerBridge:
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
                 status = getattr(resp, "status", 200)
                 if 200 <= status < 300:
-                    raw_resp = resp.read(4096)
+                    raw_resp = resp.read()
                     return True, raw_resp
         except Exception as exc:
             logger.debug(f"Connect-RPC POST {method} 探测失败 ({url}): {exc}")
@@ -914,3 +1029,59 @@ class AntigravityLanguageServerBridge:
                 fix="系统将通过本地强杀进程树兜底处理。",
             )
         return ok
+
+    def get_cascade_model_configs(self) -> list[dict[str, Any]]:
+        """从 LS Connect-RPC 获取包含实时配额剩余比例的真实模型清单（带 10s 内存缓存）。"""
+        now = time.monotonic()
+        if hasattr(self, "_cached_models") and hasattr(self, "_cached_models_ts"):
+            if now - self._cached_models_ts < 10.0:
+                return self._cached_models
+
+        hub = self.detect_hub()
+        if not hub:
+            return []
+
+        ok, raw = self._raw_post(
+            scheme=hub["scheme"],
+            port=hub["port"],
+            csrf_token=hub["csrf_token"],
+            method="GetCascadeModelConfigData",
+            body={},
+            timeout=2.5,
+        )
+        if not ok or not raw:
+            return []
+
+        results = []
+        try:
+            data = json.loads(raw.decode("utf-8"))
+            for m in (data.get("clientModelConfigs") or []):
+                if m.get("disabled") is True:
+                    continue
+                label = str(m.get("label") or "")
+                mid = (
+                    (m.get("modelOrAlias") or {}).get("model")
+                    or (m.get("modelOrAlias") or {}).get("alias")
+                    or ""
+                )
+                qi = m.get("quotaInfo") or {}
+                rem_frac = qi.get("remainingFraction")
+                quota = float(rem_frac) if rem_frac is not None else 1.0
+
+                results.append(
+                    {
+                        "label": label,
+                        "modelId": mid,
+                        "tag": str(m.get("tagTitle") or ""),
+                        "is_recommended": bool(m.get("isRecommended")),
+                        "quota": round(max(0.0, min(1.0, quota)), 4),
+                        "reset_time": qi.get("resetTime"),
+                    }
+                )
+        except Exception as exc:
+            logger.debug(f"解析 GetCascadeModelConfigData 异常: {exc}")
+
+        if results:
+            self._cached_models = results
+            self._cached_models_ts = now
+        return results

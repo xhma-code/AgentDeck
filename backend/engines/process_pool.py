@@ -30,34 +30,49 @@ from backend.adapters.antigravity_adapter import (
 from backend.adapters.base import (
     BaseAgentAdapter,
     ExecutionMode,
+    SessionTokenUsage,
     UnifiedMessageItem,
     UnifiedSession,
     classify_tool_risk,
-    evaluate_project_dir,
     extract_tool_summary_and_diff,
 )
 from backend.adapters.claude_adapter import ClaudeCodeAdapter
 from backend.adapters.opencode_adapter import OpenCodeAdapter
 from backend.core.database import PROJECT_ROOT, MetaDatabase, utc_now_iso
 from backend.core.logger import log_structured_error, logger
+from backend.core.workspace import evaluate_project_dir
 
-# 四大 Agent 可选模型目录（实测对齐本机 agy models 与 Claude Code / OpenCode 模型列表）
+# 四大 Agent 可选模型目录（严格对齐本机 agy models 官方完整清单与 Claude Code / OpenCode）
 AGENT_MODELS: dict[str, list[dict[str, Any]]] = {
     "agy_cli": [
         {"id": "claude-sonnet-5-5-high", "label": "Claude Sonnet 5.5 (High)", "tag": "推荐"},
+        {"id": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Medium)", "tag": ""},
+        {"id": "claude-sonnet-5-5-low", "label": "Claude Sonnet 5.5 (Low)", "tag": ""},
         {"id": "claude-opus-5-5-high", "label": "Claude Opus 5.5 (High)", "tag": "深度"},
+        {"id": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 (Medium)", "tag": ""},
+        {"id": "claude-opus-5-5-low", "label": "Claude Opus 5.5 (Low)", "tag": ""},
         {"id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)", "tag": "旗舰"},
         {"id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)", "tag": "均衡"},
+        {"id": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)", "tag": ""},
         {"id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)", "tag": "极速"},
-        {"id": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Med)", "tag": ""},
-        {"id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Med)", "tag": ""},
+        {"id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)", "tag": "均衡"},
+        {"id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)", "tag": "超快"},
+        {"id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)", "tag": ""},
     ],
     "agy_ide": [
         {"id": "claude-sonnet-5-5-high", "label": "Claude Sonnet 5.5 (High)", "tag": "推荐"},
+        {"id": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Medium)", "tag": ""},
+        {"id": "claude-sonnet-5-5-low", "label": "Claude Sonnet 5.5 (Low)", "tag": ""},
         {"id": "claude-opus-5-5-high", "label": "Claude Opus 5.5 (High)", "tag": "深度"},
+        {"id": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 (Medium)", "tag": ""},
+        {"id": "claude-opus-5-5-low", "label": "Claude Opus 5.5 (Low)", "tag": ""},
         {"id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)", "tag": "旗舰"},
         {"id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)", "tag": "均衡"},
+        {"id": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)", "tag": ""},
         {"id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)", "tag": "极速"},
+        {"id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)", "tag": "均衡"},
+        {"id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)", "tag": "超快"},
+        {"id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)", "tag": ""},
     ],
     "claude_code": [
         {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "tag": "默认"},
@@ -148,20 +163,27 @@ class AgentOrchestrator:
     3. 监听本地文件变动并向所有已连接的手机 WebSocket 广播增量更新。
     """
 
-    def __init__(self, meta_db: MetaDatabase) -> None:
+    def __init__(
+        self,
+        meta_db: MetaDatabase,
+        adapters: Optional[dict[str, BaseAgentAdapter]] = None,
+    ) -> None:
         self.meta_db = meta_db
-        self.adapters: dict[str, BaseAgentAdapter] = {
-            "agy_ide": AntigravityAdapter(
-                agent_type="agy_ide",
-                agent_label="Antigravity IDE",
-            ),
-            "agy_cli": AntigravityAdapter(
-                agent_type="agy_cli",
-                agent_label="Antigravity CLI",
-            ),
-            "claude_code": ClaudeCodeAdapter(),
-            "opencode": OpenCodeAdapter(),
-        }
+        if adapters is not None:
+            self.adapters = adapters
+        else:
+            self.adapters = {
+                "agy_ide": AntigravityAdapter(
+                    agent_type="agy_ide",
+                    agent_label="Antigravity IDE",
+                ),
+                "agy_cli": AntigravityAdapter(
+                    agent_type="agy_cli",
+                    agent_label="Antigravity CLI",
+                ),
+                "claude_code": ClaudeCodeAdapter(),
+                "opencode": OpenCodeAdapter(),
+            }
 
         # unified_id -> asyncio.subprocess.Process
         self.active_processes: dict[str, asyncio.subprocess.Process] = {}
@@ -185,6 +207,27 @@ class AgentOrchestrator:
         self._ws_subscribers: set[Callable[[dict[str, Any]], Coroutine[Any, Any, None]]] = set()
         self._watcher_task: Optional[asyncio.Task[None]] = None
         self._ttl_task: Optional[asyncio.Task[None]] = None
+
+    def normalize_execution_mode(self, agent_type: str, mode: Optional[str]) -> str:
+        """
+        根据各 Agent 适配器的原生能力矩阵（supported_modes）多态规范化权限执行策略，
+        消除跨模块硬编码依恋。若请求模式不受该 Agent 原生支持，自动安全纠偏回退为审批模式 (ask)。
+        """
+        m = (mode or "").strip().lower()
+        target_type = "claude_code" if agent_type == "claude" else agent_type
+        adapter = self.adapters.get(target_type)
+        supported = (
+            adapter.supported_modes
+            if adapter
+            else {ExecutionMode.ASK.value, ExecutionMode.PLAN.value, ExecutionMode.ACCEPT_EDITS.value, ExecutionMode.AUTO.value}
+        )
+        if m not in supported:
+            if m:
+                logger.warning(
+                    f"【权限模式安全纠偏】Agent '{agent_type}' 不支持模式 '{m}'，已自动安全回退为审批模式 (ask)"
+                )
+            return ExecutionMode.ASK.value
+        return m
 
     def is_session_active(self, unified_id: str) -> bool:
         """判定指定统一会话当前是否处于活跃执行态（覆盖子进程树与直连任务）。"""
@@ -212,14 +255,22 @@ class AgentOrchestrator:
         }
         self._event_buffer.append(envelope)
 
-        dead_callbacks = []
-        for cb in list(self._ws_subscribers):
+        if not self._ws_subscribers:
+            return envelope
+
+        subscribers = list(self._ws_subscribers)
+
+        async def _safe_send(cb: Callable[[dict[str, Any]], Coroutine[Any, Any, None]]) -> Optional[Any]:
             try:
-                await cb(envelope)
+                await asyncio.wait_for(cb(envelope), timeout=1.5)
+                return None
             except Exception:
-                dead_callbacks.append(cb)
-        for cb in dead_callbacks:
-            self._ws_subscribers.discard(cb)
+                return cb
+
+        results = await asyncio.gather(*[_safe_send(cb) for cb in subscribers], return_exceptions=False)
+        for dead_cb in results:
+            if dead_cb:
+                self._ws_subscribers.discard(dead_cb)
 
         return envelope
 
@@ -255,8 +306,17 @@ class AgentOrchestrator:
         return report
 
     def get_available_models(self) -> dict[str, list[dict[str, Any]]]:
-        """返回各 Agent 支持的模型列表供前端选择器展示。"""
-        return AGENT_MODELS
+        """返回各 Agent 支持的模型列表（动态注入 LS 实时 quota 额度百分比）。"""
+        res: dict[str, list[dict[str, Any]]] = {}
+        for k, adapter in self.adapters.items():
+            if hasattr(adapter, "get_available_models_with_quota"):
+                try:
+                    res[k] = adapter.get_available_models_with_quota()
+                    continue
+                except Exception:
+                    pass
+            res[k] = AGENT_MODELS.get(k, [])
+        return res
 
     def list_all_sessions(
         self, agent_filter: Optional[str] = None, limit_per_agent: int = 40
@@ -378,8 +438,19 @@ class AgentOrchestrator:
                     ).to_dict()
                 )
 
+        def _session_sort_key(x: dict[str, Any]) -> tuple:
+            # 排序优先级：
+            # 1. is_pinned: 用户主动置顶最高优先级 (1 or 0)
+            # 2. 状态活跃度: waiting_approval (2) > running/desktop_active (1) > 闲置 (0)
+            # 3. updated_at: 更新时间最新优先
+            pinned = int(x.get("is_pinned") or 0)
+            st = str(x.get("status") or "").lower()
+            status_weight = 2 if st == "waiting_approval" else (1 if st in ("running", "desktop_active") else 0)
+            updated_at = str(x.get("updated_at") or "")
+            return (pinned, status_weight, updated_at)
+
         merged.sort(
-            key=lambda x: (int(x.get("is_pinned") or 0), str(x.get("updated_at") or "")),
+            key=_session_sort_key,
             reverse=True,
         )
         return merged
@@ -414,15 +485,45 @@ class AgentOrchestrator:
         overrides = self.meta_db.get_session_overrides().get(unified_id, {})
         default_models = AGENT_MODELS.get(agent_type, [])
         default_mid = default_models[0]["id"] if default_models else ""
+        chosen_model = overrides.get("model_name") or default_mid
+        token_usage = (
+            adapter.get_session_token_usage(raw_id, model_name=chosen_model)
+            if adapter
+            else SessionTokenUsage(context_limit=200_000).to_dict()
+        )
+        # 判定是否处于活跃执行态（覆盖内置 CLI 子进程、直连 LS 任务，以及外部桌面端/最新消息 RUNNING 态）
+        is_active = self.is_session_active(unified_id)
+        if not is_active and adapter:
+            try:
+                for s in adapter.list_sessions(limit=50):
+                    if s.raw_session_id == raw_id:
+                        if s.status in ("running", "desktop_active"):
+                            is_active = True
+                        break
+            except Exception:
+                pass
+        if not is_active and messages:
+            last_msg = messages[-1]
+            if last_msg.get("status") == "RUNNING":
+                is_active = True
+            elif isinstance(last_msg.get("tool_calls"), list):
+                if any(
+                    tc.get("status") in ("RUNNING", "PENDING")
+                    for tc in last_msg["tool_calls"]
+                    if isinstance(tc, dict)
+                ):
+                    is_active = True
+
         return {
             "unified_id": unified_id,
             "agent_type": agent_type,
             "raw_session_id": raw_id,
             "execution_mode": overrides.get("execution_mode", ExecutionMode.ASK.value),
-            "model_name": overrides.get("model_name") or default_mid,
+            "model_name": chosen_model,
             "is_pinned": overrides.get("is_pinned", 0),
-            "is_running": self.is_session_active(unified_id),
+            "is_running": is_active,
             "pending_approval": pa.to_dict() if pa else None,
+            "token_usage": token_usage,
             "total_count": total_count,
             "has_more": has_more,
             "messages": messages,
@@ -473,7 +574,7 @@ class AgentOrchestrator:
                     await self.abort_session(uid, reason="10分钟空闲TTL自动回收")
 
     async def _storage_watch_loop(self) -> None:
-        """使用 watchfiles (Rust notify 内核) 监听 4 大 Agent 的会话文件变动并实时推送。"""
+        """使用 watchfiles (Rust notify 内核) 监听 4 大 Agent 的会话文件变动并实时推送（含自愈重启机制）。"""
         watch_dirs: list[Path] = []
         for adapter in self.adapters.values():
             for p in adapter.get_watch_paths():
@@ -484,63 +585,68 @@ class AgentOrchestrator:
             return
 
         logger.info(f"已启动 SafeStorageWatcher 实时文件监听，监控目录数: {len(watch_dirs)}")
-        try:
-            async for changes in watchfiles.awatch(*watch_dirs, debounce=600, step=250):
-                changed_files: list[str] = []
-                affected_agents: set[str] = set()
-                affected_session_ids: set[str] = set()
+        retry_delay = 2.0
+        while True:
+            try:
+                async for changes in watchfiles.awatch(*watch_dirs, debounce=600, step=250):
+                    changed_files: list[str] = []
+                    affected_agents: set[str] = set()
+                    affected_session_ids: set[str] = set()
 
-                for _, raw_p in changes:
-                    p_str = str(raw_p).replace("\\", "/")
-                    if "tmp_snapshots" in p_str:
+                    for _, raw_p in changes:
+                        p_str = str(raw_p).replace("\\", "/")
+                        if "tmp_snapshots" in p_str:
+                            continue
+                        p_obj = Path(raw_p)
+                        changed_files.append(p_obj.name)
+
+                        lower_p = p_str.lower()
+                        if "antigravity-cli" in lower_p:
+                            affected_agents.add("agy_cli")
+                            if "/brain/" in lower_p:
+                                parts = p_str.split("/")
+                                for i, seg in enumerate(parts):
+                                    if seg.lower() == "brain" and i + 1 < len(parts):
+                                        affected_session_ids.add(f"agy_cli:{parts[i + 1]}")
+                                        break
+                        elif "antigravity" in lower_p:
+                            affected_agents.add("agy_ide")
+                            if "/brain/" in lower_p:
+                                parts = p_str.split("/")
+                                for i, seg in enumerate(parts):
+                                    if seg.lower() == "brain" and i + 1 < len(parts):
+                                        affected_session_ids.add(f"agy_ide:{parts[i + 1]}")
+                                        break
+                        elif ".claude" in lower_p:
+                            affected_agents.add("claude_code")
+                            if p_obj.suffix.lower() == ".jsonl" and not p_obj.name.startswith("agent-"):
+                                affected_session_ids.add(f"claude_code:{p_obj.stem}")
+                        elif "opencode" in lower_p:
+                            affected_agents.add("opencode")
+
+                    if not changed_files:
                         continue
-                    p_obj = Path(raw_p)
-                    changed_files.append(p_obj.name)
 
-                    lower_p = p_str.lower()
-                    if "antigravity-cli" in lower_p:
-                        affected_agents.add("agy_cli")
-                        if "/brain/" in lower_p:
-                            parts = p_str.split("/")
-                            for i, seg in enumerate(parts):
-                                if seg.lower() == "brain" and i + 1 < len(parts):
-                                    affected_session_ids.add(f"agy_cli:{parts[i + 1]}")
-                                    break
-                    elif "antigravity" in lower_p:
-                        affected_agents.add("agy_ide")
-                        if "/brain/" in lower_p:
-                            parts = p_str.split("/")
-                            for i, seg in enumerate(parts):
-                                if seg.lower() == "brain" and i + 1 < len(parts):
-                                    affected_session_ids.add(f"agy_ide:{parts[i + 1]}")
-                                    break
-                    elif ".claude" in lower_p:
-                        affected_agents.add("claude_code")
-                        if p_obj.suffix.lower() == ".jsonl" and not p_obj.name.startswith("agent-"):
-                            affected_session_ids.add(f"claude_code:{p_obj.stem}")
-                    elif "opencode" in lower_p:
-                        affected_agents.add("opencode")
-
-                if not changed_files:
-                    continue
-
-                await self.broadcast_event(
-                    "STORAGE_UPDATED",
-                    {
-                        "changed_files": changed_files[:10],
-                        "affected_agents": list(affected_agents),
-                        "affected_session_ids": list(affected_session_ids)[:20],
-                    },
+                    await self.broadcast_event(
+                        "STORAGE_UPDATED",
+                        {
+                            "changed_files": changed_files[:10],
+                            "affected_agents": list(affected_agents),
+                            "affected_session_ids": list(affected_session_ids)[:20],
+                        },
+                    )
+                    retry_delay = 2.0
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                log_structured_error(
+                    problem="实时文件监听器异常中断，正在尝试自愈重启",
+                    cause=str(exc),
+                    fix=f"{retry_delay}秒后自动重新连接文件系统监听器。",
+                    exc=exc,
                 )
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            log_structured_error(
-                problem="实时文件监听器异常中断",
-                cause=str(exc),
-                fix="系统将在下次请求时依靠轮询兜底。",
-                exc=exc,
-            )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2.0, 30.0)
 
     async def abort_session(self, unified_id: str, reason: str = "用户手动点击立即中断") -> bool:
         """
@@ -611,7 +717,8 @@ class AgentOrchestrator:
 
         # 提前解析当前会话选定模型与模式，以便 LS Connect-RPC 直连或 CLI 接力使用
         overrides = self.meta_db.get_session_overrides().get(unified_id, {})
-        mode = execution_mode or overrides.get("execution_mode") or ExecutionMode.ASK.value
+        raw_mode = execution_mode or overrides.get("execution_mode") or ExecutionMode.ASK.value
+        mode = self.normalize_execution_mode(agent_type, raw_mode)
         default_models = AGENT_MODELS.get(agent_type, [])
         default_mid = default_models[0]["id"] if default_models else ""
         chosen_model = model_name or overrides.get("model_name") or default_mid
@@ -660,7 +767,12 @@ class AgentOrchestrator:
             )
             self.active_direct_tasks[unified_id] = dt_task
             self.background_tasks.add(dt_task)
-            dt_task.add_done_callback(lambda t: self.active_direct_tasks.pop(unified_id, None))
+
+            def _on_dt_done(t: asyncio.Task[Any]) -> None:
+                if self.active_direct_tasks.get(unified_id) is t:
+                    self.active_direct_tasks.pop(unified_id, None)
+
+            dt_task.add_done_callback(_on_dt_done)
             dt_task.add_done_callback(self.background_tasks.discard)
 
             return {
@@ -709,7 +821,7 @@ class AgentOrchestrator:
             parent_unified_id=forked_from,
         )
 
-        # 3. 启动后台流式进程
+        # 3. 启动后台流式进程并纳入强引用集
         turn_ctx = TurnContext(
             unified_id=unified_id,
             agent_type=agent_type,
@@ -719,7 +831,9 @@ class AgentOrchestrator:
             execution_mode=mode,
             model_name=chosen_model,
         )
-        asyncio.create_task(self._run_agent_turn_stream(turn_ctx))
+        stream_task = asyncio.create_task(self._run_agent_turn_stream(turn_ctx))
+        self.background_tasks.add(stream_task)
+        stream_task.add_done_callback(self.background_tasks.discard)
 
         return {
             "ok": True,
@@ -769,7 +883,7 @@ class AgentOrchestrator:
                 {"unified_id": unified_id, "via_direct_dispatch": True},
             )
         except asyncio.CancelledError:
-            return
+            raise
         except Exception as exc:
             log_structured_error(
                 problem=f"原生直连通道会话增量同步异常 ({unified_id})",
@@ -778,7 +892,9 @@ class AgentOrchestrator:
                 exc=exc,
             )
         finally:
-            self.active_direct_tasks.pop(unified_id, None)
+            curr_task = asyncio.current_task()
+            if self.active_direct_tasks.get(unified_id) is curr_task:
+                self.active_direct_tasks.pop(unified_id, None)
 
 
     async def _run_agent_turn_stream(
@@ -813,6 +929,8 @@ class AgentOrchestrator:
             },
         )
 
+        proc: Optional[asyncio.subprocess.Process] = None
+        stderr_task: Optional[asyncio.Task[None]] = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -823,6 +941,21 @@ class AgentOrchestrator:
             )
             self.active_processes[unified_id] = proc
             self.process_last_active[unified_id] = time.time()
+
+            # 启动异步 stderr 消费协程，防止子进程因 stderr 管道缓冲区占满而死锁
+            if proc.stderr:
+                async def _drain_stderr() -> None:
+                    try:
+                        while True:
+                            err_line = await proc.stderr.readline()
+                            if not err_line:
+                                break
+                            txt = err_line.decode("utf-8", errors="replace").strip()
+                            if txt:
+                                logger.debug(f"[{ctx.agent_type}:{ctx.raw_session_id[:8]} stderr] {txt}")
+                    except Exception:
+                        pass
+                stderr_task = asyncio.create_task(_drain_stderr())
 
             assert proc.stdout is not None
             while True:
@@ -841,6 +974,11 @@ class AgentOrchestrator:
                 )
 
             await proc.wait()
+            if stderr_task and not stderr_task.done():
+                try:
+                    await asyncio.wait_for(stderr_task, timeout=1.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    stderr_task.cancel()
         except asyncio.CancelledError:
             if unified_id in self.active_processes:
                 await self.abort_session(unified_id, reason="异步任务取消")
@@ -858,9 +996,15 @@ class AgentOrchestrator:
                 {"unified_id": unified_id, "error": diag},
             )
         finally:
-            if self.active_processes.get(unified_id) is proc:
+            if proc is not None and self.active_processes.get(unified_id) is proc:
                 self.active_processes.pop(unified_id, None)
                 self.process_last_active.pop(unified_id, None)
+                await self.broadcast_event(
+                    "SESSION_TURN_FINISHED",
+                    {"unified_id": unified_id},
+                )
+            elif proc is None and unified_id not in self.active_processes:
+                # 进程拉起失败未进入执行态，向前端下发结束帧释放加载态
                 await self.broadcast_event(
                     "SESSION_TURN_FINISHED",
                     {"unified_id": unified_id},
@@ -954,7 +1098,8 @@ class AgentOrchestrator:
                     for k in ("read", "glob", "grep", "list", "search", "view")
                 )
                 if not is_readonly:
-                    await self.request_mobile_tool_approval(
+                    approval = PendingApproval(
+                        approval_id=f"apr_{uuid.uuid4().hex[:10]}",
                         unified_id=unified_id,
                         agent_type=agent_type,
                         raw_session_id=raw_session_id,
@@ -965,41 +1110,75 @@ class AgentOrchestrator:
                         risk_level=risk,
                         prompt_context=prompt,
                         project_path=workdir,
+                        created_at=utc_now_iso(),
+                    )
+                    approval_res = await self.request_mobile_tool_approval(
+                        approval,
                         proc=proc,
                     )
+                    # 若审批被拒绝或会话已被中断强杀，立即跳出后续工具循环，防止产生幽灵审批
+                    if (
+                        approval_res.get("decision") == "denied"
+                        or unified_id not in self.active_processes
+                    ):
+                        break
+                elif proc and proc.stdin and not proc.stdin.is_closing() and ev_type in ("permission_request", "control_request"):
+                    # 若为交互式 stdio 拦截且是只读工具，主动写回 allow 放行，防止子进程死锁挂起
+                    try:
+                        allow_frame = json.dumps(
+                            {
+                                "type": "control_response",
+                                "tool_use_id": t_id,
+                                "behavior": "allow",
+                            }
+                        )
+                        proc.stdin.write((allow_frame + "\n").encode("utf-8"))
+                        await proc.stdin.drain()
+                    except Exception:
+                        pass
 
     async def request_mobile_tool_approval(
         self,
-        unified_id: str,
-        agent_type: str,
-        raw_session_id: str,
-        tool_call_id: str,
-        tool_name: str,
-        args_summary: str,
-        diff_text: str,
-        risk_level: str,
-        prompt_context: str,
-        project_path: str,
+        approval_obj: Optional[PendingApproval] = None,
+        *,
+        unified_id: str = "",
+        agent_type: str = "",
+        raw_session_id: str = "",
+        tool_call_id: str = "",
+        tool_name: str = "",
+        args_summary: str = "",
+        diff_text: str = "",
+        risk_level: str = "normal",
+        prompt_context: str = "",
+        project_path: str = "",
         proc: Optional[asyncio.subprocess.Process] = None,
     ) -> dict[str, Any]:
         """
         挂起当前工具调用，向手机端推送 `WAITING_APPROVAL` 弹窗与震动唤醒信号，
         并阻塞等待手机端返回 `approved` 或 `denied`！
         """
-        approval = PendingApproval(
-            approval_id=f"apr_{uuid.uuid4().hex[:10]}",
-            unified_id=unified_id,
-            agent_type=agent_type,
-            raw_session_id=raw_session_id,
-            tool_call_id=tool_call_id,
-            tool_name=tool_name,
-            args_summary=args_summary,
-            diff_text=diff_text,
-            risk_level=risk_level,
-            prompt_context=prompt_context,
-            project_path=project_path,
-            created_at=utc_now_iso(),
-        )
+        if approval_obj is not None:
+            approval = approval_obj
+            unified_id = approval.unified_id
+            agent_type = approval.agent_type
+            raw_session_id = approval.raw_session_id
+            tool_call_id = approval.tool_call_id
+            tool_name = approval.tool_name
+        else:
+            approval = PendingApproval(
+                approval_id=f"apr_{uuid.uuid4().hex[:10]}",
+                unified_id=unified_id,
+                agent_type=agent_type,
+                raw_session_id=raw_session_id,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                args_summary=args_summary,
+                diff_text=diff_text,
+                risk_level=risk_level,
+                prompt_context=prompt_context,
+                project_path=project_path,
+                created_at=utc_now_iso(),
+            )
         self.pending_approvals[unified_id] = approval
 
         loop = asyncio.get_running_loop()
@@ -1016,7 +1195,8 @@ class AgentOrchestrator:
             decision = str(result.get("decision") or "denied")
             feedback_msg = str(result.get("feedback") or "").strip()
             if decision == "denied":
-                if proc and proc.stdin:
+                stdin_notified = False
+                if proc and proc.stdin and not proc.stdin.is_closing():
                     try:
                         deny_frame = json.dumps(
                             {
@@ -1029,6 +1209,7 @@ class AgentOrchestrator:
                         )
                         proc.stdin.write((deny_frame + "\n").encode("utf-8"))
                         await proc.stdin.drain()
+                        stdin_notified = True
                     except Exception as exc:
                         log_structured_error(
                             problem=f"向子进程 stdin 发送拒绝帧失败 ({unified_id})",
@@ -1036,42 +1217,45 @@ class AgentOrchestrator:
                             fix="子进程标准输入可能已提前关闭，系统将直接终止子进程树。",
                             exc=exc,
                         )
-                if proc and proc.pid:
-                    kill_windows_process_tree(proc.pid)
-                    try:
-                        await asyncio.wait_for(proc.wait(), timeout=2.0)
-                    except Exception as exc:
-                        log_structured_error(
-                            problem=f"等待旧子进程退出超时 ({unified_id})",
-                            cause=str(exc),
-                            fix="系统将强制移除进程并继续执行。",
-                            exc=exc,
-                        )
-                self.active_processes.pop(unified_id, None)
-                self.process_last_active.pop(unified_id, None)
 
-                # 用户在拒绝时若填写了替代指导意见，自动将指导意见发给会话继续执行
-                if feedback_msg:
-                    followup = f"[已拒绝工具 {tool_name}] 请勿执行刚才的操作，按以下要求调整方案：{feedback_msg}"
-
-                    async def _send_followup_prompt() -> None:
+                # 若子进程不支持控制帧写入或已断开，采用安全终止并由后续逻辑推进
+                if not stdin_notified:
+                    if proc and proc.pid:
+                        kill_windows_process_tree(proc.pid)
                         try:
-                            await self.send_prompt_to_session(
-                                unified_id=unified_id,
-                                prompt=followup,
-                                project_path=project_path,
-                            )
+                            await asyncio.wait_for(proc.wait(), timeout=2.0)
                         except Exception as exc:
                             log_structured_error(
-                                problem=f"拒绝工具后发送替代方案失败 ({unified_id})",
+                                problem=f"等待旧子进程退出超时 ({unified_id})",
                                 cause=str(exc),
-                                fix="请检查该会话进程状态或手动在输入框重新发送。",
+                                fix="系统将强制移除进程并继续执行。",
                                 exc=exc,
                             )
+                    self.active_processes.pop(unified_id, None)
+                    self.process_last_active.pop(unified_id, None)
 
-                    f_task = asyncio.create_task(_send_followup_prompt())
-                    self.background_tasks.add(f_task)
-                    f_task.add_done_callback(self.background_tasks.discard)
+                    # 用户在拒绝时若填写了替代指导意见，自动将指导意见发给会话继续执行
+                    if feedback_msg:
+                        followup = f"[已拒绝工具 {tool_name}] 请勿执行刚才的操作，按以下要求调整方案：{feedback_msg}"
+
+                        async def _send_followup_prompt() -> None:
+                            try:
+                                await self.send_prompt_to_session(
+                                    unified_id=unified_id,
+                                    prompt=followup,
+                                    project_path=project_path,
+                                )
+                            except Exception as exc:
+                                log_structured_error(
+                                    problem=f"拒绝工具后发送替代方案失败 ({unified_id})",
+                                    cause=str(exc),
+                                    fix="请检查该会话进程状态或手动在输入框重新发送。",
+                                    exc=exc,
+                                )
+
+                        f_task = asyncio.create_task(_send_followup_prompt())
+                        self.background_tasks.add(f_task)
+                        f_task.add_done_callback(self.background_tasks.discard)
             elif decision == "approved" and proc and proc.stdin:
                 # 尝试向支持 stdio 审批帧的进程 stdin 写回确认
                 try:
@@ -1156,3 +1340,7 @@ class AgentOrchestrator:
             "decision": normalized_decision,
             "feedback": feedback.strip(),
         }
+
+
+# 向后兼容别名导出
+AgentProcessPool = AgentOrchestrator

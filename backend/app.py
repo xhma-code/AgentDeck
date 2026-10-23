@@ -168,9 +168,14 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         if client_host in ("127.0.0.1", "::1", "localhost", "testclient"):
             return True
 
-        # Tailscale 虚拟局域网内节点（100.x.y.z）：WireGuard 隧道本身已做设备级加密鉴权
-        if client_host.startswith("100."):
-            return True
+        # Tailscale 虚拟局域网内节点（100.64.0.0/10）：
+        # 针对写操作（POST/PATCH/DELETE）强制要求携带有效 Token，杜绝第三方网页跨站 CSRF 借用 IP 免密执行高危操作；
+        # 仅对只读 GET/HEAD 请求在已配对 Tailscale IP 时放行查看
+        if auth_mgr.is_paired_tailscale_ip(client_host):
+            if request.method in ("GET", "HEAD", "OPTIONS"):
+                return True
+            if provided_token and auth_mgr.verify_token(provided_token, client_ip=client_host):
+                return True
 
         raise HTTPException(
             status_code=401,
@@ -215,6 +220,17 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         img.save(buf)
         return Response(content=buf.getvalue(), media_type="image/svg+xml")
 
+    @app.get("/healthz")
+    @app.get("/api/v1/health")
+    async def get_health_check() -> dict[str, Any]:
+        """轻量级非鉴权健康检查探针（供 Docker、Kubernetes、uptime 监控或 curl 快速连通性测试）。"""
+        return {
+            "ok": True,
+            "status": "healthy",
+            "version": "2.0.0",
+            "tailscale_online": ts_status.is_online,
+        }
+
     @app.get("/api/v1/system/status")
     async def get_system_status(
         request: Request, _auth: bool = Depends(verify_request_auth)
@@ -237,7 +253,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
             "pair_url": pair_url,
             "agents_health": orchestrator.get_startup_health_report(),
             "models_by_agent": orchestrator.get_available_models(),
-            "workflows": discover_quick_workflows(),
+            "workflows": await asyncio.to_thread(discover_quick_workflows),
             "snapshot": orchestrator.get_state_snapshot(),
         }
 
@@ -247,7 +263,8 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         _auth: bool = Depends(verify_request_auth),
     ) -> dict[str, Any]:
         """返回 `/` 斜杠快捷指令与项目工作流补全列表。"""
-        return {"ok": True, "workflows": discover_quick_workflows(project_path)}
+        items = await asyncio.to_thread(discover_quick_workflows, project_path)
+        return {"ok": True, "workflows": items}
 
     @app.get("/api/v1/models")
     async def list_available_models(
@@ -298,6 +315,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         unified_id = f"{agent_type}:{raw_id}"
         workdir = req.project_path.strip() or str(PROJECT_ROOT)
         title = req.title.strip() or (req.initial_prompt.strip()[:50] if req.initial_prompt else f"新建 {agent_type} 会话")
+        normalized_mode = orchestrator.normalize_execution_mode(agent_type, req.execution_mode)
 
         meta = db.upsert_session_meta(
             unified_id=unified_id,
@@ -305,7 +323,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
             raw_session_id=raw_id,
             project_path=workdir,
             title=title,
-            execution_mode=req.execution_mode,
+            execution_mode=normalized_mode,
             model_name=req.model_name.strip() if req.model_name else None,
         )
 
@@ -314,7 +332,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
                 unified_id=unified_id,
                 prompt=req.initial_prompt.strip(),
                 project_path=workdir,
-                execution_mode=req.execution_mode,
+                execution_mode=normalized_mode,
                 model_name=req.model_name.strip() if req.model_name else None,
             )
 
@@ -343,16 +361,30 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         if ":" not in unified_id:
             raise HTTPException(status_code=400, detail="无效的 unified_id 格式")
         agent_type, raw_id = unified_id.split(":", 1)
+        normalized_mode = (
+            orchestrator.normalize_execution_mode(agent_type, req.execution_mode)
+            if req.execution_mode is not None
+            else None
+        )
         updated = db.upsert_session_meta(
             unified_id=unified_id,
             agent_type=agent_type,
             raw_session_id=raw_id,
             title=req.title or "",
             is_pinned=req.is_pinned,
-            execution_mode=req.execution_mode,
+            execution_mode=normalized_mode,
             model_name=req.model_name,
         )
         return {"ok": True, "meta": updated}
+
+    @app.delete("/api/v1/sessions/{unified_id:path}")
+    async def delete_session(
+        unified_id: str,
+        _auth: bool = Depends(verify_request_auth),
+    ) -> dict[str, Any]:
+        """删除指定会话在数据库中的索引元数据。"""
+        db.delete_session_meta(unified_id)
+        return {"ok": True, "deleted": unified_id}
 
     # --- 3. 发送指令、工具审批与紧急中断接口 ---
     @app.post("/api/v1/sessions/{unified_id:path}/send")
@@ -441,24 +473,33 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         if not norm_path:
             raise HTTPException(status_code=400, detail="无效的文件路径")
 
-        file_obj = Path(norm_path)
+        file_obj = Path(norm_path).resolve()
         if not file_obj.exists() or not file_obj.is_file():
             raise HTTPException(status_code=404, detail=f"文件不存在: {file_obj.name}")
 
         lower_name = file_obj.name.lower()
         ext = file_obj.suffix.lower()
-        blocked_names = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519"}
+        parts_lower = {p.lower() for p in file_obj.parts}
+        blocked_dir_names = {".ssh", ".aws", ".azure", ".kube", ".gnupg", ".git", ".docker", "credentials"}
+        if any(bd in parts_lower for bd in blocked_dir_names):
+            raise HTTPException(status_code=403, detail=f"禁止读取系统敏感配置目录文件 ({file_obj.name})")
+
+        blocked_names = {
+            ".env", ".env.local", ".env.production", ".env.staging", ".env.test",
+            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "known_hosts", "authorized_keys",
+            ".npmrc", ".pypirc", ".netrc", ".bash_history", ".zsh_history",
+        }
         blocked_exts = {
             ".exe", ".dll", ".so", ".dylib", ".db", ".sqlite", ".sqlite3",
             ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".tar", ".gz",
-            ".pem", ".key", ".pfx",
+            ".pem", ".key", ".pfx", ".crt",
         }
-        if lower_name in blocked_names or ext in blocked_exts:
+        if lower_name in blocked_names or ext in blocked_exts or lower_name.startswith(".env"):
             raise HTTPException(status_code=403, detail=f"暂不支持直接文本预览该类型文件 ({file_obj.name})")
 
         max_bytes = 256 * 1024
         stat = file_obj.stat()
-        raw_bytes = file_obj.read_bytes()
+        raw_bytes = await asyncio.to_thread(file_obj.read_bytes)
         is_truncated = len(raw_bytes) > max_bytes
         if is_truncated:
             raw_bytes = raw_bytes[:max_bytes]
@@ -483,7 +524,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         _auth: bool = Depends(verify_request_auth),
     ) -> dict[str, Any]:
         """供手机端轻量查看当前项目分支与未提交文件变更列表（纯只读）。"""
-        return get_git_workspace_status(project_path)
+        return await asyncio.to_thread(get_git_workspace_status, project_path)
 
     @app.get("/api/v1/git/diff")
     async def read_git_diff(
@@ -492,7 +533,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         _auth: bool = Depends(verify_request_auth),
     ) -> dict[str, Any]:
         """供手机端轻量查看单文件或全局未提交 Unified Diff（纯只读）。"""
-        res = get_git_workspace_diff(project_path, file_path)
+        res = await asyncio.to_thread(get_git_workspace_diff, project_path, file_path)
         if not res.get("ok"):
             raise HTTPException(status_code=400, detail=res.get("error") or "获取 Diff 失败")
         return res
@@ -517,8 +558,8 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         client_host = (websocket.client.host if websocket.client else "") or ""
         is_trusted_net = (
             client_host in ("127.0.0.1", "::1", "localhost", "testclient")
-            or client_host.startswith("100.")
             or auth_mgr.verify_token(token, client_ip=client_host)
+            or auth_mgr.is_paired_tailscale_ip(client_host)
         )
         if not is_trusted_net:
             await websocket.close(code=1008)
@@ -591,10 +632,21 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         return JSONResponse({"error": "未找到网站图标文件"}, status_code=404)
 
     @app.get("/", response_class=HTMLResponse)
-    async def serve_pwa_index() -> Any:
+    @app.get("/index.html", response_class=HTMLResponse)
+    async def serve_pwa_index() -> HTMLResponse:
         index_file = FRONTEND_DIR / "index.html"
         if index_file.exists():
-            return FileResponse(index_file)
-        return HTMLResponse("<h1>AgentDeck 正在初始化前端资源...</h1>")
+            content = index_file.read_text(encoding="utf-8")
+            return HTMLResponse(
+                content=content,
+                headers={
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Disposition": "inline",
+                    "X-Content-Type-Options": "nosniff",
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                },
+            )
+        return HTMLResponse("<h1>AgentDeck 正在初始化前端资源...</h1>", status_code=503)
 
     return app

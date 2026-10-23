@@ -24,6 +24,9 @@ from backend.core.logger import log_structured_error, logger
 from backend.core.tailscale_auth import render_terminal_qr_box
 
 
+VERSION = "2.0.0"
+
+
 def print_startup_banner(app, port: int) -> str:
     """打印 4 大 Agent 启动体检表与手机扫码配对面板，返回推荐绑定的主网卡 IP。"""
     ts = app.state.ts_status
@@ -74,8 +77,88 @@ async def serve_multi_host(app, hosts: list[str], port: int) -> None:
     await asyncio.gather(*(s.serve() for s in servers))
 
 
+def free_port_if_occupied(port: int) -> None:
+    """启动前检测并清理占用指定端口的本项目残留旧进程；若占用进程非 AgentDeck，则报错退出防止误杀。"""
+    current_pid = os.getpid()
+    project_root_str = str(Path(__file__).resolve().parent).lower()
+    occupied_pids: list[int] = []
+
+    # 1. 扫描占用目标端口的监听进程 PID
+    try:
+        import psutil
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.laddr and conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
+                if conn.pid and conn.pid != current_pid and conn.pid not in occupied_pids:
+                    occupied_pids.append(conn.pid)
+    except Exception:
+        pass
+
+    if sys.platform == "win32" and not occupied_pids:
+        try:
+            ps_cmd = (
+                f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | "
+                f"Select-Object -ExpandProperty OwningProcess -Unique"
+            )
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in res.stdout.strip().splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pid = int(line)
+                    if pid > 0 and pid != current_pid and pid not in occupied_pids:
+                        occupied_pids.append(pid)
+        except Exception:
+            pass
+
+    if not occupied_pids:
+        return
+
+    import psutil
+    killed = False
+    for pid in occupied_pids:
+        try:
+            proc = psutil.Process(pid)
+            cmdline = " ".join(proc.cmdline() or []).lower()
+            proc_name = (proc.name() or "").lower()
+
+            # 校验该进程是否确实属于当前 AgentDeck 项目
+            is_agentdeck = (
+                ("python" in proc_name or "uvicorn" in proc_name)
+                and ("run.py" in cmdline or project_root_str in cmdline or "agentdeck" in cmdline)
+            )
+
+            if is_agentdeck:
+                logger.warning("检测到本系统历史残留进程 (PID %d: %s) 占用端口 %d，正在安全回收...", pid, proc.name(), port)
+                proc.kill()
+                proc.wait(timeout=2)
+                killed = True
+            else:
+                logger.error(
+                    "【端口冲突】端口 %d 已被外部非 AgentDeck 进程 (PID %d: %s) 占用，禁止强制终止以防误杀其他服务！",
+                    port, pid, proc.name()
+                )
+                print(
+                    f"\n[错误] 端口 {port} 已被外部进程 (PID {pid}: {proc.name()}) 占用！\n"
+                    f"命令行: {cmdline}\n"
+                    f"AgentDeck 不会强制杀除非本项目的外部服务。请更换端口 (run.py --port <新端口>) 或手动关闭该程序后再启动。\n"
+                )
+                sys.exit(1)
+        except psutil.NoSuchProcess:
+            continue
+        except Exception as exc:
+            logger.error("检查/清理端口 %d 占用进程 PID %d 失败: %s", port, pid, exc)
+
+    if killed:
+        time.sleep(0.5)
+
+
 def run_server_worker(port: int, local_only: bool) -> None:
     """启动 AgentDeck 主服务（单进程工作实例）。"""
+    free_port_if_occupied(port)
     try:
         app = create_app()
         print_startup_banner(app, port)
@@ -96,6 +179,7 @@ def run_server_worker(port: int, local_only: bool) -> None:
 
 def run_with_reload(port: int, local_only: bool) -> None:
     """热重载 Supervisor：监听 backend/ 变动，保存时自动终止并重启服务。"""
+    free_port_if_occupied(port)
     try:
         from watchfiles import DefaultFilter, watch
     except ImportError:
@@ -146,7 +230,7 @@ def run_with_reload(port: int, local_only: bool) -> None:
             change_files = {Path(p).name for _, p in changes}
             print(f"\n[⚡] 检测到代码变动 ({', '.join(change_files)})，正在热重启 AgentDeck...")
             _terminate_proc(subproc)
-            time.sleep(0.3)
+            free_port_if_occupied(port)
             subproc = subprocess.Popen(cmd)
     except KeyboardInterrupt:
         logger.info("收到退出信号，正在关闭 AgentDeck...")
@@ -155,8 +239,70 @@ def run_with_reload(port: int, local_only: bool) -> None:
         sys.exit(0)
 
 
+def run_doctor(port: int = 8765) -> int:
+    """运行 AgentDeck 环境全面诊断体检（--doctor），打印诊断报告并退出。"""
+    import socket
+    from backend.core.database import MetaDatabase
+    from backend.core.tailscale_auth import detect_tailscale_status
+    from backend.engines.process_pool import AgentOrchestrator
+
+    db = MetaDatabase()
+    ts = detect_tailscale_status()
+    orchestrator = AgentOrchestrator(meta_db=db)
+
+    print("\n" + "═" * 72)
+    print("  🩺 AgentDeck 环境与依赖诊断体检报告 (AgentDeck Doctor)")
+    print("═" * 72)
+    print(f"  [✓] AgentDeck 版本: v{VERSION} (Python {sys.version.split()[0]})")
+
+    ts_icon = "[✓]" if ts.is_online else "[!]"
+    print(f"  {ts_icon} Tailscale 隧道: {ts.diagnostic_msg}")
+
+    health_items = orchestrator.get_startup_health_report()
+    all_ready = True
+    for item in health_items:
+        icon = "[✓]" if item["ready"] else "[!]"
+        if not item["ready"]:
+            all_ready = False
+        print(f"  {icon} {item['agent_label']:<16}: {item['description']}")
+
+    port_status = "空闲可用"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        if s.connect_ex(("127.0.0.1", port)) == 0:
+            port_status = f"当前已被占用 (启动时将自动清理或可使用 '--port {port + 1}')"
+    print(f"  [i] 目标端口 ({port})  : {port_status}")
+
+    print("─" * 72)
+    if ts.is_online and all_ready:
+        print("  🎉 完美！所有 Agent 与 Tailscale 网络均已就绪，可直接执行 'python run.py' 启动。")
+    elif not ts.is_online:
+        print("  💡 提示: Tailscale 未启动，本机调试完全正常；若需手机跨设备扫码，请运行 'tailscale up'。")
+    else:
+        print("  💡 提示: 部分 Agent 未安装或未找到历史会话，已就绪的 Agent 可正常使用。")
+    print("═" * 72 + "\n")
+    return 0
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AgentDeck — 多 Agent 移动端统一中控台")
+    parser = argparse.ArgumentParser(
+        prog="agentdeck",
+        description="⚡ AgentDeck — 基于 Tailscale 的多 Agent 移动端统一中控台",
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s v{VERSION}",
+        help="显示当前 AgentDeck 版本号并退出",
+    )
+    parser.add_argument(
+        "--doctor",
+        "--check",
+        dest="doctor",
+        action="store_true",
+        help="运行环境体检与 Agent 挂载就绪状态检查后退出",
+    )
     parser.add_argument("--port", type=int, default=8765, help="监听端口 (默认: 8765)")
     parser.add_argument(
         "--local-only",
@@ -174,6 +320,9 @@ def main() -> None:
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
+
+    if args.doctor:
+        sys.exit(run_doctor(args.port))
 
     if args.reload and not args.worker:
         run_with_reload(args.port, args.local_only)

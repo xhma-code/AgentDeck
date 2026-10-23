@@ -1,4 +1,5 @@
 @echo off
+@chcp 65001 >nul
 setlocal
 title AgentDeck
 cd /d "%~dp0"
@@ -10,11 +11,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [*] 正在检查并清理已存在的 AgentDeck 进程...
+echo [*] Checking and terminating previous AgentDeck instances...
 call "%~dp0stop.cmd" --no-pause
 title AgentDeck
 
-echo [*] 正在启动 AgentDeck (热重载模式)...
+echo [*] Starting AgentDeck (hot reload enabled)...
 echo.
 
 python run.py --reload %*

@@ -13,12 +13,14 @@ import json
 import os
 import re
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from backend.adapters.base import (
     BaseAgentAdapter,
+    SessionTokenUsage,
     UnifiedMessageItem,
     UnifiedSession,
     UnifiedToolCall,
@@ -26,6 +28,7 @@ from backend.adapters.base import (
     extract_interactive_questions,
     extract_tool_file_path,
     extract_tool_summary_and_diff,
+    resolve_model_context_limit,
     truncate_large_output,
 )
 from backend.core.logger import log_structured_error
@@ -95,6 +98,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
     agent_label = "Claude Code"
 
     def __init__(self, projects_dir: Optional[Path] = None) -> None:
+        super().__init__()
         self.projects_dir = projects_dir or Path(os.path.expanduser("~/.claude/projects"))
         self.cli_bin = (
             shutil.which("claude")
@@ -515,14 +519,17 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         if clean_model == "default":
             clean_model = ""
         bin_path = str(self.cli_bin or "claude")
-        cmd = [
-            bin_path,
+        if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd.exe", "/c", bin_path]
+        else:
+            cmd = [bin_path]
+        cmd.extend([
             "-p",
             prompt,
             "--output-format",
             "stream-json",
             "--verbose",
-        ]
+        ])
         if clean_model:
             cmd.extend(["--model", clean_model])
         if self._find_session_file(raw_session_id):
@@ -554,4 +561,81 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         if ev_type in ("permission_request", "control_request", "tool_call"):
             tool_blocks.append(event)
         return tool_blocks
+
+    def get_session_token_usage(
+        self, raw_session_id: str, model_name: str = ""
+    ) -> dict[str, Any]:
+        """解析 Claude Code 会话 JSONL 文件提取 token 统计（带 mtime 内存缓存）。"""
+        limit = resolve_model_context_limit(model_name)
+        fpath = self._find_session_file(raw_session_id)
+        if not fpath or not fpath.exists():
+            return SessionTokenUsage(context_limit=limit).to_dict()
+
+        cache_key = str(fpath)
+        try:
+            mtime = fpath.stat().st_mtime_ns
+        except Exception:
+            mtime = 0
+
+        cached = self._token_usage_cache.get(cache_key)
+        if cached and cached[0] == mtime:
+            res = dict(cached[1])
+            res["context_limit"] = limit
+            res["context_percent"] = (
+                round((res["context_tokens"] / limit) * 100, 1) if limit > 0 else 0.0
+            )
+            return res
+
+        latest_input = 0
+        latest_output = 0
+        latest_cached = 0
+        total_input = 0
+        total_output = 0
+        total_cache_read = 0
+
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                try:
+                    fsize = fpath.stat().st_size
+                    if fsize > 512 * 1024:
+                        f.seek(fsize - 256 * 1024)
+                        f.readline()
+                except OSError:
+                    pass
+
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                        usage = record.get("usage") or (record.get("message") or {}).get("usage")
+                        if isinstance(usage, dict):
+                            in_tok = usage.get("input_tokens") or 0
+                            out_tok = usage.get("output_tokens") or 0
+                            cr_tok = usage.get("cache_read_input_tokens") or 0
+                            cc_tok = usage.get("cache_creation_input_tokens") or 0
+                            if in_tok or out_tok or cr_tok:
+                                latest_input = in_tok
+                                latest_output = out_tok
+                                latest_cached = cr_tok + cc_tok
+                                total_input += in_tok + cc_tok
+                                total_output += out_tok
+                                total_cache_read += cr_tok
+                    except json.JSONDecodeError:
+                        continue
+        except OSError as exc:
+            logger.debug(f"读取 Claude 会话 JSONL 跳过: {exc}")
+
+        latest_context = latest_input + latest_cached
+        pct = round((latest_context / limit) * 100, 1) if limit > 0 else 0.0
+        data = {
+            "context_tokens": latest_context,
+            "context_limit": limit,
+            "context_percent": pct,
+            "total_tokens": total_input + total_output,
+            "last_output_tokens": latest_output,
+            "cache_read_tokens": total_cache_read,
+        }
+        self._token_usage_cache[cache_key] = (mtime, data)
+        return data
 

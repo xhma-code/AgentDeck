@@ -21,12 +21,15 @@ from typing import Any, Optional
 
 from backend.adapters.base import (
     BaseAgentAdapter,
+    ExecutionMode,
+    SessionTokenUsage,
     UnifiedMessageItem,
     UnifiedSession,
     UnifiedToolCall,
     classify_tool_risk,
     extract_tool_file_path,
     extract_tool_summary_and_diff,
+    resolve_model_context_limit,
     truncate_large_output,
 )
 from backend.core.database import safe_query_external_sqlite, utc_now_iso
@@ -125,7 +128,16 @@ class OpenCodeAdapter(BaseAgentAdapter):
     agent_type = "opencode"
     agent_label = "OpenCode"
 
+    @property
+    def supported_modes(self) -> set[str]:
+        """OpenCode 原生仅支持审批模式与 --auto 全自动模式，无只读规划与独立免审文件编辑模式。"""
+        return {
+            ExecutionMode.ASK.value,
+            ExecutionMode.AUTO.value,
+        }
+
     def __init__(self, data_dir: Optional[Path] = None, serve_url: Optional[str] = None) -> None:
+        super().__init__()
         self.data_dir = data_dir or Path(os.path.expanduser("~/.local/share/opencode"))
         self.db_path = self.data_dir / "opencode.db"
         self.http_bridge = OpenCodeHttpBridge(base_url=serve_url)
@@ -518,4 +530,68 @@ class OpenCodeAdapter(BaseAgentAdapter):
                     }
                 )
         return tool_blocks
+
+    def get_session_token_usage(
+        self, raw_session_id: str, model_name: str = ""
+    ) -> dict[str, Any]:
+        """从 opencode.db 提取当前会话 token 统计（带 db_sig 内存缓存）。"""
+        limit = resolve_model_context_limit(model_name)
+        if not self.db_path.exists():
+            return SessionTokenUsage(context_limit=limit).to_dict()
+
+        sig = self._get_db_sig()
+        cache_key = f"{raw_session_id}:{sig}"
+        cached = self._token_usage_cache.get(cache_key)
+        if cached:
+            res = dict(cached[1])
+            res["context_limit"] = limit
+            res["context_percent"] = (
+                round((res["context_tokens"] / limit) * 100, 1) if limit > 0 else 0.0
+            )
+            return res
+
+        rows = safe_query_external_sqlite(
+            self.db_path,
+            "SELECT data FROM message WHERE session_id = ? ORDER BY time_created ASC",
+            (raw_session_id,),
+        )
+        if not rows:
+            return SessionTokenUsage(context_limit=limit).to_dict()
+
+        latest_context = 0
+        latest_output = 0
+        total_tokens = 0
+        cache_read = 0
+
+        for r in rows:
+            raw_data = r.get("data")
+            if not raw_data:
+                continue
+            try:
+                d = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+                tok = d.get("tokens")
+                if isinstance(tok, dict):
+                    in_tok = tok.get("input") or 0
+                    out_tok = tok.get("output") or 0
+                    tot = tok.get("total") or (in_tok + out_tok)
+                    cr = (tok.get("cache") or {}).get("read") or 0
+                    if tot > 0 or in_tok > 0:
+                        latest_context = in_tok + cr if (in_tok + cr) > 0 else tot
+                        latest_output = out_tok
+                        total_tokens += tot
+                        cache_read += cr
+            except (json.JSONDecodeError, TypeError, KeyError):
+                continue
+
+        pct = round((latest_context / limit) * 100, 1) if limit > 0 else 0.0
+        data = {
+            "context_tokens": latest_context,
+            "context_limit": limit,
+            "context_percent": pct,
+            "total_tokens": total_tokens,
+            "last_output_tokens": latest_output,
+            "cache_read_tokens": cache_read,
+        }
+        self._token_usage_cache[cache_key] = (0, data)
+        return data
 

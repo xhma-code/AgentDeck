@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import ipaddress
 import json
 import secrets
 import shutil
@@ -71,11 +72,9 @@ def detect_tailscale_status() -> TailscaleStatus:
                     diagnostic_msg=f"Tailscale 已就绪: {ipv4}" + (f" ({dns_name})" if dns_name else ""),
                 )
     except Exception as exc:
-        log_structured_error(
-            problem="未检测到活跃的 Tailscale 虚拟网卡",
-            cause=f"调用 tailscale status --json 失败 ({exc})",
-            fix="请确保已安装并运行 'tailscale up' 登录；当前已安全降级为仅本机 127.0.0.1 访问。",
-            exc=exc,
+        logger.info(
+            "未检测到活跃的 Tailscale 虚拟网卡 (%s)，安全降级为仅本机 127.0.0.1 访问 (执行 'tailscale up' 可开启远程扫码)。",
+            exc,
         )
 
     return TailscaleStatus(
@@ -243,8 +242,15 @@ class PairingAuthManager:
 
     def is_paired_tailscale_ip(self, client_ip: str) -> bool:
         """检查某个 Tailscale 节点 IP 是否已完成过扫码配对且未被吊销。"""
-        if not client_ip or not client_ip.startswith("100."):
+        if not client_ip:
             return False
+        try:
+            ip_obj = ipaddress.ip_address(client_ip)
+            if ip_obj not in ipaddress.ip_network("100.64.0.0/10"):
+                return False
+        except ValueError:
+            return False
+
         with self.meta_db.connect() as conn:
             row = conn.execute(
                 """
@@ -270,9 +276,13 @@ class PairingAuthManager:
             return True
         if host in [h.lower() for h in allowed_hosts]:
             return True
-        # Tailscale CGNAT 网段 100.64.0.0/10
-        if host.startswith("100."):
-            return True
+        # Tailscale CGNAT 私网段严格校验 (100.64.0.0/10)
+        try:
+            ip_obj = ipaddress.ip_address(host)
+            if ip_obj in ipaddress.ip_network("100.64.0.0/10"):
+                return True
+        except ValueError:
+            pass
         return False
 
 
