@@ -131,8 +131,8 @@ def parse_state_selected_model(state_file: Path) -> Optional[str]:
         if m:
             raw_id = m.group(1).lower()
             return LS_MODEL_ID_MAP.get(raw_id, raw_id)
-    except Exception as exc:
-        logger.debug(f"读取电脑端配置 {state_file} 异常: {exc}")
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.debug(f"读取电脑端配置 {state_file} 遇到文件或编码异常: {exc}")
     return None
 
 

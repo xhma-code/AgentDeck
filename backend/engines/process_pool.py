@@ -19,7 +19,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Optional
+from typing import Any, Callable, Coroutine, NamedTuple, Optional
 
 import watchfiles
 
@@ -126,6 +126,16 @@ class PendingApproval:
         return asdict(self)
 
 
+class SessionMessagesEtagEntry(NamedTuple):
+    """单会话消息轻量 ETag 缓存快照条目（消除原始元组基本类型偏执）。"""
+
+    mtime_ns: int
+    fsize: int
+    is_running: int
+    pa_flag: int
+    etag: str
+
+
 def kill_windows_process_tree(pid: Optional[int]) -> bool:
     """
     在 Windows 下使用 `taskkill /F /T /PID` 递归强杀整棵子孙进程树（含派生的 pwsh.exe / node.exe）。
@@ -213,8 +223,10 @@ class AgentOrchestrator:
         # 启动体检与模型列表内存缓存，消除移动端轮询与点击扫码时的重复开销
         self._health_report_cache: tuple[float, list[dict[str, Any]]] = (0.0, [])
         self._available_models_cache: tuple[float, dict[str, list[dict[str, Any]]]] = (0.0, {})
-        # 会话消息轻量 ETag 缓存: cache_key -> (mtime_ns, fsize, is_running, pa, etag_str)
-        self._messages_etag_cache: dict[str, tuple[int, int, int, int, str]] = {}
+        # 会话消息轻量 ETag 缓存（OrderedDict LRU 缓存，多协程并发安全）
+        self._messages_etag_cache: collections.OrderedDict[str, SessionMessagesEtagEntry] = (
+            collections.OrderedDict()
+        )
 
     @property
     def _seq_counter(self) -> int:
@@ -253,19 +265,13 @@ class AgentOrchestrator:
         cached = self._messages_etag_cache.get(cache_key)
         if not cached:
             return False, None
-        cached_mtime, cached_size, cached_running, cached_pa, cached_etag = cached
 
         agent_type, raw_id = unified_id.split(":", 1)
         adapter = self.adapters.get(agent_type)
         if not adapter:
             return False, None
 
-        fpath = None
-        if hasattr(adapter, "brain_dir"):
-            fpath = adapter.brain_dir / raw_id / ".system_generated" / "logs" / "transcript.jsonl"
-        elif hasattr(adapter, "_session_file_map") and raw_id in adapter._session_file_map:
-            fpath = adapter._session_file_map[raw_id]
-
+        fpath = adapter.get_session_transcript_path(raw_id)
         current_mtime = 0
         current_size = 0
         if fpath and fpath.exists():
@@ -280,15 +286,15 @@ class AgentOrchestrator:
         current_pa = 1 if unified_id in self.pending_approvals else 0
 
         if (
-            current_mtime == cached_mtime
-            and current_size == cached_size
-            and current_running == cached_running
-            and current_pa == cached_pa
+            current_mtime == cached.mtime_ns
+            and current_size == cached.fsize
+            and current_running == cached.is_running
+            and current_pa == cached.pa_flag
         ):
             inm = if_none_match.strip()
-            etag = cached_etag.strip()
+            etag = cached.etag.strip()
             if inm == etag or inm == etag.strip('"') or inm.strip('"') == etag.strip('"'):
-                return True, cached_etag
+                return True, cached.etag
 
         return False, None
 
@@ -307,11 +313,7 @@ class AgentOrchestrator:
         cache_key = f"{unified_id}-{limit}-{before_step}-{since_step}"
         agent_type, raw_id = unified_id.split(":", 1) if ":" in unified_id else ("", "")
         adapter = self.adapters.get(agent_type)
-        fpath = None
-        if adapter and hasattr(adapter, "brain_dir"):
-            fpath = adapter.brain_dir / raw_id / ".system_generated" / "logs" / "transcript.jsonl"
-        elif adapter and hasattr(adapter, "_session_file_map") and raw_id in adapter._session_file_map:
-            fpath = adapter._session_file_map[raw_id]
+        fpath = adapter.get_session_transcript_path(raw_id) if adapter else None
         mtime_ns = 0
         fsize = 0
         if fpath and fpath.exists():
@@ -322,9 +324,19 @@ class AgentOrchestrator:
                 pass
         is_running = 1 if self.is_session_active(unified_id) else 0
         pa = 1 if unified_id in self.pending_approvals else 0
-        self._messages_etag_cache[cache_key] = (mtime_ns, fsize, is_running, pa, etag_res)
+        entry = SessionMessagesEtagEntry(
+            mtime_ns=mtime_ns,
+            fsize=fsize,
+            is_running=is_running,
+            pa_flag=pa,
+            etag=etag_res,
+        )
+        self._messages_etag_cache[cache_key] = entry
         if len(self._messages_etag_cache) > 200:
-            self._messages_etag_cache.pop(next(iter(self._messages_etag_cache)), None)
+            try:
+                self._messages_etag_cache.popitem(last=False)
+            except (KeyError, RuntimeError):
+                pass
         return etag_res
 
     @staticmethod
@@ -1119,11 +1131,10 @@ class AgentOrchestrator:
         实时解析思考增量、工具调用、权限审批请求并通过 WebSocket 推送到手机端。
         """
         unified_id = ctx.unified_id
-        # 内核级测试安全护栏：虚拟测试会话或单测环境（未显式允许真实子进程），安全模拟完成，绝不拉起外部进程
-        if (
-            ctx.raw_session_id.startswith(("test_", "mock_"))
-            or "PYTEST_CURRENT_TEST" in os.environ
-        ) and not getattr(self, "_allow_real_process_in_test", False):
+        # 虚拟测试会话安全护栏：若为模拟会话且未显式允许真实子进程，安全广播完成，不拉起外部进程
+        if ctx.raw_session_id.startswith(("test_", "mock_")) and not getattr(
+            self, "_allow_real_process_in_test", False
+        ):
             await self.broadcast_event(
                 "SESSION_TURN_FINISHED",
                 {"unified_id": unified_id, "mock_completed": True},

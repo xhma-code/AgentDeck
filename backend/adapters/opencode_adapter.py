@@ -112,8 +112,13 @@ class OpenCodeHttpBridge:
                     pwd = str(self._service_cache.get("password") or "")
                     if url:
                         return url, pwd
-        except Exception as exc:
-            logger.debug(f"读取 opencode service.json 异常: {exc}")
+        except (OSError, json.JSONDecodeError) as exc:
+            log_structured_error(
+                problem="读取 OpenCode service.json 状态文件失败",
+                cause=str(exc),
+                fix="系统将回退到默认本地服务端口 (4096)。",
+                exc=exc,
+            )
 
         return "http://127.0.0.1:4096", ""
 
@@ -386,7 +391,13 @@ class OpenCodeAdapter(BaseAgentAdapter):
                 (table_name,),
             )
             return bool(rows and int(rows[0].get("c") or 0) > 0)
-        except Exception:
+        except (sqlite3.Error, OSError) as exc:
+            log_structured_error(
+                problem=f"检查 OpenCode 表结构失败: {table_name}",
+                cause=str(exc),
+                fix="请检查 opencode.db 数据库文件权限或完整性。",
+                exc=exc,
+            )
             return False
 
     def _check_has_session_v2(self) -> bool:
@@ -400,6 +411,10 @@ class OpenCodeAdapter(BaseAgentAdapter):
             return raw_session_id in active_map
         return False
 
+    def get_session_transcript_path(self, raw_session_id: str) -> Optional[Path]:
+        """返回 OpenCode 会话对应的本地 SQLite 数据库文件路径。"""
+        return self.db_path if self.db_path.exists() else None
+
     def is_available(self) -> tuple[bool, str]:
         if self.db_path.exists():
             cnt = 0
@@ -409,8 +424,13 @@ class OpenCodeAdapter(BaseAgentAdapter):
                 rows = safe_query_external_sqlite(self.db_path, f"SELECT count(*) as c FROM {tbl}")
                 if rows and isinstance(rows, list):
                     cnt = int(rows[0].get("c") or 0)
-            except Exception as exc:
-                logger.debug(f"统计 OpenCode 会话数量异常: {exc}")
+            except (sqlite3.Error, OSError) as exc:
+                log_structured_error(
+                    problem="统计 OpenCode 会话数量失败",
+                    cause=str(exc),
+                    fix="请检查 opencode.db 数据库文件权限或 WAL 锁状态。",
+                    exc=exc,
+                )
                 cnt = 0
             v_tag = "OpenCode 2" if self._check_has_session_v2() else "OpenCode"
             return True, f"{v_tag} 已就绪: 发现 {cnt} 个会话 (SQLite + opencode serve API)"
@@ -787,8 +807,8 @@ class OpenCodeAdapter(BaseAgentAdapter):
                 )
                 if sm_rows:
                     return True, sm_rows
-            except Exception:
-                pass
+            except (sqlite3.Error, OSError) as exc:
+                logger.debug(f"尝试读取 OpenCode 2 session_message 失败，准备回退: {exc}")
 
         # 2. 回退 message 表 (OpenCode 1)
         try:
@@ -798,7 +818,13 @@ class OpenCodeAdapter(BaseAgentAdapter):
                 (raw_session_id,),
             )
             return False, m_rows
-        except Exception:
+        except (sqlite3.Error, OSError) as exc:
+            log_structured_error(
+                problem=f"查询 OpenCode 消息失败: {raw_session_id[:8]}",
+                cause=str(exc),
+                fix="请检查 opencode.db 数据库文件权限或完整性。",
+                exc=exc,
+            )
             return False, []
 
     def get_session_messages_page(

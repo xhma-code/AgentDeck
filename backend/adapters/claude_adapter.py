@@ -226,6 +226,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             return p
         return None
 
+    def get_session_transcript_path(self, raw_session_id: str) -> Optional[Path]:
+        """返回 Claude Code 会话对应的本地 .jsonl 文件路径。"""
+        return self._find_session_file(raw_session_id)
+
     def list_sessions(self, limit: int = 50) -> list[UnifiedSession]:
         """扫描 ~/.claude/projects 下所有 .jsonl 文件并提取会话元数据（带 mtime_ns 内存缓存与短效扫描缓存）。"""
         if not self.projects_dir.exists():

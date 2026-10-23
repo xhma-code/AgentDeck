@@ -1669,17 +1669,17 @@ function escapeHtml(str) {
     .replace(/'/g, "&#39;");
 }
 
-function cleanFriendlyTitle(title) {
-  if (!title) return "";
-  const str = String(title).trim();
+function cleanFriendlyText(text) {
+  if (!text) return "";
+  const str = String(text).trim();
   const m = str.match(/^\[已拒绝工具\s+[^\]]+\]\s*(?:请勿执行刚才的操作，按以下要求调整方案：)?\s*(.*)$/);
   if (m) {
     const feedback = m[1] ? m[1].trim() : "";
-    return feedback ? `指导: ${feedback}` : "已拒绝工具执行";
+    return feedback ? `指导: ${feedback}` : "已拒绝执行该工具";
   }
   return str;
 }
-const cleanFriendlyText = cleanFriendlyTitle;
+const cleanFriendlyTitle = cleanFriendlyText;
 
 function formatRelativeTime(isoStr) {
   if (!isoStr) return "";
