@@ -36,9 +36,7 @@ from backend.adapters.base import (
     truncate_large_output,
     truncate_tool_output,
 )
-from backend.core.logger import log_structured_error
-
-logger = logging.getLogger(__name__)
+from backend.core.logger import logger, log_structured_error
 
 COMMAND_NAME_RE = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.DOTALL)
 COMMAND_ARGS_RE = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.DOTALL)

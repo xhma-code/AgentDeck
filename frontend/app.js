@@ -643,7 +643,7 @@ function handleRealtimeEvent(envelope) {
         window.appActions.closeQrModal();
       }, 1800);
     }
-    showToast(`📱 ${payload.device_name || "移动设备"} 配对成功！`, "success");
+    showToast(`${payload.device_name || "移动设备"} 配对成功！`, "success");
     triggerAlertNotification("设备配对成功", `${payload.device_name || "移动设备"} 已安全接入中控台`);
     return;
   }
@@ -1666,13 +1666,14 @@ function escapeHtml(str) {
 function cleanFriendlyTitle(title) {
   if (!title) return "";
   const str = String(title).trim();
-  const m = str.match(/^\[已拒绝工具\s+[^\s\]]+\]\s*(?:请勿执行刚才的操作，按以下要求调整方案：)?\s*(.*)$/);
+  const m = str.match(/^\[已拒绝工具\s+[^\]]+\]\s*(?:请勿执行刚才的操作，按以下要求调整方案：)?\s*(.*)$/);
   if (m) {
     const feedback = m[1] ? m[1].trim() : "";
     return feedback ? `指导: ${feedback}` : "已拒绝工具执行";
   }
   return str;
 }
+const cleanFriendlyText = cleanFriendlyTitle;
 
 function formatRelativeTime(isoStr) {
   if (!isoStr) return "";

@@ -228,8 +228,7 @@ class AgentOrchestrator:
 
     def bump_version(self) -> int:
         """递增全局状态序列号，使 ETag 协商缓存与断线重连缓存同步感知变更。"""
-        self.event_bus._seq_counter += 1
-        return self.event_bus.seq_counter
+        return self.event_bus.bump_seq()
 
     def get_sessions_etag(self, agent_filter: str = "all", limit: int = 40) -> str:
         """计算会话列表的高效 ETag 指纹（基于序列计数器、活跃进程与审批队列）。"""
@@ -246,19 +245,26 @@ class AgentOrchestrator:
         since_step: Optional[int] = None,
     ) -> str:
         """根据会话流最新状态、步骤序号与尾部内容指纹生成灵敏的 ETag 签名，防止流式追加时误判 304。"""
+        fp = self._extract_session_detail_fingerprint(detail)
+        return f'W/"msg-{unified_id}-{fp}-{limit}-{before_step}-{since_step}"'
+
+    @staticmethod
+    def _extract_session_detail_fingerprint(detail: dict[str, Any]) -> str:
+        """内聚解析会话详情对象的尾部状态与内容指纹，消除跨层深层探测。"""
         msgs = detail.get("messages", [])
         last_step = msgs[-1].get("step_index", 0) if msgs else 0
         is_running = 1 if detail.get("is_running") else 0
-        pa_id = detail["pending_approval"]["approval_id"] if detail.get("pending_approval") else "0"
+        pa = detail.get("pending_approval")
+        pa_id = pa.get("approval_id", "0") if isinstance(pa, dict) else "0"
         last_msg = msgs[-1] if msgs else {}
         content_len = len(last_msg.get("content") or "")
         thinking_len = len(last_msg.get("thinking") or "")
         tool_calls = last_msg.get("tool_calls") or []
-        tc_len = len(tool_calls)
         last_tc = tool_calls[-1] if tool_calls else {}
-        last_tc_status = last_tc.get("status") or ""
-        last_tc_out_len = len(last_tc.get("output") or "")
-        return f'W/"msg-{unified_id}-{last_step}-{len(msgs)}-{content_len}-{thinking_len}-{tc_len}-{last_tc_status}-{last_tc_out_len}-{is_running}-{pa_id}-{limit}-{before_step}-{since_step}"'
+        return (
+            f"{last_step}-{len(msgs)}-{content_len}-{thinking_len}-"
+            f"{len(tool_calls)}-{last_tc.get('status') or ''}-{len(last_tc.get('output') or '')}-{is_running}-{pa_id}"
+        )
 
     def normalize_execution_mode(self, agent_type: str, mode: Optional[str]) -> str:
         """

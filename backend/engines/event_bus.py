@@ -36,6 +36,15 @@ class RealtimeEventBus:
     def event_buffer(self) -> collections.deque[dict[str, Any]]:
         return self._event_buffer
 
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._subscribers)
+
+    def bump_seq(self) -> int:
+        """显式自增全局事件序号并返回最新版本号。"""
+        self._seq_counter += 1
+        return self._seq_counter
+
     def register_subscriber(
         self, callback: Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
     ) -> None:
