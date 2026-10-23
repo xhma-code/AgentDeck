@@ -10,7 +10,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
-python run.py %*
+echo [*] 正在检查并清理已存在的 AgentDeck 进程...
+call "%~dp0stop.cmd" --no-pause
+title AgentDeck
+
+echo [*] 正在启动 AgentDeck (热重载模式)...
+echo.
+
+python run.py --reload %*
 set "CODE=%ERRORLEVEL%"
 
 if not "%CODE%"=="0" (

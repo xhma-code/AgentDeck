@@ -79,38 +79,53 @@ body {
 }
 
 /* 左侧菜单栏极简隐形细滚动条：默认完全透明，悬停时仅浮现 4px 低对比暗色细线 */
-.subtle-scrollbar {
+.subtle-scrollbar,
+#session-list-container {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
 }
-.subtle-scrollbar:hover {
-  scrollbar-color: rgba(148, 163, 184, 0.18) transparent;
+.subtle-scrollbar:hover,
+#session-list-container:hover {
+  scrollbar-color: rgba(148, 163, 184, 0.16) transparent;
 }
-.subtle-scrollbar::-webkit-scrollbar {
+.subtle-scrollbar::-webkit-scrollbar,
+#session-list-container::-webkit-scrollbar {
   width: 4px;
   height: 4px;
 }
-.subtle-scrollbar::-webkit-scrollbar-track {
+.subtle-scrollbar::-webkit-scrollbar-track,
+#session-list-container::-webkit-scrollbar-track {
   background: transparent;
 }
-.subtle-scrollbar::-webkit-scrollbar-thumb {
+.subtle-scrollbar::-webkit-scrollbar-thumb,
+#session-list-container::-webkit-scrollbar-thumb {
   background: transparent;
   border-radius: 9999px;
 }
-.subtle-scrollbar:hover::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.18);
+.subtle-scrollbar:hover::-webkit-scrollbar-thumb,
+#session-list-container:hover::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.16);
 }
-.subtle-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.32);
+.subtle-scrollbar::-webkit-scrollbar-thumb:hover,
+#session-list-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.28);
 }
 
-/* 桌面端左侧菜单栏收起与展开过渡 */
+/* 桌面端左侧菜单栏收起与展开过渡及按钮显隐纯 CSS 控制 */
+#desktop-sidebar-expand-btn {
+  display: none;
+}
+
 @media (min-width: 768px) {
+  body.sidebar-is-collapsed #desktop-sidebar-expand-btn {
+    display: inline-flex;
+  }
+
   #sidebar-drawer {
     transition: margin-left 200ms cubic-bezier(0.4, 0, 0.2, 1),
       opacity 180ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  #sidebar-drawer.desktop-collapsed {
+  body.sidebar-is-collapsed #sidebar-drawer {
     margin-left: -18rem;
     border-right-width: 0;
     opacity: 0;

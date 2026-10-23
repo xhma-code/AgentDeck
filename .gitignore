@@ -25,18 +25,28 @@ htmlcov/
 .ruff_cache/
 
 # AgentDeck local runtime database & SQLite WAL snapshots (contains device tokens & local paths)
-data/*.db
-data/*.db-wal
-data/*.db-shm
-data/*.sqlite*
-data/tmp_snapshots/
+data/
+!data/.gitkeep
 
 # AgentDeck runtime logs
-logs/*.log
-logs/*.log.*
+logs/
+!logs/.gitkeep
+
+# Temporary & backup files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+*.orig
 
 # IDE & OS metadata
 .vscode/
 .idea/
+.cursor/
+.windsurf/
 .DS_Store
 Thumbs.db
+ehthumbs.db
+desktop.ini

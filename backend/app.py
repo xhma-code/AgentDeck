@@ -30,6 +30,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from backend.core.workspace import (
+    decode_workspace_uri,
+    discover_quick_workflows,
+    get_git_workspace_diff,
+    get_git_workspace_status,
+)
+
 from backend.core.database import PROJECT_ROOT, MetaDatabase
 from backend.core.logger import log_structured_error, logger
 from backend.core.tailscale_auth import (
@@ -230,8 +237,17 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
             "pair_url": pair_url,
             "agents_health": orchestrator.get_startup_health_report(),
             "models_by_agent": orchestrator.get_available_models(),
+            "workflows": discover_quick_workflows(),
             "snapshot": orchestrator.get_state_snapshot(),
         }
+
+    @app.get("/api/v1/workflows")
+    async def list_quick_workflows(
+        project_path: str = Query(default=""),
+        _auth: bool = Depends(verify_request_auth),
+    ) -> dict[str, Any]:
+        """返回 `/` 斜杠快捷指令与项目工作流补全列表。"""
+        return {"ok": True, "workflows": discover_quick_workflows(project_path)}
 
     @app.get("/api/v1/models")
     async def list_available_models(
@@ -420,8 +436,6 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         _auth: bool = Depends(verify_request_auth),
     ) -> dict[str, Any]:
         """供手机端全屏阅读器安全读取本地 Markdown 文档（如 implementation_plan.md）或源码文件。"""
-        from backend.adapters.base import decode_workspace_uri
-
         raw_clean = path.split("#")[0].split("?")[0].strip()
         norm_path = decode_workspace_uri(raw_clean)
         if not norm_path:
@@ -462,6 +476,26 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
             "size_bytes": stat.st_size,
             "content": content,
         }
+
+    @app.get("/api/v1/git/status")
+    async def read_git_status(
+        project_path: str = Query(..., description="项目工作区路径"),
+        _auth: bool = Depends(verify_request_auth),
+    ) -> dict[str, Any]:
+        """供手机端轻量查看当前项目分支与未提交文件变更列表（纯只读）。"""
+        return get_git_workspace_status(project_path)
+
+    @app.get("/api/v1/git/diff")
+    async def read_git_diff(
+        project_path: str = Query(..., description="项目工作区路径"),
+        file_path: str = Query(default="", description="可选：指定单文件相对路径"),
+        _auth: bool = Depends(verify_request_auth),
+    ) -> dict[str, Any]:
+        """供手机端轻量查看单文件或全局未提交 Unified Diff（纯只读）。"""
+        res = get_git_workspace_diff(project_path, file_path)
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("error") or "获取 Diff 失败")
+        return res
 
     # --- 5. 多路复用 WebSocket（含 Origin 校验与断线重连快照恢复）---
     @app.websocket("/ws/stream")
@@ -537,6 +571,24 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
     # --- 6. 移动端 PWA 前端静态服务挂载 ---
     if FRONTEND_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+    @app.get("/apple-touch-icon.png")
+    @app.get("/apple-touch-icon-precomposed.png")
+    async def serve_apple_touch_icon() -> Any:
+        icon_file = FRONTEND_DIR / "apple-touch-icon.png"
+        if icon_file.exists():
+            return FileResponse(icon_file, media_type="image/png")
+        return JSONResponse({"error": "未找到指定苹果快捷图标"}, status_code=404)
+
+    @app.get("/favicon.ico")
+    async def serve_favicon() -> Any:
+        fav_file = FRONTEND_DIR / "favicon.ico"
+        if fav_file.exists():
+            return FileResponse(fav_file)
+        icon_file = FRONTEND_DIR / "favicon-32x32.png"
+        if icon_file.exists():
+            return FileResponse(icon_file, media_type="image/png")
+        return JSONResponse({"error": "未找到网站图标文件"}, status_code=404)
 
     @app.get("/", response_class=HTMLResponse)
     async def serve_pwa_index() -> Any:

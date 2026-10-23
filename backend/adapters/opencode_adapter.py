@@ -54,6 +54,11 @@ class OpenCodeHttpBridge:
         except Exception:
             return False
 
+    def is_alive(self) -> bool:
+        """兼容别名：探测本地 opencode serve HTTP 服务是否存活。"""
+        return self.is_server_running()
+
+
     def send_message(self, session_id: str, prompt: str, model_name: str = "") -> Optional[dict[str, Any]]:
         """通过 opencode serve 的 POST /session/{id}/message 接口发送消息。"""
         body: dict[str, Any] = {
@@ -232,39 +237,17 @@ class OpenCodeAdapter(BaseAgentAdapter):
         self._list_cache[limit] = (sig, sessions)
         return [copy.copy(s) for s in sessions]
 
-    def get_session_messages(
-        self, raw_session_id: str, limit: int = 120
+    def _parse_messages_from_rows(
+        self,
+        raw_session_id: str,
+        msg_rows: list[dict[str, Any]],
+        step_index_map: dict[str, int],
     ) -> list[UnifiedMessageItem]:
-        """关联查询 opencode.db 的 message 与 part 表，组装为结构化对话卡片流（带 WAL 签名缓存与按需 part 过滤）。"""
-        if not self.db_path.exists():
-            return []
-
-        sig = self._get_db_sig()
-        cached = self._messages_cache.get(raw_session_id)
-        if cached and cached[0] == sig:
-            all_cached = cached[1]
-            return all_cached[-limit:] if limit > 0 else list(all_cached)
-
-        # 取最近最多 250 条消息并按时间正序排列，避免超长历史会话全表扫描
-        fetch_cap = max(limit, 250)
-        msg_rows = safe_query_external_sqlite(
-            self.db_path,
-            """
-            SELECT id, time_created, data FROM (
-                SELECT id, time_created, data
-                FROM message
-                WHERE session_id = ?
-                ORDER BY time_created DESC
-                LIMIT ?
-            ) ORDER BY time_created ASC
-            """,
-            (raw_session_id, fetch_cap),
-        )
         if not msg_rows:
-            self._messages_cache[raw_session_id] = (sig, [])
             return []
-
         msg_ids = [str(r.get("id") or "") for r in msg_rows if r.get("id")]
+        if not msg_ids:
+            return []
         placeholders = ",".join(["?"] * len(msg_ids))
         part_rows = safe_query_external_sqlite(
             self.db_path,
@@ -288,8 +271,9 @@ class OpenCodeAdapter(BaseAgentAdapter):
             parts_by_msg.setdefault(mid, []).append(pdata)
 
         items: list[UnifiedMessageItem] = []
-        for idx, mr in enumerate(msg_rows, start=1):
-            mid = str(mr.get("id") or f"msg_{idx}")
+        for mr in msg_rows:
+            mid = str(mr.get("id") or "")
+            idx = step_index_map.get(mid, 1)
             try:
                 mdata = json.loads(str(mr.get("data") or "{}"))
             except json.JSONDecodeError:
@@ -379,8 +363,72 @@ class OpenCodeAdapter(BaseAgentAdapter):
                     )
                 )
 
-        self._messages_cache[raw_session_id] = (sig, items)
-        return items[-limit:] if limit > 0 else items
+        return items
+
+    def get_session_messages_page(
+        self,
+        raw_session_id: str,
+        limit: int = 30,
+        before_step: Optional[int] = None,
+    ) -> tuple[list[UnifiedMessageItem], int, bool]:
+        """
+        深度下推至 SQL：先以极低开销查询全量 message 基础元信息，
+        按 before_step 与 limit 切片后仅拉取目标消息关联的 part，杜绝全表扫描与缓存容量污染。
+        """
+        if not self.db_path.exists():
+            return [], 0, False
+
+        all_meta = safe_query_external_sqlite(
+            self.db_path,
+            "SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC",
+            (raw_session_id,),
+        )
+        if not all_meta:
+            return [], 0, False
+
+        total_count = len(all_meta)
+        step_index_map = {str(r.get("id")): idx for idx, r in enumerate(all_meta, start=1)}
+
+        if before_step is not None:
+            filtered = [r for r in all_meta if step_index_map.get(str(r.get("id")), 0) < before_step]
+        else:
+            filtered = all_meta
+
+        page_rows = filtered[-limit:] if limit > 0 else filtered
+        has_more = len(filtered) > len(page_rows)
+
+        page_items = self._parse_messages_from_rows(raw_session_id, page_rows, step_index_map)
+        return page_items, total_count, has_more
+
+    def get_session_messages(
+        self, raw_session_id: str, limit: int = 120
+    ) -> list[UnifiedMessageItem]:
+        """关联查询 opencode.db 的 message 与 part 表，组装为结构化对话卡片流（带 WAL 签名缓存与按需 part 过滤）。"""
+        if not self.db_path.exists():
+            return []
+
+        sig = self._get_db_sig()
+        cached = self._messages_cache.get(raw_session_id)
+        if cached and cached[0] == sig:
+            all_cached = cached[1]
+            return all_cached[-limit:] if limit > 0 else list(all_cached)
+
+        all_meta = safe_query_external_sqlite(
+            self.db_path,
+            "SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC",
+            (raw_session_id,),
+        )
+        if not all_meta:
+            self._messages_cache[raw_session_id] = (sig, [])
+            return []
+
+        step_index_map = {str(r.get("id")): idx for idx, r in enumerate(all_meta, start=1)}
+        target_rows = all_meta[-limit:] if limit > 0 else all_meta
+        items = self._parse_messages_from_rows(raw_session_id, target_rows, step_index_map)
+
+        if limit <= 0 or limit >= len(all_meta):
+            self._messages_cache[raw_session_id] = (sig, items)
+        return items
 
     def get_full_step_output(self, raw_session_id: str, step_index: int) -> str:
         """按需读取 OpenCode 指定消息步骤的完整未截断工具输出。"""
@@ -413,3 +461,61 @@ class OpenCodeAdapter(BaseAgentAdapter):
             except json.JSONDecodeError:
                 full_chunks.append(raw_data)
         return "\n\n".join(full_chunks)
+
+    def build_cli_command(
+        self,
+        raw_session_id: str,
+        prompt: str,
+        execution_mode: str,
+        model_name: str = "",
+        approved_tools: Optional[list[str]] = None,
+    ) -> list[str]:
+        """为 OpenCode 组装命令行（支持 run 与 --auto）。"""
+        clean_model = (model_name or "").strip()
+        if clean_model == "default":
+            clean_model = ""
+        bin_path = str(self.cli_bin or "opencode")
+        if bin_path.endswith(".ps1"):
+            cmd = ["pwsh", "-NoProfile", "-File", bin_path]
+        else:
+            cmd = [bin_path]
+        cmd.extend(["run", "--session", raw_session_id, "--prompt", prompt])
+        if clean_model:
+            cmd.extend(["--model", clean_model])
+        if execution_mode in ("accept_edits", "auto"):
+            cmd.append("--auto")
+        return cmd
+
+    def respond_permission(
+        self,
+        raw_session_id: str,
+        tool_call_id: str,
+        decision: str,
+    ) -> bool:
+        """通过本地 HTTP Bridge 响应待审批工具调用的允许/拒绝。"""
+        if self.http_bridge.is_server_running():
+            return self.http_bridge.respond_permission(
+                session_id=raw_session_id,
+                permission_id=tool_call_id,
+                allow=(decision == "approved"),
+            )
+        return False
+
+    def extract_stream_tool_blocks(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        """从 OpenCode 流式事件中提取工具调用块。"""
+        tool_blocks: list[dict[str, Any]] = []
+        ev_type = str(event.get("type") or "")
+        if ev_type in ("tool_use", "permission_request", "tool_call"):
+            tool_blocks.append(event)
+        elif isinstance(event.get("part"), dict):
+            part = event["part"]
+            if part.get("type") == "tool":
+                tool_blocks.append(
+                    {
+                        "id": str(part.get("id") or part.get("call_id") or ""),
+                        "name": str(part.get("tool") or part.get("name") or ""),
+                        "input": part.get("args") or part.get("input") or {},
+                    }
+                )
+        return tool_blocks
+

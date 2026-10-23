@@ -73,6 +73,31 @@ const state = {
   expandedUserMessages: {}, // item_id -> boolean
   codeBlockStore: {}, // codeId -> raw code string
   currentDocRawContent: "",
+  workflows: [],
+  slashMenuOpen: false,
+  denyFeedbackOpen: false,
+  denyFeedbackText: "",
+  questionSelections: {}, // `${turnKey}_q${qi}` -> string[]
+  questionWriteIns: {}, // `${turnKey}_q${qi}` -> string
+  currentGitStatus: null,
+  gitDiffCache: {},
+  gitExpandedDiffs: {},
+  fullOutputStore: {}, // `${unifiedId}_${stepIndex}` -> full string
+  persistedQuestionDecisions: (() => {
+    try {
+      return JSON.parse(localStorage.getItem("agentdeck_question_decisions") || "{}");
+    } catch (_) {
+      return {};
+    }
+  })(),
+};
+
+const GIT_STATUS_BADGES = {
+  M: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+  A: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
+  U: "bg-sky-500/20 text-sky-300 border-sky-500/40",
+  D: "bg-rose-500/20 text-rose-300 border-rose-500/40",
+  R: "bg-purple-500/20 text-purple-300 border-purple-500/40",
 };
 
 const AGENT_META = {
@@ -377,6 +402,9 @@ async function loadSystemStatus() {
     if (data.models_by_agent) {
       state.modelsByAgent = data.models_by_agent;
     }
+    if (data.workflows) {
+      state.workflows = data.workflows;
+    }
     if (data.snapshot && data.snapshot.pending_approvals) {
       state.pendingApprovals = data.snapshot.pending_approvals;
     }
@@ -384,6 +412,7 @@ async function loadSystemStatus() {
     renderApprovalBanners();
     renderQrModalContent();
     renderCurrentSessionHeader();
+    updateGitStatusBadge();
   } catch (e) {
     console.error("获取系统状态失败:", e);
   }
@@ -484,6 +513,7 @@ async function selectSession(unifiedId) {
   }
   renderCurrentSessionHeader();
   renderApprovalBanners();
+  updateGitStatusBadge();
 
   // 2. 检查前端内存缓存（Stale-While-Revalidate 秒开）
   const cached = state.sessionMessagesCache[unifiedId];
@@ -503,8 +533,8 @@ async function selectSession(unifiedId) {
   };
 
   if (wasMobileDrawerOpen) {
-    // 移动端抽屉正在收起：让出动画帧后再挂载大 DOM，保证滑出动画 60fps 丝滑
-    setTimeout(mountCachedOrLoad, 90);
+    // 移动端抽屉正在收起：让出 210ms 动画时长后再挂载大 DOM，保证 200ms 滑出动画 60fps 丝滑
+    setTimeout(mountCachedOrLoad, 210);
   } else {
     await mountCachedOrLoad();
   }
@@ -556,6 +586,17 @@ async function loadSessionMessages(unifiedId, options = false) {
 
     const newSig = computeMessagesSig(mergedMessages, mergedHasMore, totalCount);
     const oldSig = prevCache ? prevCache.sig : "";
+
+    // 恢复用户此前点击「加载完整输出」拉取的未截断文本，防止静默刷新回退
+    mergedMessages.forEach((msg) => {
+      const full = state.fullOutputStore[`${unifiedId}_${msg.step_index}`];
+      if (full && Array.isArray(msg.tool_calls)) {
+        msg.tool_calls.forEach((tc) => {
+          tc.output = full;
+          tc.is_truncated = false;
+        });
+      }
+    });
 
     state.sessionMessagesCache[unifiedId] = {
       messages: mergedMessages,
@@ -715,7 +756,9 @@ async function handleAbortCurrentSession() {
     );
     showToast("已中断进程", "info");
     await loadSessions();
-  } catch (_) {}
+  } catch (err) {
+    console.error("中断会话失败:", err);
+  }
 }
 
 async function handleModeChange(newMode) {
@@ -731,7 +774,9 @@ async function handleModeChange(newMode) {
     const modeLabels = { ask: "审批", plan: "规划", accept_edits: "自动改", auto: "全自动" };
     showToast(`模式: ${modeLabels[newMode] || newMode}`, "success");
     await loadSessions();
-  } catch (_) {}
+  } catch (err) {
+    console.error("更新权限模式失败:", err);
+  }
 }
 
 async function handleModelChange(newModel) {
@@ -747,7 +792,9 @@ async function handleModelChange(newModel) {
     const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
     if (sess) sess.model_name = newModel;
     showToast(`模型: ${newModel}`, "success");
-  } catch (_) {}
+  } catch (err) {
+    console.error("切换模型失败:", err);
+  }
 }
 
 async function handleTogglePin(unifiedId, currentPinned, ev) {
@@ -758,26 +805,36 @@ async function handleTogglePin(unifiedId, currentPinned, ev) {
       body: JSON.stringify({ is_pinned: currentPinned ? 0 : 1 }),
     });
     await loadSessions();
-  } catch (_) {}
+  } catch (err) {
+    console.error("切换置顶状态失败:", err);
+  }
 }
 
-async function submitApprovalDecision(unifiedId, decision) {
+async function submitApprovalDecision(unifiedId, decision, feedback = "") {
   try {
+    const payload = { decision };
+    if (feedback && feedback.trim()) {
+      payload.feedback = feedback.trim();
+    }
     await apiFetch(
       `/api/v1/sessions/${encodeURIComponent(unifiedId)}/approve`,
       {
         method: "POST",
-        body: JSON.stringify({ decision }),
+        body: JSON.stringify(payload),
       }
     );
+    state.denyFeedbackOpen = false;
+    state.denyFeedbackText = "";
     const labelMap = {
       approved: "已允许执行",
       approve_session_edits: "本会话已免审",
-      denied: "已拒绝执行",
+      denied: feedback ? "已拒绝并发送指导意见" : "已拒绝执行",
     };
     showToast(labelMap[decision] || "已提交", "success");
     await loadSessions();
-  } catch (_) {}
+  } catch (err) {
+    console.error("提交审批决定失败:", err);
+  }
 }
 
 // --- 高危命令长按 0.8s 确认 ---
@@ -887,7 +944,7 @@ function renderCompactSessionItem(s, showProjectTag = true) {
       }">
       <div class="flex items-center gap-1.5 min-w-0 flex-1">
         <span class="w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}"></span>
-        <span class="px-1 py-0.2 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
+        <span class="px-1 py-0.5 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
           ${meta.short}
         </span>
         <span class="text-xs truncate font-medium">${escapeHtml(s.title)}</span>
@@ -1135,7 +1192,7 @@ function renderCurrentSessionHeader() {
 
   if (titleEl) {
     titleEl.innerHTML = `
-      <span class="px-1.5 py-0.2 text-[10px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
+      <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
         ${meta.short}
       </span>
       <span class="truncate">${escapeHtml(sess.title)}</span>
@@ -1626,6 +1683,7 @@ function groupMessagesIntoTurns(messages) {
     // 划分：主回复正文 vs 收纳进折叠栏的中间过程步骤
     const primarySteps = [];
     const processRecords = [];
+    const turnQuestions = [];
     let thinkingCount = 0;
     let toolCount = 0;
     let hasHighRisk = false;
@@ -1644,6 +1702,9 @@ function groupMessagesIntoTurns(messages) {
     };
 
     assistantSteps.forEach((step, idx) => {
+      if (Array.isArray(step.questions) && step.questions.length > 0) {
+        turnQuestions.push(...step.questions);
+      }
       const hasThinking = !!(step.thinking && step.thinking.trim());
       const tools = Array.isArray(step.tool_calls) ? step.tool_calls : [];
       const hasTools = tools.length > 0;
@@ -1708,6 +1769,7 @@ function groupMessagesIntoTurns(messages) {
       turnKey,
       processRecords,
       primarySteps,
+      questions: turnQuestions,
       thinkingCount,
       toolCount,
       editedFiles: Array.from(editedFilesSet),
@@ -1918,6 +1980,143 @@ function renderTurnProcessBar(turn) {
   `;
 }
 
+function renderQuestionOptionsHtml(turnKey, qi, q) {
+  const qKey = `${turnKey}_q${qi}`;
+  const selectedOpts = state.questionSelections[qKey] || [];
+  const isMulti = !!q.is_multi_select;
+  return (q.options || [])
+    .map((opt) => {
+      const isSelected = selectedOpts.includes(opt);
+      return `
+        <button type="button"
+          onclick="window.appActions.toggleQuestionOption('${escapeJsSingleQuote(
+            turnKey
+          )}', ${qi}, '${escapeJsSingleQuote(opt)}', ${isMulti})"
+          class="text-left text-xs px-2.5 py-1.5 rounded-lg border transition-all active:scale-95 flex items-center gap-1.5 ${
+            isSelected
+              ? "bg-sky-500 text-slate-950 font-bold border-sky-400 shadow-sm"
+              : "bg-slate-900/80 hover:bg-slate-800 text-slate-200 border-slate-700/80"
+          }">
+          <span class="text-[10px] ${isSelected ? "text-slate-950" : "text-sky-400"}">${
+        isSelected ? (isMulti ? "☑" : "●") : isMulti ? "☐" : "○"
+      }</span>
+          <span class="break-words">${escapeHtml(opt)}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function renderInteractiveQuestionsCard(turn, isLatestTurn) {
+  const questions = turn.questions || [];
+  if (questions.length === 0) return "";
+  const turnKey = turn.turnKey;
+
+  // 历史轮次：转为轻量折叠卡片，展示已确认决议与选项，防止侵占手机长流
+  if (!isLatestTurn) {
+    const decision = state.persistedQuestionDecisions?.[turnKey];
+    const summaryTitle = decision
+      ? `✓ 已决策：${escapeHtml(decision.answerText.slice(0, 32))}${
+          decision.answerText.length > 32 ? "..." : ""
+        }`
+      : `✓ 已完成的交互问答 (共 ${questions.length} 项)`;
+
+    return `
+      <details class="mt-2 rounded-xl bg-slate-950/70 border border-slate-800/80 px-3 py-2 text-xs text-slate-400">
+        <summary class="cursor-pointer select-none font-medium text-slate-300 hover:text-sky-300 flex items-center justify-between">
+          <span class="${decision ? "text-sky-300 font-semibold" : ""}">${summaryTitle}</span>
+          <span class="text-[10px] text-slate-500">查看明细 ▾</span>
+        </summary>
+        <div class="mt-2 pt-2 border-t border-slate-800/70 space-y-2">
+          ${
+            decision
+              ? `<div class="p-2 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-200 text-xs">
+                  <span class="font-semibold text-sky-400">答复记录：</span>${escapeHtml(
+                    decision.answerText
+                  )}
+                </div>`
+              : ""
+          }
+          ${questions
+            .map(
+              (q, qi) => `
+                <div>
+                  <div class="font-semibold text-slate-200">Q${qi + 1}: ${escapeHtml(q.question)}</div>
+                  ${
+                    q.options && q.options.length > 0
+                      ? `<div class="mt-1 pl-3 text-[11px] text-slate-400 space-y-0.5">
+                          ${q.options.map((opt) => `<div>• ${escapeHtml(opt)}</div>`).join("")}
+                        </div>`
+                      : ""
+                  }
+                </div>
+              `
+            )
+            .join("")}
+        </div>
+      </details>
+    `;
+  }
+
+  const questionsHtml = questions
+    .map((q, qi) => {
+      const qKey = `${turnKey}_q${qi}`;
+      const writeInVal = state.questionWriteIns[qKey] || "";
+      const isMulti = !!q.is_multi_select;
+      const optsHtml = renderQuestionOptionsHtml(turnKey, qi, q);
+
+      return `
+        <div class="space-y-1.5 pt-1.5 first:pt-0">
+          <div class="text-xs font-semibold text-slate-100 flex items-start gap-1.5">
+            <span class="text-sky-400 shrink-0">Q${qi + 1}:</span>
+            <span class="whitespace-pre-wrap">${escapeHtml(q.question)}</span>
+            ${
+              isMulti
+                ? `<span class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[9px] shrink-0">多选</span>`
+                : ""
+            }
+          </div>
+          ${optsHtml ? `<div id="q-opts-${escapeHtml(qKey)}" class="flex flex-wrap gap-1.5 pl-4">${optsHtml}</div>` : ""}
+          <div class="pl-4">
+            <input type="text"
+              value="${escapeHtml(writeInVal)}"
+              placeholder="${q.options && q.options.length > 0 ? "或在此补充自定义回答..." : "输入您的回答..."}"
+              oninput="window.appActions.setQuestionWriteIn('${escapeJsSingleQuote(
+                turnKey
+              )}', ${qi}, this.value)"
+              class="w-full px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500" />
+          </div>
+        </div>
+      `;
+    })
+    .join('<div class="border-t border-slate-800/60 my-2"></div>');
+
+  return `
+    <div class="mt-2.5 rounded-xl bg-slate-900/90 border border-sky-500/40 p-3 shadow-lg space-y-2">
+      <div class="flex items-center justify-between text-xs text-sky-400 font-semibold border-b border-slate-800 pb-1.5">
+        <span class="flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>
+          <span>❓ Agent 正在向您提问确认</span>
+        </span>
+        <span class="text-[10px] text-slate-400">单手点选即答</span>
+      </div>
+      <div class="space-y-2">${questionsHtml}</div>
+      <div class="flex items-center justify-end gap-2 pt-1 border-t border-slate-800/80">
+        <button type="button"
+          onclick="window.appActions.skipQuestionAnswers('${escapeJsSingleQuote(turnKey)}')"
+          class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition">
+          按推荐执行
+        </button>
+        <button type="button"
+          onclick="window.appActions.submitQuestionAnswers('${escapeJsSingleQuote(turnKey)}')"
+          class="px-3.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs shadow transition active:scale-95 flex items-center gap-1">
+          <span>✓ 发送回答</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
 function renderMdDocQuickCards(mdFiles) {
   if (!mdFiles || mdFiles.length === 0) return "";
   return `
@@ -2051,6 +2250,11 @@ function renderMessagesList() {
       }
 
       const mdCardsHtml = renderMdDocQuickCards(t.mdFiles);
+      const isLastTurn = turns.indexOf(t) === turns.length - 1;
+      const questionsCardHtml =
+        t.questions && t.questions.length > 0 && isLastTurn
+          ? renderInteractiveQuestionsCard(t, isLastTurn)
+          : "";
 
       return `
         <article class="mb-5 pb-4 border-b border-slate-800/60 last:border-b-0">
@@ -2060,6 +2264,7 @@ function renderMessagesList() {
               ? `<div class="px-1 sm:px-2">${mdBodyHtml || fallbackStatusHtml}</div>`
               : ""
           }
+          ${questionsCardHtml ? `<div class="px-1 sm:px-2">${questionsCardHtml}</div>` : ""}
           ${mdCardsHtml ? `<div class="px-1 sm:px-2">${mdCardsHtml}</div>` : ""}
           <div class="px-1 sm:px-2 mt-2 text-[10px] text-slate-500 flex items-center justify-between">
             <span>步骤 #${t.firstStepIndex}${
@@ -2171,45 +2376,76 @@ function renderApprovalBanners() {
 
       ${activeApproval.diff_text ? renderUnifiedDiffHtml(activeApproval.diff_text) : ""}
 
-      <div class="grid grid-cols-12 gap-2 mt-2">
-        <button onclick="window.appActions.submitApproval('${escapeHtml(
-          activeApproval.unified_id
-        )}', 'denied')"
-          class="col-span-4 min-h-[42px] rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 font-semibold text-xs active:scale-95 transition">
-          ✕ 拒绝
-        </button>
+      ${
+        state.denyFeedbackOpen
+          ? `
+            <div class="mt-2 p-2 rounded-xl bg-slate-950 border border-rose-500/40 space-y-2">
+              <div class="text-[11px] text-rose-300 font-semibold flex items-center justify-between">
+                <span>✕ 拒绝原因与指导意见 (将传给 Agent 调整方案)</span>
+                <button type="button" onclick="window.appActions.toggleDenyFeedback(false)" class="text-slate-400 hover:text-white px-1">收起</button>
+              </div>
+              <textarea id="deny-feedback-input" rows="2"
+                placeholder="告诉 Agent 为什么拒绝或应该改成什么方案（例如：不要删这个函数，改成可选参数）..."
+                class="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-rose-400 resize-none"></textarea>
+              <div class="flex items-center justify-end gap-2">
+                <button type="button"
+                  onclick="window.appActions.submitApproval('${escapeHtml(
+                    activeApproval.unified_id
+                  )}', 'denied')"
+                  class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">
+                  直接拒绝
+                </button>
+                <button type="button"
+                  onclick="window.appActions.submitDenyWithFeedback('${escapeHtml(
+                    activeApproval.unified_id
+                  )}')"
+                  class="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow active:scale-95 transition">
+                  ✓ 拒绝并发送指导
+                </button>
+              </div>
+            </div>
+          `
+          : `
+            <div class="grid grid-cols-12 gap-2 mt-2">
+              <button onclick="window.appActions.toggleDenyFeedback(true)"
+                class="col-span-4 min-h-[42px] rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 font-semibold text-xs active:scale-95 transition flex items-center justify-center gap-1">
+                <span>✕ 拒绝</span>
+                <span class="text-[10px] text-rose-400/80">✎</span>
+              </button>
 
-        ${
-          isHighRisk
-            ? `
-              <button
-                onpointerdown="window.appActions.startHold('${escapeHtml(
-                  activeApproval.unified_id
-                )}', this)"
-                onpointerup="window.appActions.cancelHold(this)"
-                onpointerleave="window.appActions.cancelHold(this)"
-                onpointercancel="window.appActions.cancelHold(this)"
-                class="hold-approve-btn col-span-8 min-h-[42px] rounded-xl bg-amber-500 text-slate-950 font-bold text-xs shadow-lg">
-                <div class="hold-progress-fill"></div>
-                <span class="relative z-10">⚡ 长按 0.8s 允许</span>
-              </button>
-            `
-            : `
-              <button onclick="window.appActions.submitApproval('${escapeHtml(
-                activeApproval.unified_id
-              )}', 'approve_session_edits')"
-                class="col-span-3 min-h-[42px] rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-medium text-[11px] active:scale-95 transition">
-                免审
-              </button>
-              <button onclick="window.appActions.submitApproval('${escapeHtml(
-                activeApproval.unified_id
-              )}', 'approved')"
-                class="col-span-5 min-h-[42px] rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-lg active:scale-95 transition">
-                ✓ 允许
-              </button>
-            `
-        }
-      </div>
+              ${
+                isHighRisk
+                  ? `
+                    <button
+                      onpointerdown="window.appActions.startHold('${escapeHtml(
+                        activeApproval.unified_id
+                      )}', this)"
+                      onpointerup="window.appActions.cancelHold(this)"
+                      onpointerleave="window.appActions.cancelHold(this)"
+                      onpointercancel="window.appActions.cancelHold(this)"
+                      class="hold-approve-btn col-span-8 min-h-[42px] rounded-xl bg-amber-500 text-slate-950 font-bold text-xs shadow-lg">
+                      <div class="hold-progress-fill"></div>
+                      <span class="relative z-10">⚡ 长按 0.8s 允许</span>
+                    </button>
+                  `
+                  : `
+                    <button onclick="window.appActions.submitApproval('${escapeHtml(
+                      activeApproval.unified_id
+                    )}', 'approve_session_edits')"
+                      class="col-span-3 min-h-[42px] rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-medium text-[11px] active:scale-95 transition">
+                      免审
+                    </button>
+                    <button onclick="window.appActions.submitApproval('${escapeHtml(
+                      activeApproval.unified_id
+                    )}', 'approved')"
+                      class="col-span-5 min-h-[42px] rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-lg active:scale-95 transition">
+                      ✓ 允许
+                    </button>
+                  `
+              }
+            </div>
+          `
+      }
     </div>
   `;
 }
@@ -2268,7 +2504,6 @@ function renderQrModalContent() {
 function updateDrawerVisibility() {
   const drawer = document.getElementById("sidebar-drawer");
   const backdrop = document.getElementById("sidebar-backdrop");
-  const expandBtn = document.getElementById("desktop-sidebar-expand-btn");
   if (!drawer || !backdrop) return;
   if (state.drawerOpen) {
     drawer.classList.remove("-translate-x-full");
@@ -2278,18 +2513,8 @@ function updateDrawerVisibility() {
     backdrop.classList.add("hidden");
   }
 
-  if (state.sidebarCollapsed) {
-    drawer.classList.add("desktop-collapsed");
-    if (expandBtn) {
-      expandBtn.classList.add("hidden", "md:flex");
-    }
-  } else {
-    drawer.classList.remove("desktop-collapsed");
-    if (expandBtn) {
-      expandBtn.classList.add("hidden");
-      expandBtn.classList.remove("md:flex");
-    }
-  }
+  // 通过 body 类名与纯 CSS 媒体查询解耦桌面端展开按钮的显示状态
+  document.body.classList.toggle("sidebar-is-collapsed", !!state.sidebarCollapsed);
 }
 
 function openNewSessionModal(prefillPrompt = "", prefillProjectPath = "") {
@@ -2418,7 +2643,9 @@ window.appActions = {
       });
       showToast("已从项目列表移出", "info");
       await Promise.all([loadWorkspaces(), loadSessions()]);
-    } catch (_) {}
+    } catch (err) {
+      console.error("从项目列表移出失败:", err);
+    }
   },
   onNewSessionAgentChange(agentType) {
     const modelSelect = document.getElementById("new-session-model");
@@ -2658,6 +2885,16 @@ window.appActions = {
       const res = await apiFetch(
         `/api/v1/sessions/${encodeURIComponent(unifiedId)}/steps/${stepIndex}/full`
       );
+      if (res.full_output) {
+        state.fullOutputStore[`${unifiedId}_${stepIndex}`] = res.full_output;
+        const msg = state.messages.find((m) => m.step_index === stepIndex);
+        if (msg && Array.isArray(msg.tool_calls)) {
+          msg.tool_calls.forEach((tc) => {
+            tc.output = res.full_output;
+            tc.is_truncated = false;
+          });
+        }
+      }
       const detailsEl = btnEl ? btnEl.closest("details") : null;
       const preEl = detailsEl ? detailsEl.querySelector("pre") : null;
       if (preEl && res.full_output) {
@@ -2671,7 +2908,377 @@ window.appActions = {
       if (btnEl) btnEl.textContent = "重试加载";
     }
   },
+  toggleDenyFeedback(open) {
+    state.denyFeedbackOpen = open !== undefined ? Boolean(open) : !state.denyFeedbackOpen;
+    renderApprovalBanners();
+    if (state.denyFeedbackOpen) {
+      setTimeout(() => {
+        const inp = document.getElementById("deny-feedback-input");
+        if (inp) inp.focus();
+      }, 50);
+    }
+  },
+  submitDenyWithFeedback(unifiedId) {
+    const inp = document.getElementById("deny-feedback-input");
+    const feedback = inp ? inp.value.trim() : "";
+    submitApprovalDecision(unifiedId, "denied", feedback);
+  },
+  toggleQuestionOption(arg1, qi, optText, isMulti) {
+    const opts = typeof arg1 === "object" && arg1 !== null
+      ? arg1
+      : { turnKey: arg1, qi, optText, isMulti };
+    const qKey = `${opts.turnKey}_q${opts.qi}`;
+    const cur = state.questionSelections[qKey] || [];
+    if (opts.isMulti) {
+      state.questionSelections[qKey] = cur.includes(opts.optText)
+        ? cur.filter((x) => x !== opts.optText)
+        : [...cur, opts.optText];
+    } else {
+      state.questionSelections[qKey] = cur.includes(opts.optText) ? [] : [opts.optText];
+    }
+    state.autoScrollLocked = true;
+    const turn = state.turnsMap[opts.turnKey];
+    const optsEl = document.getElementById(`q-opts-${qKey}`);
+    if (turn && turn.questions && turn.questions[opts.qi] && optsEl) {
+      optsEl.innerHTML = renderQuestionOptionsHtml(opts.turnKey, opts.qi, turn.questions[opts.qi]);
+      return;
+    }
+    renderMessagesList();
+  },
+  setQuestionWriteIn(turnKey, qi, val) {
+    const qKey = `${turnKey}_q${qi}`;
+    state.questionWriteIns[qKey] = val;
+  },
+  submitQuestionAnswers(turnKey) {
+    const turn = state.turnsMap[turnKey];
+    if (!turn || !turn.questions) return;
+    const parts = [];
+    turn.questions.forEach((q, qi) => {
+      const qKey = `${turnKey}_q${qi}`;
+      const selected = state.questionSelections[qKey] || [];
+      const writeIn = (state.questionWriteIns[qKey] || "").trim();
+      const ansParts = [...selected];
+      if (writeIn) ansParts.push(writeIn);
+      const finalAns = ansParts.join("；") || "按推荐方案";
+      parts.push(turn.questions.length > 1 ? `关于“${q.question}”：${finalAns}` : finalAns);
+    });
+    const answerText = parts.join("\n") || "确认执行";
+    // 持久化决策记录，方便历史折叠卡片回溯
+    state.persistedQuestionDecisions[turnKey] = { answerText, parts, answeredAt: Date.now() };
+    try {
+      localStorage.setItem(
+        "agentdeck_question_decisions",
+        JSON.stringify(state.persistedQuestionDecisions)
+      );
+    } catch (_) {}
+    handleSendPrompt(answerText);
+  },
+  skipQuestionAnswers(turnKey) {
+    state.persistedQuestionDecisions[turnKey] = {
+      answerText: "按最佳方案执行",
+      parts: ["按推荐方案"],
+      answeredAt: Date.now(),
+    };
+    try {
+      localStorage.setItem(
+        "agentdeck_question_decisions",
+        JSON.stringify(state.persistedQuestionDecisions)
+      );
+    } catch (_) {}
+    handleSendPrompt("按你推荐的最佳方案继续执行。");
+  },
+  toggleSlashMenu(forceOpen) {
+    state.slashMenuOpen = forceOpen !== undefined ? Boolean(forceOpen) : !state.slashMenuOpen;
+    renderSlashMenu("");
+  },
+  selectSlashCommand(cmd) {
+    const input = document.getElementById("prompt-input");
+    if (!input) return;
+    state.slashMenuOpen = false;
+    const popover = document.getElementById("slash-popover");
+    if (popover) popover.classList.add("hidden");
+
+    if (cmd.startsWith("/")) {
+      input.value = `${cmd} `;
+      input.focus();
+    } else {
+      // 快捷一键动作直接填入并发送
+      input.value = cmd;
+      handleSendPrompt(cmd);
+    }
+  },
+  async openGitStatusModal() {
+    const modal = document.getElementById("doc-preview-modal");
+    const titleEl = document.getElementById("doc-preview-title");
+    const pathEl = document.getElementById("doc-preview-path");
+    const bodyEl = document.getElementById("doc-preview-body");
+    if (!modal || !bodyEl) return;
+
+    const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+    const pPath = sess?.project_path || "";
+    if (!pPath) {
+      showToast("当前会话无关联工程目录", "info");
+      return;
+    }
+
+    modal.classList.remove("hidden");
+    if (titleEl) titleEl.textContent = `🌿 Git 工作区变更`;
+    if (pathEl) pathEl.textContent = `${pPath}`;
+    bodyEl.innerHTML = `
+      <div class="space-y-3 py-4">
+        <div class="skeleton-block h-8 w-1/2"></div>
+        <div class="skeleton-block h-32 w-full"></div>
+      </div>
+    `;
+
+    try {
+      const data = await apiFetch(`/api/v1/git/status?project_path=${encodeURIComponent(pPath)}`);
+      state.currentGitStatus = data;
+      renderGitStatusBody(data);
+    } catch (err) {
+      bodyEl.innerHTML = `
+        <div class="p-4 rounded-xl bg-rose-950/40 border border-rose-500/40 text-xs text-rose-200">
+          获取 Git 状态失败：${escapeHtml(err.message || String(err))}
+        </div>
+      `;
+    }
+  },
+  async toggleGitFileDiff(relPath) {
+    const isExp = !state.gitExpandedDiffs[relPath];
+    state.gitExpandedDiffs[relPath] = isExp;
+    const container = document.getElementById(gitPathToSlotId(relPath));
+    if (!container) return;
+    if (!isExp) {
+      container.innerHTML = "";
+      return;
+    }
+
+    if (state.gitDiffCache[relPath]) {
+      container.innerHTML = renderUnifiedDiffHtml(state.gitDiffCache[relPath]);
+      return;
+    }
+
+    container.innerHTML = `<div class="p-2 text-xs text-sky-400">正在加载 Diff...</div>`;
+    const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+    try {
+      const res = await apiFetch(
+        `/api/v1/git/diff?project_path=${encodeURIComponent(
+          sess?.project_path || ""
+        )}&file_path=${encodeURIComponent(relPath)}`
+      );
+      state.gitDiffCache[relPath] = res.diff || "无文本变更";
+      container.innerHTML = renderUnifiedDiffHtml(state.gitDiffCache[relPath]);
+    } catch (err) {
+      container.innerHTML = `<div class="p-2 text-xs text-rose-400">加载 Diff 失败</div>`;
+    }
+  },
+  async viewFullGitDiff() {
+    const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+    const bodyEl = document.getElementById("doc-preview-body");
+    if (!bodyEl || !sess?.project_path) return;
+    bodyEl.innerHTML = `<div class="p-4 text-xs text-sky-400">正在生成全量 Unified Diff...</div>`;
+    try {
+      const res = await apiFetch(
+        `/api/v1/git/diff?project_path=${encodeURIComponent(sess.project_path)}`
+      );
+      state.currentDocRawContent = res.diff || "";
+      const rawDiff = res.diff || "";
+      const lines = rawDiff.split("\n");
+      const isHuge = lines.length > 400;
+      const displayDiff = isHuge && !state.expandHugeFullDiff ? lines.slice(0, 400).join("\n") : rawDiff;
+
+      bodyEl.innerHTML = `
+        <div class="space-y-2">
+          <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+            <span class="text-xs text-slate-400">全局未提交修改 Diff ${
+              res.is_truncated ? "（已截断展示前 48KB）" : ""
+            }</span>
+            <button onclick="window.appActions.openGitStatusModal()" class="text-xs text-sky-400 hover:underline">返回文件列表</button>
+          </div>
+          ${renderUnifiedDiffHtml(displayDiff || "无未提交代码改动")}
+          ${
+            isHuge && !state.expandHugeFullDiff
+              ? `<div class="p-3 text-center bg-slate-900/60 rounded-xl border border-slate-800 text-xs text-slate-400">
+                  已折叠剩余 ${lines.length - 400} 行以保证移动端流畅度。
+                  <button onclick="state.expandHugeFullDiff = true; window.appActions.viewFullGitDiff()" class="text-sky-400 underline font-medium ml-1">
+                    仍要展示全部
+                  </button>
+                </div>`
+              : ""
+          }
+        </div>
+      `;
+    } catch (e) {
+      bodyEl.innerHTML = `<div class="p-4 text-xs text-rose-400">加载失败</div>`;
+    }
+  },
 };
+
+function renderSlashMenu(filterQuery = "") {
+  const popover = document.getElementById("slash-popover");
+  if (!popover) return;
+  const list = state.workflows || [];
+  const q = filterQuery.trim().replace(/^\//, "").toLowerCase();
+
+  const filtered = list.filter((item) => {
+    if (!q) return true;
+    return (
+      item.command.toLowerCase().includes(q) ||
+      (item.label || "").toLowerCase().includes(q)
+    );
+  });
+
+  if (!state.slashMenuOpen && !filterQuery.startsWith("/")) {
+    popover.classList.add("hidden");
+    return;
+  }
+
+  if (filtered.length === 0) {
+    popover.innerHTML = `<div class="px-3 py-2 text-xs text-slate-500">无匹配快捷指令</div>`;
+    popover.classList.remove("hidden");
+    return;
+  }
+
+  popover.innerHTML = filtered
+    .map((item) => {
+      const isQuick = item.category === "quick";
+      return `
+        <div onclick="window.appActions.selectSlashCommand('${escapeJsSingleQuote(
+          item.command
+        )}')"
+          class="cursor-pointer px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center justify-between gap-2 text-xs transition active:scale-98">
+          <div class="flex items-center gap-1.5 min-w-0">
+            <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold shrink-0 ${
+              isQuick
+                ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                : "bg-sky-500/15 text-sky-300 border border-sky-500/30"
+            }">${escapeHtml(item.command)}</span>
+            <span class="text-slate-200 truncate">${escapeHtml(item.label)}</span>
+          </div>
+          <span class="text-[10px] text-slate-500 shrink-0">${isQuick ? "一键发送" : "填入"}</span>
+        </div>
+      `;
+    })
+    .join("");
+  popover.classList.remove("hidden");
+}
+
+async function updateGitStatusBadge() {
+  const btn = document.getElementById("git-status-btn");
+  const badge = document.getElementById("git-changed-badge");
+  if (!btn || !badge) return;
+
+  const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+  if (!sess || !sess.project_path) {
+    btn.classList.add("hidden");
+    btn.classList.remove("flex");
+    return;
+  }
+
+  try {
+    const data = await apiFetch(`/api/v1/git/status?project_path=${encodeURIComponent(sess.project_path)}`);
+    if (data.is_git_repo) {
+      btn.classList.remove("hidden");
+      btn.classList.add("flex");
+      const count = data.changed_count || 0;
+      badge.textContent = String(count);
+      badge.className = `px-1.5 py-0.5 rounded-full text-[10px] font-mono font-semibold ${
+        count > 0
+          ? "bg-amber-500/25 text-amber-300 border border-amber-500/40 animate-pulse"
+          : "bg-slate-800 text-slate-400 border border-slate-700"
+      }`;
+    } else {
+      btn.classList.add("hidden");
+      btn.classList.remove("flex");
+    }
+  } catch (_) {
+    btn.classList.add("hidden");
+    btn.classList.remove("flex");
+  }
+}
+
+function gitPathToSlotId(relPath) {
+  let hash = 0;
+  const str = String(relPath || "");
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return "git_diff_slot_" + (hash >>> 0).toString(16);
+}
+
+function renderGitStatusBody(data) {
+  const bodyEl = document.getElementById("doc-preview-body");
+  if (!bodyEl) return;
+
+  if (!data.is_git_repo) {
+    bodyEl.innerHTML = `<div class="p-6 text-center text-slate-500 text-xs">当前工作区非 Git 仓库</div>`;
+    return;
+  }
+
+  const files = data.files || [];
+
+  const listHtml =
+    files.length === 0
+      ? `<div class="p-6 text-center text-emerald-400 text-xs">✓ 工作区很干净，无未提交修改</div>`
+      : files
+          .map((f) => {
+            const isExp = !!state.gitExpandedDiffs[f.path];
+            const badgeCls = GIT_STATUS_BADGES[f.status] || "bg-slate-800 text-slate-300 border-slate-700";
+            return `
+              <div class="rounded-xl bg-slate-900/70 border border-slate-800 p-2.5 text-xs space-y-1.5">
+                <div onclick="window.appActions.toggleGitFileDiff('${escapeJsSingleQuote(
+                  f.path
+                )}')"
+                  class="cursor-pointer flex items-center justify-between gap-2 select-none hover:text-sky-300 transition">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span class="w-5 h-5 rounded flex items-center justify-center font-bold font-mono text-[10px] border ${badgeCls}">
+                      ${escapeHtml(f.status)}
+                    </span>
+                    <span class="font-mono text-xs text-slate-200 truncate">${escapeHtml(
+                      f.path
+                    )}</span>
+                  </div>
+                  <div class="flex items-center gap-1.5 shrink-0 font-mono text-[10px]">
+                    ${f.additions > 0 ? `<span class="text-emerald-400">+${f.additions}</span>` : ""}
+                    ${f.deletions > 0 ? `<span class="text-rose-400">-${f.deletions}</span>` : ""}
+                    <span class="text-slate-500">${isExp ? "▲" : "▼"}</span>
+                  </div>
+                </div>
+                <div id="${gitPathToSlotId(f.path)}">
+                  ${
+                    isExp && state.gitDiffCache[f.path]
+                      ? renderUnifiedDiffHtml(state.gitDiffCache[f.path])
+                      : ""
+                  }
+                </div>
+              </div>
+            `;
+          })
+          .join("");
+
+  bodyEl.innerHTML = `
+    <div class="space-y-3 pb-6">
+      <div class="flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+        <div class="flex items-center gap-2">
+          <span class="px-2 py-0.5 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30 font-mono font-semibold">
+            🌿 ${escapeHtml(data.branch || "HEAD")}
+          </span>
+          <span class="text-slate-400">${data.changed_count} 个未提交变更文件</span>
+        </div>
+        ${
+          files.length > 0
+            ? `<button onclick="window.appActions.viewFullGitDiff()"
+                class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 text-xs transition">
+                查看汇总 Diff
+              </button>`
+            : ""
+        }
+      </div>
+      <div class="space-y-1.5">${listHtml}</div>
+    </div>
+  `;
+}
 
 // --- 初始化入口 ---
 window.addEventListener("DOMContentLoaded", async () => {
@@ -2696,7 +3303,27 @@ window.addEventListener("DOMContentLoaded", async () => {
         handleSendPrompt(null);
       }
     });
+    promptInput.addEventListener("input", (e) => {
+      const val = e.target.value;
+      if (val.startsWith("/")) {
+        state.slashMenuOpen = true;
+        renderSlashMenu(val);
+      } else {
+        state.slashMenuOpen = false;
+        renderSlashMenu("");
+      }
+    });
   }
+
+  document.addEventListener("click", (e) => {
+    const popover = document.getElementById("slash-popover");
+    const input = document.getElementById("prompt-input");
+    if (!popover || !input) return;
+    if (!popover.contains(e.target) && e.target !== input && !e.target.closest("button[onclick*='toggleSlashMenu']")) {
+      state.slashMenuOpen = false;
+      popover.classList.add("hidden");
+    }
+  });
 
   const msgContainer = document.getElementById("messages-container");
   if (msgContainer) {

@@ -15,7 +15,11 @@ import os
 import re
 import shutil
 import sqlite3
+import ssl
+import subprocess
+import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -97,6 +101,7 @@ class AntigravityAdapter(BaseAgentAdapter):
             shutil.which("agy")
             or os.path.expanduser(r"~\AppData\Local\agy\bin\agy.exe")
         )
+        self.ls_bridge = AntigravityLanguageServerBridge()
         # (last_scan_ts, dict[cid, UnifiedSession])
         self._brain_scan_cache: tuple[float, dict[str, UnifiedSession]] = (0.0, {})
         # limit -> (db_sig, dict[cid, UnifiedSession])
@@ -376,21 +381,25 @@ class AntigravityAdapter(BaseAgentAdapter):
             ):
                 parsed_tools: list[UnifiedToolCall] = []
                 extracted_question_md: list[str] = []
+                parsed_questions: list[dict[str, Any]] = []
                 for tc_idx, tc in enumerate(raw_tool_calls):
                     if not isinstance(tc, dict):
                         continue
                     t_name = str(tc.get("name") or tc.get("tool_name") or "tool")
                     t_args = tc.get("arguments") or tc.get("args") or tc.get("input") or {}
                     if t_name == "ask_question" and isinstance(t_args, dict):
-                        q_list = t_args.get("questions") or []
-                        for q_obj in q_list:
-                            if isinstance(q_obj, dict) and q_obj.get("question"):
-                                q_txt = str(q_obj["question"]).strip()
-                                opts = q_obj.get("options") or []
-                                opts_md = "\n".join(f"- {opt}" for opt in opts if opt)
-                                extracted_question_md.append(
-                                    f"{q_txt}\n\n{opts_md}".strip()
-                                )
+                        q_items = extract_interactive_questions(t_name, t_args)
+                        parsed_questions.extend(q_items)
+                        first_q = q_items[0]["question"] if q_items else "交互式提问"
+                        # 记录为正规工具调用，避免收纳栏工具计数为 0
+                        parsed_tools.append(
+                            UnifiedToolCall(
+                                tool_id=str(tc.get("id") or f"tc_{step_index}_{tc_idx}"),
+                                name=t_name,
+                                args_summary=first_q[:120],
+                                status=status,
+                            )
+                        )
                         continue
                     args_summary, diff_text = extract_tool_summary_and_diff(t_name, t_args)
                     f_path = extract_tool_file_path(t_args)
@@ -408,7 +417,8 @@ class AntigravityAdapter(BaseAgentAdapter):
                     )
 
                 final_content = content_raw.strip()
-                if not final_content and extracted_question_md:
+                # 仅在既无正文且无结构化 questions 交互卡片时才回退拼接 Markdown，避免同一问题重复展示双份
+                if not final_content and not parsed_questions and extracted_question_md:
                     final_content = "\n\n".join(extracted_question_md)
 
                 msg_item = UnifiedMessageItem(
@@ -419,6 +429,7 @@ class AntigravityAdapter(BaseAgentAdapter):
                     content=final_content,
                     thinking=thinking_raw,
                     tool_calls=parsed_tools,
+                    questions=parsed_questions,
                     status=status,
                 )
                 items.append(msg_item)
@@ -428,7 +439,37 @@ class AntigravityAdapter(BaseAgentAdapter):
         self._messages_cache[raw_session_id] = (mtime_ns, fsize, items)
         return items[-limit:] if limit > 0 else items
 
+    def send_prompt_via_ls(
+        self, raw_session_id: str, prompt: str, model_id: str = ""
+    ) -> bool:
+        """封装下沉：尝试通过桌面端 Language Server Connect-RPC 直连下发指令。"""
+        return self.ls_bridge.send_cascade_message(raw_session_id, prompt, model_id)
+
+    def cancel_via_ls(self, raw_session_id: str) -> bool:
+        """封装下沉：尝试通过桌面端 Language Server Connect-RPC 取消会话。"""
+        return self.ls_bridge.cancel_cascade(raw_session_id)
+
+    def get_session_messages_page(
+        self,
+        raw_session_id: str,
+        limit: int = 30,
+        before_step: Optional[int] = None,
+    ) -> tuple[list[UnifiedMessageItem], int, bool]:
+        """
+        利用内存态缓存结构直接进行增量/历史切片，大幅降低轮询时的 transcript.jsonl 重复解析开销。
+        """
+        all_items = self.get_session_messages(raw_session_id, limit=0)
+        total_count = len(all_items)
+        if before_step is not None:
+            filtered = [it for it in all_items if it.step_index < before_step]
+        else:
+            filtered = all_items
+        page_items = filtered[-limit:] if limit > 0 else filtered
+        has_more = len(filtered) > len(page_items)
+        return page_items, total_count, has_more
+
     def get_full_step_output(self, raw_session_id: str, step_index: int) -> str:
+
         """按需分页/全量读取被 4KB 截断的单步原始输出。"""
         transcript_path = (
             self.brain_dir / raw_session_id / ".system_generated" / "logs" / "transcript.jsonl"
@@ -454,6 +495,101 @@ class AntigravityAdapter(BaseAgentAdapter):
                 exc=exc,
             )
         return ""
+
+    def send_ide_message(
+        self, raw_session_id: str, prompt: str, model_id: str = ""
+    ) -> bool:
+        """封装调用内部 language server bridge 发送 IDE 级消息（消除 Feature Envy）。"""
+        return self.ls_bridge.send_cascade_message(raw_session_id, prompt, model_id)
+
+    def cancel_ide_session(self, raw_session_id: str) -> bool:
+        """封装调用内部 language server bridge 取消 IDE 级会话执行（消除 Feature Envy）。"""
+        return self.ls_bridge.cancel_cascade(raw_session_id)
+
+    def try_direct_dispatch(
+        self,
+        raw_session_id: str,
+        prompt: str,
+        model_name: str = "",
+        workdir: str = "",
+    ) -> Optional[dict[str, Any]]:
+        """若为 Antigravity IDE 且桌面端 LS 在线，通过 Connect-RPC 直发指令，避免克隆开销。"""
+        if self.agent_type == "agy_ide":
+            if self.ls_bridge.send_cascade_message(raw_session_id, prompt, model_name):
+                return {"via_ls_rpc": True}
+        return None
+
+    def cancel_session(self, raw_session_id: str) -> bool:
+        """若为 Antigravity IDE 会话，通过 Connect-RPC 取消正在运行的 Cascade 任务。"""
+        if self.agent_type == "agy_ide":
+            try:
+                return self.ls_bridge.cancel_cascade(raw_session_id)
+            except Exception:
+                return False
+        return False
+
+    def build_cli_command(
+        self,
+        raw_session_id: str,
+        prompt: str,
+        execution_mode: str,
+        model_name: str = "",
+        approved_tools: Optional[list[str]] = None,
+    ) -> list[str]:
+        """为 Antigravity CLI 组装流式命令行。"""
+        clean_model = (model_name or "").strip()
+        if clean_model == "default":
+            clean_model = ""
+        bin_path = str(self.cli_bin or "agy")
+        cmd = [
+            bin_path,
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            "--conversation",
+            raw_session_id,
+        ]
+        if clean_model:
+            cmd.extend(["--model", clean_model])
+        if execution_mode == "plan":
+            cmd.extend(["--mode", "plan"])
+        elif execution_mode == "accept_edits":
+            cmd.extend(["--mode", "accept-edits"])
+        elif execution_mode == "auto":
+            cmd.append("--dangerously-skip-permissions")
+        else:
+            cmd.extend(["--mode", "accept-edits"])
+        return cmd
+
+    def extract_stream_tool_blocks(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        """从 Antigravity CLI stream-json 帧中提取待审批工具调用。"""
+        tool_blocks: list[dict[str, Any]] = []
+        raw_calls = event.get("tool_calls")
+        if not raw_calls and isinstance(event.get("step"), dict):
+            raw_calls = event["step"].get("tool_calls")
+        if isinstance(raw_calls, list):
+            for tc in raw_calls:
+                if isinstance(tc, dict):
+                    tool_blocks.append(
+                        {
+                            "id": str(tc.get("id") or tc.get("tool_id") or ""),
+                            "name": str(tc.get("name") or tc.get("tool_name") or ""),
+                            "input": tc.get("args") or tc.get("arguments") or tc.get("input") or {},
+                        }
+                    )
+
+        # 兼容标准 tool_use 块与权限请求帧
+        msg = event.get("message")
+        if isinstance(msg, dict) and isinstance(msg.get("content"), list):
+            for b in msg["content"]:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    tool_blocks.append(b)
+        ev_type = str(event.get("type") or "")
+        if ev_type in ("permission_request", "control_request", "tool_call"):
+            tool_blocks.append(event)
+        return tool_blocks
+
 
 
 def fork_ide_session_to_cli(
@@ -523,3 +659,258 @@ def fork_ide_session_to_cli(
             exc=exc,
         )
         return False, msg
+
+
+CSRF_TOKEN_RE = re.compile(r"--csrf_token[\s=]+([0-9a-fA-F-]{8,})")
+LS_SERVICE_PREFIX = "/exa.language_server_pb.LanguageServerService"
+
+
+def encode_connect_envelope(body: dict[str, Any]) -> bytes:
+    """编码 Connect-RPC 5 字节流式协议帧 (`[0x00][uint32_be_len][json_bytes]`)。"""
+    raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    return b"\x00" + len(raw).to_bytes(4, "big") + raw
+
+
+
+class AntigravityLanguageServerBridge:
+    """
+    借鉴 `Antigravity-Deck` (`src/detector.js` & `src/ls-stream.js`) 的轻量级 Hub Language Server 桥接器：
+    1. 自动嗅探本机运行中的 `language_server` 进程 `--csrf_token` 与本地监听端口（带 15s 内存缓存）。
+    2. 支持通过 Connect-RPC 协议直接向桌面端活跃的 Antigravity IDE 会话发送指令与取消任务，
+       实现手机与电脑桌面 IDE 窗口 100% 同步（当桌面端 IDE 未开启时自动回退至 `fork_ide_session_to_cli`）。
+    """
+
+    def __init__(self, cache_ttl_sec: float = 15.0) -> None:
+        self.cache_ttl_sec = cache_ttl_sec
+        self._cached_hub: Optional[dict[str, Any]] = None
+        self._last_detect_ts: float = 0.0
+
+    def get_cached_hub(self) -> Optional[dict[str, Any]]:
+        """非阻塞获取已缓存的 Hub LS 连接信息。"""
+        return self._cached_hub
+
+    def detect_hub(self, force: bool = False) -> Optional[dict[str, Any]]:
+        """探测本机运行中的 Antigravity Hub Language Server 端口与 CSRF Token。"""
+        now = time.monotonic()
+        if not force and self._last_detect_ts > 0 and (now - self._last_detect_ts) < self.cache_ttl_sec:
+            return self._cached_hub
+
+        self._last_detect_ts = now
+        candidates = self._scan_ls_processes()
+        if not candidates:
+            self._cached_hub = None
+            return None
+
+        for pid, csrf_token in candidates:
+            ports = self._find_listening_ports(pid)
+            for port in ports:
+                scheme = self._probe_connect_port(port, csrf_token)
+                if scheme:
+                    self._cached_hub = {
+                        "pid": pid,
+                        "port": port,
+                        "csrf_token": csrf_token,
+                        "scheme": scheme,
+                    }
+                    return self._cached_hub
+
+        self._cached_hub = None
+        return None
+
+    @staticmethod
+    def _scan_ls_processes() -> list[tuple[int, str]]:
+        """扫描进程表提取 (pid, csrf_token)（兼容全系 Windows 自带的 powershell.exe 与 pwsh）。"""
+        results: list[tuple[int, str]] = []
+        try:
+            if sys.platform == "win32":
+                ps_bin = (
+                    shutil.which("powershell.exe")
+                    or os.path.expandvars(r"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe")
+                    or shutil.which("pwsh")
+                    or "powershell"
+                )
+                ps_cmd = (
+                    "Get-CimInstance Win32_Process -Filter \"Name LIKE '%language_server%'\" "
+                    "| Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress"
+                )
+                proc = subprocess.run(
+                    [ps_bin, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2.5,
+                )
+                out = (proc.stdout or "").strip()
+                if out:
+                    data = json.loads(out)
+                    rows = data if isinstance(data, list) else [data]
+                    for r in rows:
+                        if not isinstance(r, dict):
+                            continue
+                        pid = int(r.get("ProcessId") or 0)
+                        cmdline = str(r.get("CommandLine") or "")
+                        m = CSRF_TOKEN_RE.search(cmdline)
+                        if pid > 0 and m:
+                            results.append((pid, m.group(1)))
+            else:
+                proc = subprocess.run(
+                    ["ps", "-eo", "pid,args"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2.0,
+                )
+                for line in (proc.stdout or "").splitlines():
+                    if "language_server" not in line and "csrf_token" not in line:
+                        continue
+                    m = CSRF_TOKEN_RE.search(line)
+                    parts = line.strip().split(None, 1)
+                    if m and parts and parts[0].isdigit():
+                        results.append((int(parts[0]), m.group(1)))
+        except Exception as exc:
+            logger.debug(f"扫描 language_server 进程信息已跳过: {exc}")
+        return results
+
+    @staticmethod
+    def _find_listening_ports(pid: int) -> list[int]:
+        """查找指定 PID 在本机监听的 TCP 端口列表。"""
+        ports: list[int] = []
+        try:
+            if sys.platform == "win32":
+                proc = subprocess.run(
+                    ["netstat", "-ano", "-p", "TCP"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2.0,
+                )
+                pid_str = str(pid)
+                for line in (proc.stdout or "").splitlines():
+                    if "LISTENING" not in line:
+                        continue
+                    cols = line.split()
+                    if len(cols) >= 5 and cols[-1] == pid_str:
+                        local_addr = cols[1]
+                        if ":" in local_addr:
+                            port_str = local_addr.rsplit(":", 1)[-1]
+                            if port_str.isdigit():
+                                port_int = int(port_str)
+                                if port_int not in ports:
+                                    ports.append(port_int)
+        except Exception as exc:
+            logger.debug(f"查询 PID={pid} 端口失败: {exc}")
+        return ports[:6]
+
+    def _probe_connect_port(self, port: int, csrf_token: str) -> Optional[str]:
+        """探测指定端口是否响应 Connect-RPC `GetUserStatus`，返回 `'https'` 或 `'http'`。"""
+        for scheme in ("https", "http"):
+            ok, _ = self._raw_post(
+                scheme=scheme,
+                port=port,
+                csrf_token=csrf_token,
+                method="GetUserStatus",
+                body={},
+                timeout=0.8,
+            )
+            if ok:
+                return scheme
+        return None
+
+    @staticmethod
+    def _raw_post(
+        scheme: str,
+        port: int,
+        csrf_token: str,
+        method: str,
+        body: dict[str, Any],
+        timeout: float = 2.0,
+    ) -> tuple[bool, Any]:
+        url = f"{scheme}://127.0.0.1:{port}{LS_SERVICE_PREFIX}/{method}"
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Connect-Protocol-Version": "1",
+                "X-Codeium-Csrf-Token": csrf_token,
+            },
+        )
+        ctx = ssl._create_unverified_context() if scheme == "https" else None
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                status = getattr(resp, "status", 200)
+                if 200 <= status < 300:
+                    raw_resp = resp.read(4096)
+                    return True, raw_resp
+        except Exception as exc:
+            logger.debug(f"Connect-RPC POST {method} 探测失败 ({url}): {exc}")
+        return False, None
+
+    def send_cascade_message(
+        self, cascade_id: str, prompt: str, model_id: str = ""
+    ) -> bool:
+        """
+        通过 Connect-RPC 直接向运行中的 Antigravity IDE 会话发送用户指令。
+        成功返回 True；若桌面端 IDE 未开启或会话不受该 LS 管辖则返回 False（上层自动回退 CLI）。
+        """
+        hub = self.detect_hub()
+        if not hub:
+            return False
+
+        payload: dict[str, Any] = {
+            "cascadeId": cascade_id,
+            "items": [{"text": prompt}],
+        }
+        if model_id and model_id != "default":
+            payload["cascadeConfig"] = {
+                "plannerConfig": {
+                    "requestedModel": {"modelOrAlias": model_id},
+                }
+            }
+
+        ok, _ = self._raw_post(
+            scheme=hub["scheme"],
+            port=hub["port"],
+            csrf_token=hub["csrf_token"],
+            method="SendUserCascadeMessage",
+            body=payload,
+            timeout=2.5,
+        )
+        if ok:
+            logger.info(
+                f"已通过 Language Server Connect-RPC (port={hub['port']}) 直接向 IDE 会话 {cascade_id[:8]} 发送指令"
+            )
+            return True
+        log_structured_error(
+            problem=f"通过 Connect-RPC 向 IDE 发送指令失败 (ID={cascade_id[:8]})",
+            cause="Language Server 无响应或未在监听",
+            fix="系统将自动回退至 Fork-to-CLI 安全克隆接力执行。",
+        )
+        return False
+
+    def cancel_cascade(self, cascade_id: str) -> bool:
+        """通过 Connect-RPC 取消运行中的 Antigravity IDE 会话。"""
+        hub = self.detect_hub()
+        if not hub:
+            return False
+        ok, _ = self._raw_post(
+            scheme=hub["scheme"],
+            port=hub["port"],
+            csrf_token=hub["csrf_token"],
+            method="CancelCascadeInvocation",
+            body={"cascadeId": cascade_id},
+            timeout=2.0,
+        )
+        if not ok:
+            log_structured_error(
+                problem=f"通过 Connect-RPC 取消 IDE 会话失败 (ID={cascade_id[:8]})",
+                cause="Language Server 无响应或已离线",
+                fix="系统将通过本地强杀进程树兜底处理。",
+            )
+        return ok

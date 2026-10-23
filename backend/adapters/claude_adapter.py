@@ -23,6 +23,7 @@ from backend.adapters.base import (
     UnifiedSession,
     UnifiedToolCall,
     classify_tool_risk,
+    extract_interactive_questions,
     extract_tool_file_path,
     extract_tool_summary_and_diff,
     truncate_large_output,
@@ -387,6 +388,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 text_parts: list[str] = []
                 thinking_parts: list[str] = []
                 tool_calls: list[UnifiedToolCall] = []
+                parsed_questions: list[dict[str, Any]] = []
 
                 if isinstance(content, str):
                     text_parts.append(content.strip())
@@ -407,6 +409,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                             tid = str(block.get("id") or f"tc_{step_idx}")
                             tname = str(block.get("name") or "Tool")
                             tinput = block.get("input") or {}
+                            q_items = extract_interactive_questions(tname, tinput)
+                            if q_items:
+                                parsed_questions.extend(q_items)
+                                continue
                             summary, diff_txt = extract_tool_summary_and_diff(tname, tinput)
                             f_path = extract_tool_file_path(tinput)
                             risk = classify_tool_risk(tname, summary)
@@ -421,7 +427,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                             tool_calls.append(tc_obj)
                             tool_id_map[tid] = tc_obj
 
-                if text_parts or thinking_parts or tool_calls:
+                if text_parts or thinking_parts or tool_calls or parsed_questions:
                     step_idx += 1
                     items.append(
                         UnifiedMessageItem(
@@ -432,6 +438,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                             content="\n\n".join(text_parts),
                             thinking="\n\n".join(thinking_parts),
                             tool_calls=tool_calls,
+                            questions=parsed_questions,
                         )
                     )
 
@@ -494,3 +501,57 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 exc=exc,
             )
             return ""
+
+    def build_cli_command(
+        self,
+        raw_session_id: str,
+        prompt: str,
+        execution_mode: str,
+        model_name: str = "",
+        approved_tools: Optional[list[str]] = None,
+    ) -> list[str]:
+        """为 Claude Code 组装流式命令行（支持 plan / accept_edits / auto / stdio 逐条拦截）。"""
+        clean_model = (model_name or "").strip()
+        if clean_model == "default":
+            clean_model = ""
+        bin_path = str(self.cli_bin or "claude")
+        cmd = [
+            bin_path,
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ]
+        if clean_model:
+            cmd.extend(["--model", clean_model])
+        if self._find_session_file(raw_session_id):
+            cmd.extend(["--resume", raw_session_id])
+        else:
+            cmd.extend(["--session-id", raw_session_id])
+
+        if execution_mode == "plan":
+            cmd.extend(["--permission-mode", "plan"])
+        elif execution_mode == "accept_edits":
+            cmd.extend(["--permission-mode", "acceptEdits"])
+        elif execution_mode == "auto":
+            cmd.append("--dangerously-skip-permissions")
+        else:
+            cmd.extend(["--permission-prompt-tool", "stdio"])
+        if approved_tools:
+            cmd.extend(["--allowedTools", ",".join(approved_tools)])
+        return cmd
+
+    def extract_stream_tool_blocks(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        """从 Claude Code stream-json 帧中提取待审批工具调用。"""
+        tool_blocks: list[dict[str, Any]] = []
+        msg = event.get("message")
+        if isinstance(msg, dict) and isinstance(msg.get("content"), list):
+            for b in msg["content"]:
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    tool_blocks.append(b)
+        ev_type = str(event.get("type") or "")
+        if ev_type in ("permission_request", "control_request", "tool_call"):
+            tool_blocks.append(event)
+        return tool_blocks
+

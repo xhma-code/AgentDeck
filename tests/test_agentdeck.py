@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,7 @@ from backend.app import create_app
 from backend.core.database import MetaDatabase, safe_query_external_sqlite
 from backend.core.logger import ERROR_LOG_FILE, log_structured_error
 from backend.core.tailscale_auth import PairingAuthManager
+from backend.core.workspace import get_git_workspace_diff
 
 
 def test_structured_error_logging_to_error_log():
@@ -315,6 +317,11 @@ def test_claude_and_opencode_adapters(tmp_path: Path):
     oc_msgs = oc_adapter.get_session_messages("ses_1")
     assert len(oc_msgs) == 1
     assert oc_msgs[0].content == "你好 OpenCode"
+    page_msgs, total, has_more = oc_adapter.get_session_messages_page("ses_1", limit=10)
+    assert total == 1
+    assert has_more is False
+    assert len(page_msgs) == 1
+    assert page_msgs[0].step_index == 1
 
 
 @pytest.mark.asyncio
@@ -723,5 +730,300 @@ def test_session_messages_pagination_cache_and_gzip(tmp_path: Path):
         assert body3["total_count"] == 46
         assert body3["messages"][-1]["step_index"] == 46
         assert "第 46 条追加的新回复" in body3["messages"][-1]["content"]
+
+
+def test_interactive_questions_and_git_overview(tmp_path: Path):
+    """
+    测试从 Antigravity-Deck 借鉴优化的手机端轻量功能：
+    1. 结构化 ask_question / AskUserQuestion 单选多选提取。
+    2. /api/v1/workflows 与 /api/v1/system/status 快捷指令下发。
+    3. /api/v1/git/status 与 /api/v1/git/diff 只读变更检测与越界拦截。
+    4. AntigravityLanguageServerBridge Connect-RPC 封装与回退机制。
+    """
+    from backend.adapters.base import (
+        discover_quick_workflows,
+        extract_interactive_questions,
+        get_git_workspace_diff,
+        get_git_workspace_status,
+    )
+    from backend.adapters.antigravity_adapter import (
+        AntigravityLanguageServerBridge,
+        encode_connect_envelope,
+    )
+
+    # 1. 验证 ask_question 交互式问题结构化提取
+    sample_args = {
+        "questions": [
+            {
+                "question": "请选择实施策略？",
+                "options": ["方案A：最小改动", "方案B：全面重构"],
+                "is_multi_select": False,
+            },
+            {
+                "question": "需包含哪些模块？",
+                "options": ["前端UI", "后端API", "文档"],
+                "is_multi_select": True,
+            },
+        ]
+    }
+    extracted = extract_interactive_questions("ask_question", sample_args)
+    assert len(extracted) == 2
+    assert extracted[0]["question"] == "请选择实施策略？"
+    assert len(extracted[0]["options"]) == 2
+    assert extracted[0]["is_multi_select"] is False
+    assert extracted[1]["is_multi_select"] is True
+
+    # 2. 验证 Connect-RPC 5 字节数据包封装
+    env = encode_connect_envelope({"foo": "bar"})
+    assert len(env) > 5
+    assert env[0] == 0x00
+    expected_len = len(json.dumps({"foo": "bar"}).encode("utf-8"))
+    assert int.from_bytes(env[1:5], "big") == expected_len
+
+    # 3. 验证快捷指令与技能发现
+    wf_items = discover_quick_workflows()
+    assert len(wf_items) >= 5
+    assert any(w["command"] == "/plan" for w in wf_items)
+    assert any(w["command"] == "/review" for w in wf_items)
+    assert any("继续执行" in w["command"] for w in wf_items)
+
+    # 4. 验证 Git 状态与 Diff 接口
+    # 创建一个临时 Git 仓库用于测试
+    import subprocess
+    repo_dir = tmp_path / "git_test_repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=str(repo_dir), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "TestUser"], cwd=str(repo_dir), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo_dir), capture_output=True, check=True)
+
+    file_a = repo_dir / "hello.py"
+    file_a.write_text("print('hello v1')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "hello.py"], cwd=str(repo_dir), capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo_dir), capture_output=True, check=True)
+
+    # 修改 hello.py 并新建 untracked.py
+    file_a.write_text("print('hello v2 - modified')\n", encoding="utf-8")
+    file_b = repo_dir / "untracked.py"
+    file_b.write_text("print('new untracked file')\n", encoding="utf-8")
+
+    git_stat = get_git_workspace_status(str(repo_dir))
+    assert git_stat["is_git_repo"] is True
+    assert git_stat["branch"] in ("main", "master")
+    assert git_stat["changed_count"] >= 2
+    paths = {f["path"] for f in git_stat["files"]}
+    assert "hello.py" in paths
+    assert "untracked.py" in paths
+
+    diff_single = get_git_workspace_diff(str(repo_dir), "hello.py")
+    assert diff_single["ok"] is True
+    assert "-print('hello v1')" in diff_single["diff"]
+    assert "+print('hello v2 - modified')" in diff_single["diff"]
+
+    diff_untracked = get_git_workspace_diff(str(repo_dir), "untracked.py")
+    assert diff_untracked["ok"] is True
+    assert "+print('new untracked file')" in diff_untracked["diff"]
+
+    # 验证路径越界防护
+    diff_escape = get_git_workspace_diff(str(repo_dir), "../../secret.txt")
+    assert diff_escape["ok"] is False
+    assert "禁止越界" in diff_escape["error"]
+
+    # 5. 验证 API 端点集成
+    db = MetaDatabase(db_path=tmp_path / "feat_test.db")
+    app = create_app(meta_db=db)
+    with TestClient(app) as client:
+        status_resp = client.get("/api/v1/system/status")
+        assert status_resp.status_code == 200
+        assert "workflows" in status_resp.json()
+
+        git_api_resp = client.get(
+            f"/api/v1/git/status?project_path={str(repo_dir).replace(chr(92), '/')}"
+        )
+        assert git_api_resp.status_code == 200
+        assert git_api_resp.json()["changed_count"] >= 2
+
+
+def test_deepened_adapter_contracts_and_workspace_decoupling(tmp_path: Path):
+    """
+    测试 /improve-codebase-architecture 深化后的适配器多态契约与工作区解耦：
+    1. BaseAgentAdapter 深度接口：命令行组装、直连派发、会话取消与权限响应。
+    2. AntigravityAdapter 与 ClaudeCodeAdapter 原生 stream 帧工具块提取。
+    3. OpenCodeAdapter 本地 HTTP Bridge 权限响应与 is_alive 别名兼容。
+    4. backend.core.workspace 模块独立性与向后兼容导出。
+    """
+    from backend.adapters.antigravity_adapter import AntigravityAdapter
+    from backend.adapters.claude_adapter import ClaudeCodeAdapter
+    from backend.adapters.opencode_adapter import OpenCodeAdapter
+    from backend.core.workspace import (
+        decode_workspace_uri,
+        evaluate_project_dir,
+        normalize_project_path,
+    )
+
+    # 1. 验证工作区模块独立函数
+    assert normalize_project_path(r"D:\Repo\Foo\\") == "d:/Repo/Foo"
+    assert decode_workspace_uri("file:///d%3A/Repo/Bar") == "d:/Repo/Bar"
+    is_p, p_norm, p_name = evaluate_project_dir(str(Path.cwd()))
+    assert is_p is True
+    assert p_name != ""
+
+    # 2. 验证 ClaudeCodeAdapter 多态契约
+    claude = ClaudeCodeAdapter()
+    claude_cmd = claude.build_cli_command(
+        raw_session_id="s123",
+        prompt="测试提示词",
+        execution_mode="ask",
+        model_name="claude-sonnet-4-6",
+        approved_tools=["Bash", "Edit"],
+    )
+    assert any("claude" in part.lower() for part in claude_cmd)
+    assert "--output-format" in claude_cmd
+    assert "--permission-prompt-tool" in claude_cmd
+    assert "--allowedTools" in claude_cmd
+
+    claude_frame = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "text", "text": "思考"},
+                {"type": "tool_use", "id": "tc_c1", "name": "Bash", "input": {"command": "ls"}},
+            ]
+        },
+    }
+    claude_tools = claude.extract_stream_tool_blocks(claude_frame)
+    assert len(claude_tools) == 1
+    assert claude_tools[0]["name"] == "Bash"
+
+    # 3. 验证 AntigravityAdapter 深度契约与工具提取
+    agy = AntigravityAdapter(agent_type="agy_cli", root_dir=tmp_path / "agy")
+    agy_cmd = agy.build_cli_command(
+        raw_session_id="conv-1",
+        prompt="优化架构",
+        execution_mode="plan",
+        model_name="claude-sonnet-5-5-high",
+    )
+    assert any("agy" in part.lower() for part in agy_cmd)
+    assert "--mode" in agy_cmd
+    assert "plan" in agy_cmd
+
+    agy_frame = {
+        "step_index": 5,
+        "type": "PLANNER_RESPONSE",
+        "tool_calls": [
+            {
+                "id": "tc_agy_1",
+                "name": "run_command",
+                "args": {"CommandLine": "pytest -q"},
+            }
+        ],
+    }
+    agy_tools = agy.extract_stream_tool_blocks(agy_frame)
+    assert len(agy_tools) == 1
+    assert agy_tools[0]["name"] == "run_command"
+    assert agy_tools[0]["input"]["CommandLine"] == "pytest -q"
+
+    # 4. 验证 OpenCodeAdapter 多态契约与权限响应
+    opencode = OpenCodeAdapter(data_dir=tmp_path / "oc")
+    oc_cmd = opencode.build_cli_command(
+        raw_session_id="oc-session-1",
+        prompt="hello opencode",
+        execution_mode="auto",
+    )
+    assert "run" in oc_cmd
+    assert "--auto" in oc_cmd
+    assert opencode.http_bridge.is_alive() is False  # 服务未启动时安全返回 False，不崩溃
+    assert opencode.respond_permission("oc-1", "perm-1", "approved") is False
+
+
+def test_untracked_diff_and_review_fixes(tmp_path: Path):
+    """
+    验证代码审查修复项：
+    1. get_git_workspace_diff 对未跟踪新文件 (Untracked) 能生成正确的 Unified Diff 预览。
+    2. 对越界访问和非法路径保持严格拒绝。
+    """
+    repo = tmp_path / "git_test_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=str(repo), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(repo), capture_output=True, check=True)
+
+    # 提交首个文件
+    f1 = repo / "README.md"
+    f1.write_text("# Hello Repo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=str(repo), capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True, check=True)
+
+    # 创建未跟踪的新文件
+    untracked = repo / "new_feature.py"
+    untracked.write_text("print('hello new untracked feature')\n", encoding="utf-8")
+
+    # 单文件获取未跟踪 diff
+    res_single = get_git_workspace_diff(str(repo), "new_feature.py")
+    assert res_single["ok"] is True
+    assert "diff --git a/new_feature.py b/new_feature.py" in res_single["diff"]
+    assert "+print('hello new untracked feature')" in res_single["diff"]
+
+    # 全量汇总获取，也应包含未跟踪新文件
+    res_all = get_git_workspace_diff(str(repo))
+    assert res_all["ok"] is True
+    assert "new_feature.py" in res_all["diff"]
+    assert "+print('hello new untracked feature')" in res_all["diff"]
+
+    # 越界路径拒绝防护
+    res_hack = get_git_workspace_diff(str(repo), "../secret.txt")
+    assert res_hack["ok"] is False
+    assert "禁止越界" in res_hack["error"]
+
+
+@pytest.mark.asyncio
+async def test_direct_dispatch_active_state_and_abort_cancellation(tmp_path: Path):
+    """
+    测试直连派发任务与统一编排器状态机的生命周期管理：
+    1. active_direct_tasks 纳入 is_session_active 与 get_state_snapshot。
+    2. abort_session 同步取消直连协程并广播。
+    3. background_tasks 集合强引用保护。
+    """
+    import asyncio
+    from backend.core.database import MetaDatabase
+    from backend.engines.process_pool import AgentOrchestrator
+
+    db = MetaDatabase(db_path=tmp_path / "orch_test.db")
+    orch = AgentOrchestrator(meta_db=db)
+
+    # 验证初始状态
+    test_uid = "agy_ide:direct_conv_1"
+    assert orch.is_session_active(test_uid) is False
+
+    # 模拟启动一个直连任务
+    async def _mock_direct_task():
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            pass
+
+    t = asyncio.create_task(_mock_direct_task())
+    orch.active_direct_tasks[test_uid] = t
+    orch.background_tasks.add(t)
+
+    # 验证活跃判定与快照
+    assert orch.is_session_active(test_uid) is True
+    snap = orch.get_state_snapshot()
+    assert test_uid in snap["active_session_ids"]
+
+    detail = orch.get_session_detail(test_uid)
+    assert detail["is_running"] is True
+
+    # 验证 abort_session 协同取消
+    killed = await orch.abort_session(test_uid, reason="测试手动中断")
+    assert killed is True
+    assert orch.is_session_active(test_uid) is False
+    assert test_uid not in orch.active_direct_tasks
+    await asyncio.sleep(0)
+    assert t.cancelled() or t.done()
+
+
+
+
+
 
 

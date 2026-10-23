@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import subprocess
 import sys
+import time
+from pathlib import Path
+
 import uvicorn
 
 from backend.app import create_app
@@ -69,6 +74,87 @@ async def serve_multi_host(app, hosts: list[str], port: int) -> None:
     await asyncio.gather(*(s.serve() for s in servers))
 
 
+def run_server_worker(port: int, local_only: bool) -> None:
+    """启动 AgentDeck 主服务（单进程工作实例）。"""
+    try:
+        app = create_app()
+        print_startup_banner(app, port)
+        hosts = ["127.0.0.1"] if local_only else app.state.ts_status.bind_hosts
+        asyncio.run(serve_multi_host(app, hosts, port))
+    except KeyboardInterrupt:
+        logger.info("收到退出信号，AgentDeck 已安全停止。")
+        sys.exit(0)
+    except Exception as exc:
+        log_structured_error(
+            problem="AgentDeck 启动失败",
+            cause=str(exc),
+            fix=f"请检查端口 {port} 是否被占用，可使用 '--port {port + 1}' 更换端口重试。",
+            exc=exc,
+        )
+        sys.exit(1)
+
+
+def run_with_reload(port: int, local_only: bool) -> None:
+    """热重载 Supervisor：监听 backend/ 变动，保存时自动终止并重启服务。"""
+    try:
+        from watchfiles import DefaultFilter, watch
+    except ImportError:
+        logger.warning("未检测到 watchfiles 模块，将以普通单实例模式启动。")
+        run_server_worker(port, local_only)
+        return
+
+    script_path = Path(__file__).resolve()
+    backend_path = script_path.parent / "backend"
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--port",
+        str(port),
+        "--worker",
+    ]
+    if local_only:
+        cmd.append("--local-only")
+
+    logger.info("⚡ AgentDeck 热重载模式已启用，正在监听 backend/ 源码变动...")
+
+    def _terminate_proc(proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    subproc = subprocess.Popen(cmd)
+
+    watch_filter = DefaultFilter(
+        ignore_dirs={"__pycache__", ".git", "logs", ".pytest_cache", ".gemini", ".venv"},
+        ignore_entity_patterns=[r"\.py[cod]$", r"\.log$", r"\.db$", r"\.sqlite3?$"],
+    )
+
+    try:
+        for changes in watch(backend_path, script_path, watch_filter=watch_filter, debounce=1000):
+            change_files = {Path(p).name for _, p in changes}
+            print(f"\n[⚡] 检测到代码变动 ({', '.join(change_files)})，正在热重启 AgentDeck...")
+            _terminate_proc(subproc)
+            time.sleep(0.3)
+            subproc = subprocess.Popen(cmd)
+    except KeyboardInterrupt:
+        logger.info("收到退出信号，正在关闭 AgentDeck...")
+    finally:
+        _terminate_proc(subproc)
+        sys.exit(0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="AgentDeck — 多 Agent 移动端统一中控台")
     parser.add_argument("--port", type=int, default=8765, help="监听端口 (默认: 8765)")
@@ -77,24 +163,22 @@ def main() -> None:
         action="store_true",
         help="仅绑定本机 127.0.0.1 调试",
     )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="开启自动热重载模式 (监听 backend/ 变动)",
+    )
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
-    try:
-        app = create_app()
-        print_startup_banner(app, args.port)
-        hosts = ["127.0.0.1"] if args.local_only else app.state.ts_status.bind_hosts
-        asyncio.run(serve_multi_host(app, hosts, args.port))
-    except KeyboardInterrupt:
-        logger.info("收到退出信号，AgentDeck 已安全停止。")
-        sys.exit(0)
-    except Exception as exc:
-        log_structured_error(
-            problem="AgentDeck 启动失败",
-            cause=str(exc),
-            fix=f"请检查端口 {args.port} 是否被占用，可使用 '--port 8766' 更换端口重试。",
-            exc=exc,
-        )
-        sys.exit(1)
+    if args.reload and not args.worker:
+        run_with_reload(args.port, args.local_only)
+    else:
+        run_server_worker(args.port, args.local_only)
 
 
 if __name__ == "__main__":

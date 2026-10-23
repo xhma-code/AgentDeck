@@ -6,7 +6,12 @@
   <meta name="theme-color" content="#090d16" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="AgentDeck" />
   <title>AgentDeck</title>
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png" />
+  <link rel="shortcut icon" href="/favicon.ico" />
   <link rel="manifest" href="/static/manifest.json" />
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/styles.css" />
@@ -103,7 +108,7 @@
               ☰
             </button>
             <button id="desktop-sidebar-expand-btn" onclick="window.appActions.toggleSidebar()"
-              class="hidden w-8 h-8 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-slate-100 items-center justify-center shrink-0 active:scale-95 transition"
+              class="w-8 h-8 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-slate-100 items-center justify-center shrink-0 active:scale-95 transition"
               title="展开侧边栏" aria-label="展开侧边栏">
               <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
@@ -121,8 +126,15 @@
             </div>
           </div>
 
-          <!-- 右侧：连接状态按钮 -->
+          <!-- 右侧：Git 变更概览 + 连接状态按钮 -->
           <div class="flex items-center gap-1.5 shrink-0">
+            <button id="git-status-btn" onclick="window.appActions.openGitStatusModal()"
+              class="hidden h-8 px-2.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 items-center gap-1.5 active:scale-95 transition"
+              title="查看当前项目 Git 未提交变更与 Diff">
+              <svg class="w-3.5 h-3.5 text-sky-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 3v12a3 3 0 103 3V9a3 3 0 10-3-3m0 0a3 3 0 016 0m6 6a3 3 0 10-3-3v3m0 0a3 3 0 003 3"/></svg>
+              <span class="hidden sm:inline">Git</span>
+              <span id="git-changed-badge" class="px-1.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/35 text-[10px] font-mono font-semibold">0</span>
+            </button>
             <button onclick="window.appActions.openQrModal()"
               class="h-8 px-2.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 flex items-center gap-1.5 active:scale-95"
               title="扫码连接与状态">
@@ -185,7 +197,18 @@
               <option value="auto">⚡ 全自动</option>
             </select>
           </div>
+
+          <!-- 斜杠技能与快捷指令按钮 -->
+          <button type="button" onclick="window.appActions.toggleSlashMenu()"
+            class="flex items-center gap-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg px-2 h-7 shrink-0 text-[11px] font-medium transition active:scale-95"
+            title="快捷指令与技能 (/plan, /review 等)">
+            <svg class="w-3.5 h-3.5 text-sky-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            <span>/指令</span>
+          </button>
         </div>
+
+        <!-- 斜杠指令浮动菜单 -->
+        <div id="slash-popover" class="hidden mb-2 rounded-xl bg-slate-950/95 border border-slate-800 shadow-2xl p-1.5 space-y-1 max-h-56 overflow-y-auto subtle-scrollbar"></div>
 
         <!-- 输入框与发送/中断按钮 -->
         <div class="flex items-end gap-1.5">
