@@ -453,6 +453,15 @@ class OpenCodeAdapter(BaseAgentAdapter):
             paths.append(self.state_dir)
         return paths
 
+    @classmethod
+    def is_meaningful_storage_change(cls, path_str: str, filename: str) -> bool:
+        """多态判定变动是否属于 OpenCode 核心存储。"""
+        s = path_str.lower().replace("\\", "/")
+        n = filename.lower()
+        if "opencode" not in s:
+            return False
+        return n.endswith((".json", ".jsonl", ".sqlite", ".db"))
+
     def list_sessions(self, limit: int = 50) -> list[UnifiedSession]:
         """从 opencode.db 读取会话列表（自适应 session_v2 与旧版 session，实时感知活跃状态）。"""
         if not self.db_path.exists():
