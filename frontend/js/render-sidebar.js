@@ -50,14 +50,14 @@ export function renderSidebarStatus() {
     if (headerIndicator) {
       headerIndicator.classList.remove("hidden");
       headerIndicator.className =
-        "shrink-0 h-6 px-1.5 rounded-md bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/50 text-sky-300 flex items-center gap-1 text-[11px] transition active:scale-95 shadow-sm animate-pulse cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none";
+        "h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/50 text-sky-300 flex items-center gap-1.5 text-xs transition active:scale-95 shadow-sm animate-pulse cursor-pointer";
       headerIndicator.title = "发现前端代码更新，点击立即载入最新代码";
       headerIndicator.innerHTML = `
-        <svg class="w-3 h-3 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <line x1="12" y1="19" x2="12" y2="5"></line>
           <polyline points="5 12 12 5 19 12"></polyline>
         </svg>
-        <span class="font-semibold text-[10px]">更新</span>
+        <span class="text-[11px] font-semibold text-sky-300">更新</span>
       `;
     }
     return;
@@ -86,26 +86,27 @@ export function renderSidebarStatus() {
     }
   }
 
+  // 无更新时：保持原逻辑，根据连接状态展示（重连中 / 离线），正常在线时隐藏
   if (headerIndicator) {
     if (state.wsConnected) {
       headerIndicator.classList.add("hidden");
     } else if (state.wsReconnecting) {
       headerIndicator.classList.remove("hidden");
       headerIndicator.className =
-        "shrink-0 h-5 px-1 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center gap-1 text-[10px] cursor-pointer";
-      headerIndicator.title = "重连中... 点击尝试重新载入";
+        "h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center gap-1.5 text-xs transition active:scale-95 cursor-pointer";
+      headerIndicator.title = "正在重新连接服务... 点击尝试重新载入";
       headerIndicator.innerHTML = `
         <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
-        <span>重连中</span>
+        <span class="text-[11px]">重连中</span>
       `;
     } else {
       headerIndicator.classList.remove("hidden");
       headerIndicator.className =
-        "shrink-0 h-5 px-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-400 flex items-center gap-1 text-[10px] cursor-pointer";
+        "h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-400 flex items-center gap-1.5 text-xs transition active:scale-95 cursor-pointer";
       headerIndicator.title = "已离线，点击重新载入";
       headerIndicator.innerHTML = `
         <span class="w-1.5 h-1.5 rounded-full bg-zinc-500"></span>
-        <span>离线</span>
+        <span class="text-[11px]">离线</span>
       `;
     }
   }
@@ -121,7 +122,7 @@ import {
   renderSidebarAwakeLock,
   renderAgentsHealthModal,
 } from "./render-status-badges.js";
-import { isSessionAttentionNeeded } from "./data.js";
+import { isSessionAttentionNeeded, isSubagentSession } from "./data.js";
 import { renderCompactSessionItem } from "./render-session-card.js";
 
 export function renderSessionList() {
@@ -158,7 +159,7 @@ export function renderSessionList() {
   }
 
   // 1. 动态提升会话（运行中 / 待审批 / 刚完成未查看）
-  const activeUnreadList = filtered.filter((s) => isSessionAttentionNeeded(s));
+  const activeUnreadList = filtered.filter((s) => isSessionAttentionNeeded(s) && !isSubagentSession(s));
 
   activeUnreadList.sort((a, b) => {
     const wa = getSessionPriorityWeight(a);
@@ -172,7 +173,7 @@ export function renderSessionList() {
   const activeIds = new Set(activeUnreadList.map((s) => s.unified_id));
 
   // 常驻手动置顶（排除已经在动态列表里的会话，避免重复）
-  const manualPinnedList = filtered.filter((s) => s.is_pinned && !activeIds.has(s.unified_id));
+  const manualPinnedList = filtered.filter((s) => s.is_pinned && !activeIds.has(s.unified_id) && !isSubagentSession(s));
   const totalTopCount = activeUnreadList.length + manualPinnedList.length;
 
   // 2. 按真正工程项目 (is_project === true) 聚合
@@ -276,7 +277,7 @@ export function renderSessionList() {
           <span class="text-[10px] text-zinc-600 font-normal font-mono">(${projects.length})</span>
         </div>
         <div class="flex items-center gap-1" onclick="event.stopPropagation()">
-          <button onclick="window.appActions.openNewSessionModal()" class="text-zinc-400 hover:text-sky-400 text-xs px-1" title="添加项目或新建对话">＋</button>
+          <button onclick="window.appActions.openNewSessionModal()" class="text-zinc-400 hover:text-sky-400 text-xs px-1" title="新建">＋</button>
         </div>
       </div>
       ${
@@ -302,12 +303,12 @@ export function renderSessionList() {
                                   proj.path
                                 )}', event)"
                                   class="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-400 hover:text-sky-400 flex items-center justify-center text-xs"
-                                  title="在此项目新建对话">＋</button>
+                                  title="新建">＋</button>
                                 <button onclick="window.appActions.hideProject('${escapeHtml(
                                   proj.path
                                 )}', event, '${escapeJsSingleQuote(proj.name)}')"
                                   class="w-4 h-4 rounded hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 flex items-center justify-center text-[11px]"
-                                  title="从项目列表移出 (不删对话)">×</button>
+                                  title="移出项目">×</button>
                                 <span class="text-[10px] text-zinc-500 tabular-nums min-w-[14px] text-right">${
                                   proj.sessions.length
                                 }</span>

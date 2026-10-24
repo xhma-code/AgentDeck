@@ -26,22 +26,25 @@ _fp_cache: tuple[float, str] = (0.0, "2.0.0")
 
 
 def calc_frontend_fingerprint() -> str:
-    """基于前端静态核心文件修改时间生成版本指纹（带1秒内存缓存）。"""
+    """基于前端静态核心文件修改时间与大小生成稳定短指纹（带1秒内存缓存）。"""
     global _fp_cache
     now = time.time()
     if now - _fp_cache[0] < 1.0:
         return _fp_cache[1]
     try:
-        mtimes: list[str] = []
+        import hashlib
+        h = hashlib.md5()
         for fname in ("index.html", "app.js", "styles.css"):
             fpath = FRONTEND_DIR / fname
             if fpath.exists():
-                mtimes.append(str(int(fpath.stat().st_mtime)))
+                st = fpath.stat()
+                h.update(f"{fname}:{int(st.st_mtime)}:{st.st_size}".encode())
         js_dir = FRONTEND_DIR / "js"
         if js_dir.exists():
             for jf in sorted(js_dir.glob("*.js")):
-                mtimes.append(str(int(jf.stat().st_mtime)))
-        res = "-".join(mtimes) if mtimes else "2.0.0"
+                st = jf.stat()
+                h.update(f"{jf.name}:{int(st.st_mtime)}:{st.st_size}".encode())
+        res = h.hexdigest()[:12]
         _fp_cache = (now, res)
         return res
     except Exception as exc:

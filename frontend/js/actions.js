@@ -32,6 +32,22 @@ import { renderTurnProcessBar } from "./render-step-cards.js";
 
 // 子动作控制器导入
 import {
+  toggleSessionMenu,
+  toggleCurrentPin,
+  renameCurrentSession,
+  deleteCurrentSession,
+  jumpToRunningSession,
+  toggleProject,
+  toggleSection,
+  newProjectSession,
+  hideProject,
+  onNewSessionAgentChange,
+  refreshPairCodeAndQr,
+  switchQrChannel,
+  toggleAwakeLockFromSidebar,
+} from "./actions-session.js";
+
+import {
   handleSendPrompt,
   handleAbortCurrentSession,
   handleModeChange,
@@ -41,6 +57,11 @@ import {
   loadFullOutput,
   insertSlashCommand,
   executeSlashDirectly,
+  handlePromptAction,
+  fillPromptAndSend,
+  selectSlashCommand,
+  toggleModelPicker,
+  selectModel,
 } from "./actions-chat.js";
 import {
   submitApprovalDecision,
@@ -51,6 +72,9 @@ import {
   onQuestionWriteInInput,
   submitQuestionAnswers,
   skipQuestionAnswers,
+  toggleDenyFeedback,
+  submitDenyWithFeedback,
+  setQuestionWriteIn,
 } from "./actions-approval.js";
 import {
   closePairingGuideModal,
@@ -83,6 +107,33 @@ export {
 };
 
 window.appActions = {
+  // 会话与三点操作菜单
+  toggleSessionMenu,
+  toggleCurrentPin,
+  renameCurrentSession,
+  deleteCurrentSession,
+  jumpToRunningSession,
+  toggleProject,
+  toggleSection,
+  newProjectSession,
+  hideProject,
+  onNewSessionAgentChange,
+  refreshPairCodeAndQr,
+  switchQrChannel,
+  toggleAwakeLockFromSidebar,
+
+  // 聊天与模型选择交互
+  handlePromptAction,
+  fillPromptAndSend,
+  selectSlashCommand,
+  toggleModelPicker,
+  selectModel,
+
+  // 审批与问答
+  toggleDenyFeedback,
+  submitDenyWithFeedback,
+  setQuestionWriteIn,
+
   // 弹窗动作
   closePairingGuideModal,
   submitPairCodeManual,
@@ -146,12 +197,12 @@ window.appActions = {
     if (ev) ev.stopPropagation();
     const curSess = state.sessions.find((s) => s.unified_id === unifiedId);
     if (!curSess) return;
-    if (!window.confirm(`确定要从列表中移除对话「${curSess.title}」吗？\n（仅隐藏记录，不会删除磁盘代码）`)) {
+    if (!window.confirm(`确定从列表中移除「${curSess.title}」？\n（仅隐藏记录，不删除磁盘文件）`)) {
       return;
     }
     try {
       await apiFetch(`/api/v1/sessions/${encodeURIComponent(unifiedId)}`, { method: "DELETE" });
-      showToast("已移除对话", "success");
+      showToast("已移除", "success");
       state.sessions = state.sessions.filter((s) => s.unified_id !== curSess.unified_id);
       state.allSessions = state.allSessions.filter((s) => s.unified_id !== curSess.unified_id);
       const nextSess = pickDefaultSession(state.sessions);
@@ -260,11 +311,12 @@ window.appActions = {
   togglePin: handleTogglePin,
   toggleWordWrap() {
     state.wordWrapDiff = !state.wordWrapDiff;
-    state.autoScrollLocked = true;
-    const container = document.getElementById("messages-container");
-    const prevTop = container ? container.scrollTop : 0;
-    renderMessagesList();
-    if (container) container.scrollTop = prevTop;
+    document.querySelectorAll(".unified-diff-box").forEach((box) => {
+      box.classList.toggle("word-wrap", state.wordWrapDiff);
+    });
+    document.querySelectorAll("[data-action=\"toggle-word-wrap\"]").forEach((btn) => {
+      btn.textContent = state.wordWrapDiff ? "横向滚动" : "自动换行";
+    });
   },
   toggleTurnSteps(turnKey) {
     const isCurrentlyExpanded = !!state.expandedTurns[turnKey] || !!state.turnThinkingExpanded[turnKey];

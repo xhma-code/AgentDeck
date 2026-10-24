@@ -12,6 +12,46 @@ import {
 } from "./utils.js";
 import { renderMarkdownHtml } from "./markdown.js";
 
+function hasMeaningfulOutput(output) {
+  if (!output) return false;
+  const stripped = String(output)
+    .replace(/Created At:\s*[^\r\n]+/gi, "")
+    .replace(/Completed At:\s*[^\r\n]+/gi, "")
+    .replace(/Command exited with code 0\.?/gi, "")
+    .trim();
+  return stripped.length > 0;
+}
+
+function getTurnHumanActionSummary(turn) {
+  const { processRecords, editedFiles } = turn;
+  let hasRead = false;
+  let hasCommand = false;
+  let hasEdit = (editedFiles && editedFiles.length > 0);
+
+  for (const rec of processRecords || []) {
+    for (const tc of rec.tool_calls || []) {
+      if (isReadOnlyTool(tc)) {
+        hasRead = true;
+      } else if (tc.diff_text || /edit|write|replace|create/i.test(tc.name || "")) {
+        hasEdit = true;
+      } else {
+        hasCommand = true;
+      }
+    }
+  }
+
+  if (hasEdit && hasCommand) return "修改代码并执行命令";
+  if (hasRead && hasEdit) return "查阅代码并修改文件";
+  if (hasRead && hasCommand) return "查阅代码并执行命令";
+  if (hasEdit) {
+    return editedFiles.length === 1 ? `修改 ${editedFiles[0]}` : `修改 ${editedFiles.length} 个文件`;
+  }
+  if (hasCommand) return "执行命令行操作";
+  if (hasRead) return "查阅相关代码与文件";
+  return "处理会话任务";
+}
+
+
 export function renderTurnProcessBar(turn) {
   const {
     turnKey,
@@ -60,59 +100,13 @@ export function renderTurnProcessBar(turn) {
       </span>`
     );
   }
-  if (thinkingCount > 0) {
-    badges.push(
-      `<span class="hidden sm:inline-flex text-[11px] text-zinc-400 items-center gap-1 shrink-0">
-        <svg class="w-3 h-3 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        <span>${thinkingCount} 次思考</span>
-      </span>`
-    );
-  }
+
 
   const detailsHtml = isExpanded
     ? `<div class="mt-2 pt-2 border-t border-zinc-800/80 space-y-2">
         ${processRecords
           .map((rec) => {
-            const thinkDetailId = `${turnKey}_think_${rec.step_index}`;
-            const isThinkExplicitlySet = typeof state.expandedDetails[thinkDetailId] === "boolean";
-            const isThinkOpen = isThinkExplicitlySet
-              ? Boolean(state.expandedDetails[thinkDetailId])
-              : Boolean(state.turnThinkingExpanded[turnKey]);
-            if (rec.thinking) {
-              saveToBoundedStore("lazyDetailsStore", thinkDetailId, {
-                type: "thinking",
-                raw: rec.thinking,
-              });
-            }
-            const displayThinkLen =
-              rec.thinking_len || (rec.thinking ? rec.thinking.length : 0);
-            const thinkHtml = rec.thinking
-              ? `
-                <details data-detail-id="${escapeHtml(thinkDetailId)}" ${
-                  isThinkOpen ? "open" : ""
-                } ontoggle="window.appActions.onDetailToggle(this, '${escapeJsSingleQuote(
-                  thinkDetailId
-                )}', '${escapeJsSingleQuote(turnKey)}')" class="rounded-lg bg-zinc-950/80 border border-zinc-800/80 px-2.5 py-1.5 text-[11px] text-zinc-400">
-                  <summary onclick="window.appActions.onThinkSummaryClick(event, '${escapeJsSingleQuote(
-                    turnKey
-                  )}', '${escapeJsSingleQuote(thinkDetailId)}')" class="cursor-pointer select-none font-medium text-zinc-300 min-h-[34px] flex items-center justify-between px-0.5">
-                    <span class="flex items-center gap-1.5 min-w-0">
-                      <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 3.2 1.9 6 4.7 7.3V19a2 2 0 0 0 2 2h2.6a2 2 0 0 0 2-2v-1.7c2.8-1.3 4.7-4.1 4.7-7.3a8 8 0 0 0-8-8z"/><path d="M10 22h4"/></svg>
-                      <span class="truncate">思考过程 (${displayThinkLen}字)</span>
-                    </span>
-                    <button type="button" onclick="window.appActions.copyThinkingText('${escapeJsSingleQuote(
-                      thinkDetailId
-                    )}', this, event)" class="min-h-[36px] min-w-[50px] px-2.5 py-1 rounded-md text-[11px] text-zinc-400 hover:text-sky-300 hover:bg-zinc-800/80 transition active:scale-95 flex items-center justify-center gap-1" title="复制思考内容">
-                      <svg class="w-3 h-3 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                      <span>复制</span>
-                    </button>
-                  </summary>
-                  <div data-lazy-slot class="mt-1.5 pt-1.5 border-t border-zinc-800/70 whitespace-pre-wrap leading-relaxed text-zinc-400 font-mono text-[11px] max-h-52 overflow-y-auto">${
-                    isThinkOpen ? escapeHtml(rec.thinking) : ""
-                  }</div>
-                </details>
-              `
-              : "";
+
 
             const noteHtml = rec.intermediateNote
               ? `
@@ -190,9 +184,9 @@ export function renderTurnProcessBar(turn) {
 
                 const cardClass = isEditTool
                   ? "edit-tool-card"
-                  : `rounded-lg bg-zinc-950/90 border ${
-                      isHigh ? "border-rose-500/45" : "border-zinc-800/90"
-                    } p-2 text-xs`;
+                  : `rounded-md bg-zinc-950/50 border ${
+                      isHigh ? "border-rose-500/45" : "border-zinc-800/60"
+                    } px-2 py-1 text-xs hover:border-zinc-700/60 transition`;
 
                 const badgeBg = isEditTool
                   ? "bg-emerald-500/20 text-emerald-300"
@@ -227,8 +221,14 @@ export function renderTurnProcessBar(turn) {
                               )}</span>`
                             : ""
                         }
-                        <span class="text-[9px] text-zinc-500 font-mono">${escapeHtml(
-                          tc.status || "DONE"
+                        <span class="text-[9px] ${
+                          tc.status === "ERROR" || tc.status === "FAILED" || /Command exited with code [1-9]/.test(tc.output || "")
+                            ? "text-rose-400 font-bold"
+                            : "text-zinc-500"
+                        } font-mono">${escapeHtml(
+                          (tc.status === "ERROR" || tc.status === "FAILED" || /Command exited with code [1-9]/.test(tc.output || ""))
+                            ? "失败"
+                            : (tc.status || "DONE")
                         )}</span>
                       </div>
                     </div>
@@ -276,17 +276,26 @@ export function renderTurnProcessBar(turn) {
                         : ""
                     }
                     ${
-                      tc.output
-                        ? `
+                      (() => {
+                        const hasMeaningful = hasMeaningfulOutput(tc.output);
+                        const isFail =
+                          tc.status === "ERROR" ||
+                          tc.status === "FAILED" ||
+                          /Command exited with code [1-9]/.test(tc.output || "") ||
+                          /\b(Error|Exception|Failed|Traceback)\b/i.test(tc.output || "");
+                        if (!hasMeaningful && !isFail) return "";
+                        return `
                           <details data-detail-id="${escapeHtml(outDetailId)}" ${
                             isOutOpen ? "open" : ""
                           } ontoggle="window.appActions.onDetailToggle(this, '${escapeJsSingleQuote(
                             outDetailId
-                          )}')" class="mt-1.5 text-[10px] text-zinc-400">
-                            <summary class="cursor-pointer text-zinc-400 hover:text-zinc-200 select-none min-h-[34px] flex items-center justify-between py-1 px-1 rounded hover:bg-zinc-800/40 transition">
-                              <span class="flex items-center gap-1.5 min-w-0">
-                                <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-                                <span class="truncate">查看执行输出 ${
+                          )}')" class="mt-1 text-[10px] text-zinc-400">
+                            <summary class="cursor-pointer ${
+                              isFail ? "text-rose-300 hover:text-rose-200" : "text-zinc-400 hover:text-zinc-200"
+                            } select-none min-h-[26px] flex items-center justify-between py-0.5 px-1 rounded hover:bg-zinc-800/40 transition">
+                              <span class="flex items-center gap-1 min-w-0">
+                                <svg class="w-3 h-3 ${isFail ? "text-rose-400" : "text-zinc-500"} shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                                <span class="truncate text-[10px]">${isFail ? "查看错误输出" : "输出"} ${
                                   tc.is_truncated ? `(${tc.full_output_len}字·已截断)` : ""
                                 }</span>
                               </span>
@@ -298,19 +307,21 @@ export function renderTurnProcessBar(turn) {
                                   : ""
                               }
                             </summary>
-                            <pre data-lazy-slot class="mt-1 p-2 rounded bg-black/70 overflow-x-auto font-mono text-[10px] text-zinc-300 whitespace-pre-wrap break-all max-h-44 overflow-y-auto">${
+                            <pre data-lazy-slot class="mt-1 p-2 rounded bg-black/70 overflow-x-auto font-mono text-[10px] ${
+                              isFail ? "text-rose-300 border border-rose-500/30" : "text-zinc-300"
+                            } whitespace-pre-wrap break-all max-h-44 overflow-y-auto">${
                               isOutOpen ? escapeHtml(tc.output) : ""
                             }</pre>
                           </details>
-                        `
-                        : ""
+                        `;
+                      })()
                     }
                   </div>
                 `;
               })
               .join("");
 
-            return `<div class="space-y-1.5">${thinkHtml}${noteHtml}${readChipsHtml}${actionToolsHtml}</div>`;
+            return `<div class="space-y-1.5">${noteHtml}${readChipsHtml}${actionToolsHtml}</div>`;
           })
           .join("")}
         <div class="pt-2 text-center border-t border-zinc-800/60">
@@ -330,7 +341,7 @@ export function renderTurnProcessBar(turn) {
         <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
           <span class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5 shrink-0">
             <svg class="w-3.5 h-3.5 text-sky-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-            <span class="whitespace-nowrap">${totalActions} 步操作</span>
+            <span class="whitespace-nowrap font-medium text-zinc-200">${escapeHtml(getTurnHumanActionSummary(turn))}</span>
             ${
               durationStr
                 ? `<span class="text-zinc-500 font-normal">·</span><span class="text-[11px] font-mono text-zinc-400 font-normal">${escapeHtml(

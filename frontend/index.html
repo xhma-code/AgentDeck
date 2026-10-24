@@ -21,9 +21,8 @@
   <link rel="manifest" href="/static/manifest.json?v=20261023_diamond_v4" />
   <!-- 本地化无公网依赖资源，杜绝小火箭全局代理时因外网 CDN 阻塞导致白屏加载卡死 -->
   <script src="/static/tailwind.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261024_split_modules_v6" />
-  <meta name="agentdeck-build" content="20261024_split_modules_v6" />
-</head>
+  <link rel="stylesheet" href="/static/styles.css?v=20261024_hamburger_flow_v1" />
+  </head>
 <body class="bg-black text-zinc-100 select-none sm:select-auto antialiased">
   <!-- Toast 容器（下移避开顶部导航栏，杜绝遮挡） -->
   <div id="toast-container" class="fixed toast-safe-top right-3 left-3 sm:left-auto sm:w-80 z-50 space-y-1.5 pointer-events-none"></div>
@@ -56,7 +55,7 @@
           <button onclick="window.appActions.toggleSidebar()"
             class="hidden md:flex p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 transition"
             title="收起侧边栏" aria-label="收起侧边栏">
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg id="mobile-menu-icon" class="w-4 h-4 text-zinc-200 transition-all duration-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
               <line x1="9" y1="3" x2="9" y2="21"></line>
               <polyline points="14 9 11 12 14 15"></polyline>
@@ -133,7 +132,7 @@
               aria-label="打开菜单">
               <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
               <!-- 移动端后台活跃/未查看任务呼吸微标 -->
-              <span id="mobile-menu-badge" class="hidden absolute top-2 right-2 w-2 h-2 rounded-full pointer-events-none"></span>
+              <span id="mobile-menu-badge" class="hidden"></span>
             </button>
             <button id="desktop-sidebar-expand-btn" onclick="window.appActions.toggleSidebar()"
               class="w-10 h-10 sm:w-8 sm:h-8 min-w-[40px] min-h-[40px] sm:min-w-0 sm:min-h-0 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-zinc-100 items-center justify-center shrink-0 active:scale-95 transition"
@@ -149,36 +148,13 @@
               <div id="current-session-title" class="min-w-0 flex-1 flex items-center gap-1.5 sm:gap-2 overflow-hidden">
                 <span class="text-xs sm:text-sm font-medium text-zinc-400 truncate">加载中...</span>
               </div>
-              <!-- 顶部导航栏左上角标题右侧状态与更新微标 -->
-              <button id="header-status-indicator" onclick="window.appActions.handleStatusBtnClick()"
-                class="hidden shrink-0 h-6 px-1.5 rounded-md bg-transparent hover:bg-zinc-800 text-xs items-center gap-1 transition active:scale-95 cursor-pointer"
-                title="系统连接与更新状态">
-              </button>
               <div id="current-session-subtitle" class="hidden"></div>
             </div>
           </div>
 
-          <!-- 右侧：连接状态、会话菜单与扫码按钮 -->
+          <!-- 右侧：会话菜单、更新、状态、Git与扫码按钮（顺序：3个点 更新 状态 git 扫码） -->
           <div class="flex items-center gap-1.5 shrink-0">
-            <!-- 运行中/待审批/完成未看 快捷跳板（支持手机端紧凑胶囊与桌面端全尺寸展开，触控热区 ≥40px） -->
-            <button id="other-running-pill" onclick="window.appActions.jumpToRunningSession()"
-              class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg border text-xs items-center gap-1.5 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
-              title="点击快速跳转到活跃或待查看的会话" aria-label="后台活跃与待查看会话快捷切换">
-              <span id="other-running-dot" class="w-2 h-2 rounded-full shrink-0"></span>
-              <span id="other-running-text" class="text-[11px] font-medium hidden sm:inline"></span>
-              <span id="other-running-count" class="text-[11px] font-mono font-bold sm:hidden"></span>
-            </button>
-
-            <!-- Token 上下文占用胶囊 -->
-            <button id="token-usage-pill" onclick="window.appActions.openTokenUsageModal()"
-              class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1.5 active:scale-95 transition"
-              title="会话 Token 上下文占用">
-              <span id="token-usage-dot" class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
-              <span id="token-usage-text" class="font-mono text-[11px] text-zinc-300 hidden sm:inline">0 / 200k</span>
-              <span id="token-usage-pct" class="text-[9px] px-1 py-0.5 rounded font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30">0%</span>
-            </button>
-
-            <!-- 当前会话操作三点菜单（支持置顶切换、重命名与删除） -->
+            <!-- 1. 3个点：当前会话操作三点菜单 -->
             <div class="relative">
               <button id="session-options-menu-btn" onclick="window.appActions.toggleSessionMenu(event)"
                 class="w-10 h-10 min-w-[40px] min-h-[40px] sm:w-8 sm:h-8 sm:min-w-0 sm:min-h-0 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-zinc-100 flex items-center justify-center shrink-0 active:scale-95 transition"
@@ -190,7 +166,7 @@
                 <button onclick="window.appActions.toggleCurrentPin()"
                   class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[40px]">
                   <span id="session-menu-pin-icon" class="text-xs">★</span>
-                  <span id="session-menu-pin-text">置顶此对话</span>
+                  <span id="session-menu-pin-text">置顶</span>
                 </button>
                 <button onclick="window.appActions.renameCurrentSession()"
                   class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[40px]">
@@ -201,12 +177,27 @@
                 <button onclick="window.appActions.deleteCurrentSession()"
                   class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition text-left min-h-[40px]">
                   <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                  <span>删除对话</span>
+                  <span>删除</span>
                 </button>
               </div>
             </div>
 
-            <!-- Git 工作区变更指示胶囊（位于中间，扫码按钮前面） -->
+            <!-- 2. 更新：包含更新态（有新代码时显示）与连接状态（重连/离线） -->
+            <button id="header-status-indicator" onclick="window.appActions.handleStatusBtnClick()"
+              class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg text-xs transition active:scale-95 cursor-pointer"
+              title="系统连接与更新状态">
+            </button>
+
+            <!-- 3. 状态：运行中/待审批/完成未看快捷跳板（原 1待查看 1运行中 状态胶囊） -->
+            <button id="other-running-pill" onclick="window.appActions.jumpToRunningSession()"
+              class="hidden md:flex h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg border text-xs items-center gap-1.5 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+              title="点击快速跳转到活跃或待查看的会话" aria-label="后台活跃与待查看会话快捷切换">
+              <span id="other-running-dot" class="w-2 h-2 rounded-full shrink-0"></span>
+              <span id="other-running-text" class="text-[11px] font-medium hidden sm:inline"></span>
+              <span id="other-running-count" class="text-[11px] font-mono font-bold sm:hidden"></span>
+            </button>
+
+            <!-- 4. git：工作区 Git 变更指示胶囊 -->
             <button id="git-status-btn" onclick="window.appActions.openGitStatusModal()"
               class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1.5 active:scale-95 transition"
               title="查看工作区 Git 状态与变更">
@@ -215,6 +206,7 @@
               <span id="git-changed-badge" class="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-zinc-800 text-zinc-400 border border-zinc-700">0</span>
             </button>
 
+            <!-- 5. 扫码：扫码连接按钮 -->
             <button onclick="window.appActions.openQrModal()"
               class="hidden md:flex h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1.5 active:scale-95 transition"
               title="扫码连接">
@@ -354,7 +346,7 @@
       <div class="flex items-center justify-between pb-2 border-b border-zinc-800">
         <div class="font-bold text-sm text-zinc-100 flex items-center gap-2">
           <svg class="w-4 h-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
-          <span>Agent 运行体检状态</span>
+          <span>Agent 体检</span>
         </div>
         <button onclick="window.appActions.closeAgentsHealthModal()" class="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition cursor-pointer" aria-label="关闭">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -503,7 +495,7 @@
           <svg class="w-4 h-4 text-sky-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
           </svg>
-          <span>上下文水位与 Token 统计</span>
+          <span>Token 统计</span>
         </div>
         <button onclick="window.appActions.closeTokenUsageModal()" class="text-zinc-400 hover:text-white px-2 py-0.5 text-xs">✕</button>
       </div>
@@ -511,7 +503,7 @@
       <!-- 进度条与占比 -->
       <div class="space-y-1.5">
         <div class="flex items-center justify-between text-xs">
-          <span class="text-zinc-400">当前会话上下文占用</span>
+          <span class="text-zinc-400">上下文占用</span>
           <span id="modal-token-pct" class="font-bold font-mono text-sky-400">0%</span>
         </div>
         <div class="w-full h-2 rounded-full bg-zinc-900 border border-zinc-800 overflow-hidden">
@@ -570,6 +562,6 @@
       });
     }
   </script>
-  <script type="module" src="/static/app.js?v=20261024_split_modules_v6"></script>
+  <script type="module" src="/static/app.js?v=20261024_fix_buttons_v3"></script>
 </body>
 </html>

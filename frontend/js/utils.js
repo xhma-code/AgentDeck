@@ -136,10 +136,8 @@ export function saveToBoundedStore(storeName, key, value, maxItems = 150) {
 
 export function applyButtonCheckmark(btnEl, options = {}) {
   if (!btnEl) return;
-  const label = options.label || "已复制";
-  const iconSize = options.iconSize || "w-3.5 h-3.5";
-  const highlightBorder = !!options.highlightBorder;
-  const duration = options.duration || 1600;
+  const iconSize = options.iconSize || "w-3 h-3";
+  const duration = options.duration || 1500;
 
   if (btnEl._copyResetTimer) {
     clearTimeout(btnEl._copyResetTimer);
@@ -147,23 +145,28 @@ export function applyButtonCheckmark(btnEl, options = {}) {
     btnEl._oldCopyHtml = btnEl.innerHTML;
   }
 
-  btnEl.innerHTML = `
-    <svg class="${iconSize} text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-    <span class="text-emerald-300 font-medium">${escapeHtml(label)}</span>
-  `;
+  const checkSvg = `<svg class="${iconSize} text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
 
-  if (highlightBorder) {
-    btnEl.classList.add("border-emerald-500/40", "bg-emerald-500/10");
+  const existingSvg = btnEl.querySelector("svg");
+  if (existingSvg) {
+    existingSvg.outerHTML = checkSvg;
+    const textSpan = btnEl.querySelector("span");
+    if (textSpan) {
+      textSpan.classList.add("text-emerald-300");
+    }
+  } else {
+    const label = options.label || btnEl.textContent.trim() || "复制";
+    btnEl.innerHTML = `${checkSvg}<span class="text-emerald-300 font-medium">${escapeHtml(label)}</span>`;
   }
+
+  btnEl.classList.add("text-emerald-300");
 
   btnEl._copyResetTimer = setTimeout(() => {
     if (btnEl._oldCopyHtml !== undefined) {
       btnEl.innerHTML = btnEl._oldCopyHtml;
       delete btnEl._oldCopyHtml;
     }
-    if (highlightBorder) {
-      btnEl.classList.remove("border-emerald-500/40", "bg-emerald-500/10");
-    }
+    btnEl.classList.remove("text-emerald-300");
     delete btnEl._copyResetTimer;
   }, duration);
 }

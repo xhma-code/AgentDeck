@@ -9,19 +9,37 @@ import { escapeHtml } from "./utils.js";
 export function renderHeaderStatus() {
   renderSidebarStatus();
   const netBadge = document.getElementById("network-status-badge");
+  const healthDot = document.getElementById("header-health-dot");
   const reconnectBanner = document.getElementById("reconnect-banner");
-  if (!netBadge) return;
 
   if (state.wsConnected) {
     const tsOnline = !!state.systemStatus?.tailscale?.is_online;
     const ztOnline = !!state.systemStatus?.tailscale?.zerotier_ip;
     const vpnOnline = tsOnline || ztOnline;
-    netBadge.innerHTML = `<span class="w-2 h-2 rounded-full ${
-      vpnOnline ? "bg-emerald-400" : "bg-sky-400"
-    }"></span>`;
+    if (netBadge) {
+      netBadge.innerHTML = `<span class="w-2 h-2 rounded-full ${
+        vpnOnline ? "bg-emerald-400" : "bg-sky-400"
+      }"></span>`;
+    }
+    if (healthDot) {
+      healthDot.className = "w-1.5 h-1.5 rounded-full bg-emerald-400";
+    }
     if (reconnectBanner) reconnectBanner.classList.add("hidden");
+  } else if (state.wsReconnecting) {
+    if (netBadge) {
+      netBadge.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>`;
+    }
+    if (healthDot) {
+      healthDot.className = "w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping";
+    }
+    if (reconnectBanner) reconnectBanner.classList.remove("hidden");
   } else {
-    netBadge.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>`;
+    if (netBadge) {
+      netBadge.innerHTML = `<span class="w-2 h-2 rounded-full bg-zinc-600"></span>`;
+    }
+    if (healthDot) {
+      healthDot.className = "w-1.5 h-1.5 rounded-full bg-zinc-500";
+    }
     if (reconnectBanner) reconnectBanner.classList.remove("hidden");
   }
 }

@@ -44,6 +44,7 @@ import {
   SESSION_PRIORITY,
   getSessionPriorityWeight,
   isSessionAttentionNeeded,
+  isSubagentSession,
   getAllAttentionSessions,
   getPendingAttentionSessions,
   getLatestSession,
@@ -61,6 +62,7 @@ export {
   SESSION_PRIORITY,
   getSessionPriorityWeight,
   isSessionAttentionNeeded,
+  isSubagentSession,
   getAllAttentionSessions,
   getPendingAttentionSessions,
   getLatestSession,
@@ -359,18 +361,31 @@ export async function checkFrontendVersion() {
     if (data.ok && data.frontend_version) {
       if (!state.frontendBuild) {
         state.frontendBuild = data.frontend_version;
+        state.hasUpdate = false;
       } else if (state.frontendBuild !== data.frontend_version) {
         state.hasUpdate = true;
         state.remoteBuild = data.frontend_version;
-        renderSidebarStatus();
+      } else {
+        state.hasUpdate = false;
       }
+      renderSidebarStatus();
     }
   } catch (_) {}
 }
 
-export function handleStatusBtnClick() {
+export async function handleStatusBtnClick() {
   if (state.hasUpdate) {
     showToast("检测到前端改动，正在载入最新代码...", "info");
+    if ("caches" in window) {
+      try {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      } catch (_) {}
+    }
+    if (state.remoteBuild) {
+      state.frontendBuild = state.remoteBuild;
+    }
+    state.hasUpdate = false;
     setTimeout(() => {
       window.location.reload(true);
     }, 150);

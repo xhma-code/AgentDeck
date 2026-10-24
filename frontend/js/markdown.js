@@ -138,8 +138,9 @@ export function renderMarkdownHtml(rawMd, scopeKey = "md") {
           <button type="button" onclick="window.appActions.copyCodeBlock('${escapeJsSingleQuote(
             codeId
           )}', this)"
-            class="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] transition active:scale-95">
-            📋 复制
+            class="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-zinc-100 text-[11px] transition active:scale-95 flex items-center gap-1" title="复制代码">
+            <svg class="w-3 h-3 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <span>复制</span>
           </button>
         </div>
         <div id="code-body-${escapeHtml(codeId)}" class="md-code-body ${
