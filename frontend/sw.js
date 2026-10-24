@@ -1,5 +1,5 @@
 // AgentDeck PWA Service Worker — 离线 App Shell 缓存与跨网络自愈支持
-const CACHE_NAME = "agentdeck-shell-20261024_esm_fix_v5";
+const CACHE_NAME = "agentdeck-shell-20261024_split_modules_v6";
 
 const APP_SHELL = [
   "/",
