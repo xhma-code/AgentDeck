@@ -342,3 +342,22 @@ def extract_duration_from_output(raw_output: str) -> str:
         except (ValueError, TypeError) as err:
             logger.debug("解析工具输出执行时间戳失败: %s", err)
     return ""
+
+def extract_snippet(text: str, query: str, max_context: int = 25) -> str:
+    """提取包含 query 的单行易读上下文切片。"""
+    if not text:
+        return ""
+    clean = " ".join(str(text).split())
+    if not query:
+        return clean[:50]
+    idx = clean.lower().find(query.lower())
+    if idx == -1:
+        return clean[:50]
+    start = max(0, idx - max_context)
+    end = min(len(clean), idx + len(query) + max_context)
+    res = clean[start:end]
+    if start > 0:
+        res = "..." + res
+    if end < len(clean):
+        res = res + "..."
+    return res

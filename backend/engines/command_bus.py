@@ -217,6 +217,14 @@ class CommandBus:
         )
         self.orchestrator.bump_version()
 
+        # 双向同步回写至对应 Agent 原生存储/数据库
+        adapter = self.orchestrator.adapters.get(agent_type)
+        if adapter and hasattr(adapter, "rename_session"):
+            try:
+                adapter.rename_session(raw_id, new_title)
+            except Exception as sync_exc:
+                logger.warning(f"向 Agent {agent_type} 回写原生会话名称失败: {sync_exc}")
+
         await self.orchestrator.broadcast_event(
             "SESSION_UPDATED",
             {
@@ -281,7 +289,7 @@ class CommandBus:
         project_path = payload.get("project_path")
         execution_mode = payload.get("execution_mode")
         model_name = payload.get("model_name")
-        auto_fork_ide = bool(payload.get("auto_fork_ide", True))
+        auto_fork_ide = bool(payload.get("auto_fork_ide", False))
 
         lock = self._get_session_lock(session_id)
         async with lock:
@@ -327,3 +335,66 @@ class CommandBus:
             decision=decision,
             feedback=feedback,
         )
+
+    async def _handle_switch_model(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        """模型热切换与配置同步（适用于所有 Agent）。"""
+        if not session_id or ":" not in session_id:
+            raise ValueError(f"无效的 session_id: {session_id}")
+        new_model = str(payload.get("model_name") or "").strip()
+        if not new_model:
+            raise ValueError("新模型名称不能为空")
+
+        agent_type, raw_id = session_id.split(":", 1)
+        meta = self.orchestrator.meta_db.upsert_session_meta(
+            unified_id=session_id,
+            agent_type=agent_type,
+            raw_session_id=raw_id,
+            model_name=new_model,
+        )
+        self.orchestrator.bump_version()
+
+        await self.orchestrator.broadcast_event(
+            "SESSION_CONFIG_CHANGED",
+            {
+                "unified_id": session_id,
+                "model_name": new_model,
+                "action": "switch_model",
+            },
+        )
+        return {"unified_id": session_id, "model_name": new_model}
+
+    async def _handle_submit_interactive_answer(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        """交互式多选问答/确认反向应答回填给底层 Agent（适用于所有 Agent）。"""
+        if not session_id or ":" not in session_id:
+            raise ValueError(f"无效的 session_id: {session_id}")
+        answers = payload.get("answers") or payload.get("answer") or ""
+        agent_type, raw_id = session_id.split(":", 1)
+
+        # 1. 尝试向正在运行的子进程 stdin 管道或 HTTP bridge / LS 注入答案
+        delivered = False
+        active_proc = self.orchestrator.active_processes.get(session_id)
+        if active_proc and active_proc.stdin and not active_proc.stdin.is_closing():
+            try:
+                line = (json.dumps(answers, ensure_ascii=False) if isinstance(answers, (dict, list)) else str(answers)) + "\n"
+                active_proc.stdin.write(line.encode("utf-8"))
+                await active_proc.stdin.drain()
+                delivered = True
+            except Exception as pipe_exc:
+                logger.warning(f"向子进程 stdin 写入交互答案失败: {pipe_exc}")
+
+        # 2. 如果是 Antigravity IDE 会话且进程不处于 CLI stdin，通过 LS bridge 下发应答文本
+        if not delivered and agent_type == "agy_ide":
+            adapter = self.orchestrator.adapters.get(agent_type)
+            if adapter and hasattr(adapter, "send_prompt_via_ls"):
+                ans_text = str(answers) if not isinstance(answers, list) else ", ".join(str(a) for a in answers)
+                delivered = adapter.send_prompt_via_ls(raw_id, ans_text)
+
+        await self.orchestrator.broadcast_event(
+            "INTERACTIVE_ANSWER_SUBMITTED",
+            {
+                "unified_id": session_id,
+                "answers": answers,
+                "delivered": delivered,
+            },
+        )
+        return {"unified_id": session_id, "delivered": delivered}

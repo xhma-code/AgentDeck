@@ -125,6 +125,15 @@ def parse_claude_session_file(
         )
         return None
 
+    meta_file = fpath.parent / f"{sid}.meta.json"
+    if meta_file.exists():
+        try:
+            m_doc = json.loads(meta_file.read_text(encoding="utf-8"))
+            if m_doc.get("title"):
+                title = str(m_doc["title"]).strip()
+        except Exception:
+            pass
+
     if is_transient_probe_session(title=title, preview=preview):
         return None
 

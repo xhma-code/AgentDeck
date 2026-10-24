@@ -3,7 +3,7 @@
  */
 
 import { state } from "./js/state.js";
-import { checkAndExchangePairCode } from "./js/api.js";
+import { checkAndExchangePairCode, apiFetch } from "./js/api.js";
 import {
   connectWebSocket,
   triggerAutoRoaming,
@@ -136,9 +136,60 @@ async function initApp() {
 
   const searchInput = document.getElementById("session-search-input");
   if (searchInput) {
+    let remoteSearchDebounce = null;
+    let remoteSearchController = null;
+
     searchInput.addEventListener("input", (e) => {
-      state.searchQuery = e.target.value;
+      const val = e.target.value;
+      state.searchQuery = val;
+      const q = val.trim();
+
+      // 阶段 1：本地内存 0ms 瞬时过滤并渲染
       renderSessionList();
+
+      clearTimeout(remoteSearchDebounce);
+      if (remoteSearchController) {
+        remoteSearchController.abort();
+        remoteSearchController = null;
+      }
+
+      if (!q) {
+        if (state.remoteSearchMatches && state.remoteSearchMatches.size > 0) {
+          state.remoteSearchMatches.clear();
+          renderSessionList();
+        }
+        return;
+      }
+
+      // 阶段 2：防抖 220ms 触发服务端穿透全文检索，彻底搜罗全量历史会话与未展开内容
+      remoteSearchDebounce = setTimeout(async () => {
+        remoteSearchController = new AbortController();
+        try {
+          const res = await apiFetch(`/api/v1/sessions/search?q=${encodeURIComponent(q)}&limit=60`, {
+            signal: remoteSearchController.signal,
+          });
+          if (res && res.ok && Array.isArray(res.matches)) {
+            // 确保当前搜索词未发生改变
+            if (state.searchQuery.trim() === q) {
+              state.remoteSearchMatches.clear();
+              for (const m of res.matches) {
+                if (m && m.unified_id) {
+                  state.remoteSearchMatches.set(m.unified_id, {
+                    type: m.type,
+                    snippet: m.snippet,
+                    session: m.session,
+                  });
+                }
+              }
+              renderSessionList();
+            }
+          }
+        } catch (err) {
+          if (err && err.name !== "AbortError") {
+            console.debug("服务端会话搜索请求异常:", err);
+          }
+        }
+      }, 220);
     });
   }
 

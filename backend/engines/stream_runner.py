@@ -87,7 +87,7 @@ class StreamRunner:
         project_path: Optional[str] = None,
         execution_mode: Optional[str] = None,
         model_name: Optional[str] = None,
-        auto_fork_ide: bool = True,
+        auto_fork_ide: bool = False,
         approved_tools: Optional[list[str]] = None,
         normalize_mode_fn: Optional[Callable[[str, Optional[str]], str]] = None,
         resolve_default_model_fn: Optional[Callable[[str], str]] = None,
@@ -297,6 +297,19 @@ class StreamRunner:
                         await asyncio.wait_for(stderr_task, timeout=1.0)
                     except (asyncio.TimeoutError, asyncio.CancelledError):
                         stderr_task.cancel()
+
+                if proc.returncode and proc.returncode != 0:
+                    err_msg = f"Agent 进程异常崩溃退出 (Exit Code: {proc.returncode})"
+                    logger.error(f"{err_msg} [{ctx.unified_id}]")
+                    await self.broadcast_event(
+                        "SESSION_CRASHED",
+                        {
+                            "unified_id": unified_id,
+                            "agent_type": ctx.agent_type,
+                            "exit_code": proc.returncode,
+                            "error": err_msg,
+                        },
+                    )
             except asyncio.CancelledError:
                 if unified_id in self.active_processes:
                     await self.abort_session(unified_id, reason="异步任务取消")

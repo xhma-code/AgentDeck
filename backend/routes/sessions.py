@@ -57,6 +57,24 @@ async def list_sessions(
     return JSONResponse(content=data, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
 
+@router.get("/search")
+async def search_sessions(
+    request: Request,
+    q: str = Query(default="", min_length=1),
+    limit: int = Query(default=50, ge=1, le=100),
+    _auth: bool = Depends(verify_request_auth),
+) -> dict[str, Any]:
+    """跨 Agent 全量历史会话内容与元数据秒级穿透检索。"""
+    orchestrator = get_orchestrator(request)
+    matches = orchestrator.search_sessions(query=q, limit=limit)
+    return {
+        "ok": True,
+        "query": q,
+        "count": len(matches),
+        "matches": matches,
+    }
+
+
 @router.post("")
 async def create_new_session(
     req: CreateSessionRequest,
@@ -147,6 +165,14 @@ async def update_session_meta(
         model_name=req.model_name,
     )
     orchestrator.bump_version()
+
+    if req.title and req.title.strip():
+        adapter = orchestrator.adapters.get(agent_type)
+        if adapter and hasattr(adapter, "rename_session"):
+            try:
+                adapter.rename_session(raw_id, req.title.strip())
+            except Exception as exc:
+                logger.warning(f"向 Agent {agent_type} 回写原生会话名称失败: {exc}")
     return {"ok": True, "meta": updated}
 
 

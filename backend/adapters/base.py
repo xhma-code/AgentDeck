@@ -208,6 +208,10 @@ class BaseAgentAdapter(ABC):
         """尝试通过直连协议停止正在运行的任务。"""
         return False
 
+    def rename_session(self, raw_session_id: str, new_title: str) -> bool:
+        """将新标题回写同步至底层 Agent 的原生存储或数据库。"""
+        return False
+
     def respond_permission(
         self,
         raw_session_id: str,
@@ -227,3 +231,10 @@ class BaseAgentAdapter(ABC):
         """提取当前会话的最新上下文 Token 水位与总用量统计。"""
         limit = resolve_model_context_limit(model_name)
         return SessionTokenUsage(context_limit=limit).to_dict()
+
+    def search_sessions_content(
+        self, query: str, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        """在当前 Agent 历史持久化消息中检索关键词。返回 [{'raw_session_id': ..., 'type': ..., 'snippet': ...}, ...]"""
+        return []
+

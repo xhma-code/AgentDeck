@@ -295,18 +295,44 @@ export function renderSessionList() {
 
   const q = state.searchQuery.trim().toLowerCase();
   const rawList = state.allSessions.length > 0 ? state.allSessions : state.sessions;
-  const sourceList = sortSessions(rawList);
+
+  // 深度检索补充：若服务端搜出的会话不在前端现有列表（如超出初始分页限制），将其动态纳入
+  let mergedRawList = rawList;
+  if (q && state.remoteSearchMatches && state.remoteSearchMatches.size > 0) {
+    const existingIds = new Set(rawList.map((s) => s.unified_id));
+    const extras = [];
+    for (const [uid, rMatch] of state.remoteSearchMatches.entries()) {
+      if (!existingIds.has(uid) && rMatch && rMatch.session) {
+        extras.push(rMatch.session);
+      }
+    }
+    if (extras.length > 0) {
+      mergedRawList = [...rawList, ...extras];
+    }
+  }
+
+  const sourceList = sortSessions(mergedRawList);
   const matchMap = new Map();
   const filtered = sourceList.filter((s) => {
     if (state.activeFilter !== "all" && s.agent_type !== state.activeFilter) {
       return false;
     }
     if (!q) return true;
-    const match = searchSessionMatch(s, q);
-    if (match && match.matched) {
-      matchMap.set(s.unified_id, match);
+
+    // 1. 本地快速匹配（标题/preview/本地已拉取的消息）
+    const localMatch = searchSessionMatch(s, q);
+    if (localMatch && localMatch.matched) {
+      matchMap.set(s.unified_id, localMatch);
       return true;
     }
+
+    // 2. 服务端全文穿透检索结果匹配
+    const remoteMatch = state.remoteSearchMatches?.get(s.unified_id);
+    if (remoteMatch) {
+      matchMap.set(s.unified_id, remoteMatch);
+      return true;
+    }
+
     return false;
   });
 

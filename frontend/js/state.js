@@ -42,6 +42,7 @@ export const state = {
   lastSessionsSig: "",
   activeFilter: "all",
   searchQuery: "",
+  remoteSearchMatches: new Map(), // 服务端全文检索命中缓存 (unified_id -> { type, snippet, session })
   selectedSessionId: null,
   messages: [],
   hasMoreMessages: false,

@@ -5,6 +5,7 @@ OpenCode (https://github.com/opencode-ai/opencode) 存储适配器。
 """
 
 from __future__ import annotations
+from backend.adapters.tool_utils import extract_snippet
 
 import copy
 import os
@@ -440,3 +441,88 @@ class OpenCodeAdapter(BaseAgentAdapter):
         )
         self._token_usage_cache[cache_key] = (0, data)
         return data
+
+    def rename_session(self, raw_session_id: str, new_title: str) -> bool:
+        """将新标题双向同步回写至 OpenCode 原生数据库 (opencode.db 的 session / session_v2 表)。"""
+        if not self.db_path.exists():
+            return False
+        import sqlite3
+        from backend.core.logger import logger
+        updated = False
+        try:
+            conn = sqlite3.connect(str(self.db_path), timeout=4.0)
+            try:
+                conn.execute("PRAGMA busy_timeout = 4000;")
+                cur1 = conn.execute(
+                    "UPDATE session SET title = ? WHERE id = ?",
+                    (new_title, raw_session_id),
+                )
+                if cur1.rowcount > 0:
+                    updated = True
+                if self._check_has_session_v2():
+                    cur2 = conn.execute(
+                        "UPDATE session_v2 SET title = ? WHERE id = ?",
+                        (new_title, raw_session_id),
+                    )
+                    if cur2.rowcount > 0:
+                        updated = True
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning(f"同步更新 OpenCode 原生会话名称失败: {exc}")
+            return False
+
+        if updated:
+            self.invalidate_cache()
+            logger.info(f"已同步回写 OpenCode 原生会话名称: {raw_session_id[:8]} -> {new_title}")
+            return True
+        return False
+
+    def search_sessions_content(
+        self, query: str, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        """在 OpenCode SQLite 数据库中检索消息内容。"""
+        results: list[dict[str, Any]] = []
+        q = query.strip()
+        if not q or not self.db_path.exists():
+            return results
+
+        like_term = f"%{q}%"
+        seen_sids: set[str] = set()
+
+        try:
+            sql_part = """
+                SELECT session_id, data FROM part
+                WHERE data LIKE ?
+                ORDER BY time_created DESC
+                LIMIT ?
+            """
+            rows = safe_query_external_sqlite(self.db_path, sql_part, (like_term, limit * 2))
+            for r in rows:
+                sid = str(r.get("session_id") or "")
+                if not sid or sid in seen_sids:
+                    continue
+                seen_sids.add(sid)
+                raw_data = str(r.get("data") or "")
+                snippet = extract_snippet(raw_data, q)
+                try:
+                    parsed = json.loads(raw_data)
+                    if isinstance(parsed, dict) and parsed.get("text"):
+                        snippet = extract_snippet(parsed["text"], q)
+                except Exception:
+                    pass
+                results.append({
+                    "raw_session_id": sid,
+                    "type": "content",
+                    "snippet": snippet,
+                })
+                if len(results) >= limit:
+                    break
+        except Exception as exc:
+            logger.debug(f"OpenCode part 表检索异常: {exc}")
+
+        # part 表已覆盖所有会话的所有文本块，无需回退非标准旧表
+
+        return results
+

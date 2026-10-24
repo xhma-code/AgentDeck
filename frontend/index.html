@@ -195,20 +195,20 @@
                 <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
               </button>
               <div id="session-action-menu"
-                class="hidden absolute right-0 top-12 w-44 rounded-xl bg-zinc-950 border border-zinc-800 shadow-2xl p-1.5 z-50 space-y-1">
+                class="hidden absolute right-0 top-11 w-28 rounded-xl bg-zinc-950 border border-zinc-800 shadow-2xl p-1 z-50 space-y-0.5 whitespace-nowrap select-none">
                 <button onclick="window.appActions.toggleCurrentPin()"
-                  class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[40px]">
+                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
                   <span id="session-menu-pin-icon" class="text-xs">★</span>
                   <span id="session-menu-pin-text">置顶</span>
                 </button>
                 <button onclick="window.appActions.renameCurrentSession()"
-                  class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[40px]">
+                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
                   <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
                   <span>重命名</span>
                 </button>
-                <div class="h-px bg-zinc-800 my-1"></div>
+                <div class="h-px bg-zinc-800/80 my-0.5"></div>
                 <button onclick="window.appActions.deleteCurrentSession()"
-                  class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition text-left min-h-[40px]">
+                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition text-left min-h-[32px]">
                   <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                   <span>删除</span>
                 </button>

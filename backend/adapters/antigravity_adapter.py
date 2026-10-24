@@ -8,6 +8,7 @@ Antigravity IDE 与 CLI 双引擎本地会话存储与通信协议适配器。
 """
 
 from __future__ import annotations
+from backend.adapters.tool_utils import extract_snippet
 
 import os
 import shutil
@@ -320,6 +321,99 @@ class AntigravityAdapter(BaseAgentAdapter):
                 return False
         return False
 
+    @staticmethod
+    def _update_protobuf_title(raw_bytes: bytes, new_str: str) -> bytes:
+        """更新 protobuf 二进制 summary 中的 field 1 (title)。"""
+        if not raw_bytes or len(raw_bytes) < 2 or raw_bytes[0] != 0x0A:
+            return raw_bytes
+        try:
+            idx = 1
+            length = 0
+            shift = 0
+            while idx < len(raw_bytes):
+                b = raw_bytes[idx]
+                idx += 1
+                length |= (b & 0x7F) << shift
+                if not (b & 0x80):
+                    break
+                shift += 7
+            remainder = raw_bytes[idx + length :]
+            new_str_bytes = new_str.encode("utf-8")
+            n = len(new_str_bytes)
+            varint_buf = bytearray()
+            while True:
+                towrite = n & 0x7F
+                n >>= 7
+                if n:
+                    varint_buf.append(towrite | 0x80)
+                else:
+                    varint_buf.append(towrite)
+                    break
+            return b"\x0a" + bytes(varint_buf) + new_str_bytes + remainder
+        except Exception:
+            return raw_bytes
+
+    def rename_session(self, raw_session_id: str, new_title: str) -> bool:
+        """将新标题双向同步回写至 Antigravity 原生 conversation_summaries.db（文本与 Protobuf 二进制）。"""
+        import sqlite3
+        candidate_dirs = [
+            self.root_dir,
+            Path(os.path.expanduser("~/.gemini/antigravity")),
+            Path(os.path.expanduser("~/.gemini/antigravity-cli")),
+        ]
+        updated = False
+        seen_paths = set()
+        for cdir in candidate_dirs:
+            sum_db = cdir / "conversation_summaries.db"
+            if not sum_db.exists() or str(sum_db) in seen_paths:
+                continue
+            seen_paths.add(str(sum_db))
+            try:
+                conn = sqlite3.connect(str(sum_db), timeout=4.0)
+                try:
+                    conn.execute("PRAGMA busy_timeout = 4000;")
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()}
+                    has_raw = "raw_summary" in cols
+                    has_preview = "preview" in cols
+
+                    new_raw = None
+                    if has_raw:
+                        cursor = conn.execute(
+                            "SELECT raw_summary FROM conversation_summaries WHERE conversation_id = ?",
+                            (raw_session_id,),
+                        )
+                        row = cursor.fetchone()
+                        if row and row[0]:
+                            new_raw = self._update_protobuf_title(row[0], new_title)
+
+                    update_fields = ["title = ?"]
+                    params = [new_title]
+                    if has_preview:
+                        update_fields.append("preview = ?")
+                        params.append(new_title)
+                    if has_raw and new_raw is not None:
+                        update_fields.append("raw_summary = ?")
+                        params.append(new_raw)
+                    params.append(raw_session_id)
+
+                    set_clause = ", ".join(update_fields)
+                    conn.execute(
+                        f"UPDATE conversation_summaries SET {set_clause} WHERE conversation_id = ?",
+                        params,
+                    )
+                    conn.commit()
+                    updated = True
+                finally:
+                    conn.close()
+            except Exception as exc:
+                logger.warning(f"同步更新 Antigravity 原生会话名称异常 ({sum_db}): {exc}")
+
+        if updated:
+            self.invalidate_cache()
+            logger.info(f"已同步回写 Antigravity ({self.agent_type}) 原生会话名称与 Protobuf: {raw_session_id[:8]} -> {new_title}")
+            return True
+        return False
+
     def build_cli_command(
         self,
         raw_session_id: str,
@@ -420,3 +514,80 @@ class AntigravityAdapter(BaseAgentAdapter):
             default_mid=self.get_default_model_id(),
             agent_type=self.agent_type,
         )
+
+    def search_sessions_content(
+        self, query: str, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        """在 Antigravity 全文索引 (conversations_fts) 或会话文件中搜索内容。"""
+        results: list[dict[str, Any]] = []
+        clean_q = "".join(ch for ch in query if ch.isalnum() or ch in " _-").strip()
+        if not clean_q or not self.summary_db_path.exists():
+            return results
+
+        seen_cids: set[str] = set()
+
+        # 预先检查是否存在 FTS 虚拟表，避免抛出 sqlite3.OperationalError
+        has_fts = False
+        try:
+            chk_rows = safe_query_external_sqlite(
+                self.summary_db_path,
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations_fts' LIMIT 1"
+            )
+            has_fts = bool(chk_rows)
+        except Exception:
+            has_fts = False
+
+        if has_fts:
+            try:
+                sql_fts = """
+                    SELECT conversation_id, user_body, agent_body
+                    FROM conversations_fts
+                    WHERE conversations_fts MATCH ?
+                    LIMIT ?
+                """
+                rows = safe_query_external_sqlite(self.summary_db_path, sql_fts, (clean_q, limit))
+                for r in rows:
+                    cid = str(r.get("conversation_id") or "")
+                    if not cid or cid in seen_cids:
+                        continue
+                    seen_cids.add(cid)
+                    ub = str(r.get("user_body") or "")
+                    ab = str(r.get("agent_body") or "")
+                    text = ub if clean_q.lower() in ub.lower() else ab
+                    results.append({
+                        "raw_session_id": cid,
+                        "type": "content",
+                        "snippet": extract_snippet(text, clean_q),
+                    })
+            except Exception as exc:
+                logger.debug(f"Antigravity FTS 检索降级: {exc}")
+
+        # 若未开启 FTS 或条数不足，安全降级为 conversation_summaries 表
+        if len(results) < limit:
+            try:
+                sql_like = """
+                    SELECT conversation_id, title, preview
+                    FROM conversation_summaries
+                    WHERE (title LIKE ? OR preview LIKE ?) AND killed = 0
+                    LIMIT ?
+                """
+                like_term = f"%{clean_q}%"
+                rows_like = safe_query_external_sqlite(
+                    self.summary_db_path, sql_like, (like_term, like_term, limit - len(results))
+                )
+                for r in rows_like:
+                    cid = str(r.get("conversation_id") or "")
+                    if not cid or cid in seen_cids:
+                        continue
+                    seen_cids.add(cid)
+                    prev = str(r.get("preview") or r.get("title") or "")
+                    results.append({
+                        "raw_session_id": cid,
+                        "type": "content",
+                        "snippet": extract_snippet(prev, clean_q),
+                    })
+            except Exception as exc:
+                logger.debug(f"Antigravity LIKE 检索异常: {exc}")
+
+        return results
+

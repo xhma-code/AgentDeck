@@ -295,4 +295,56 @@ async def test_websocket_command_ack_and_broadcast_integration(mock_orchestrator
         mock_orchestrator.unregister_ws_subscriber(mock_subscriber)
 
 
+@pytest.mark.asyncio
+async def test_rename_session_bidirectional_sync_to_native_adapter(tmp_path: Path, temp_meta_db: MetaDatabase) -> None:
+    """测试重命名会话不仅更新 meta_db，还双向同步回写至对应 Agent (如 Antigravity) 原生数据库。"""
+    import sqlite3
+    from backend.adapters.antigravity_adapter import AntigravityAdapter
+
+    agy_dir = tmp_path / "antigravity"
+    agy_dir.mkdir(parents=True)
+    sum_db = agy_dir / "conversation_summaries.db"
+
+    # 初始化原生 conversation_summaries.db
+    conn = sqlite3.connect(str(sum_db))
+    conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT, preview TEXT);")
+    raw_id = "test_sync_title_uuid_888"
+    conn.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, ?);",
+        (raw_id, "Old English Title", "Old English Title"),
+    )
+    conn.commit()
+    conn.close()
+
+    adapter = AntigravityAdapter(agent_type="agy_ide", agent_label="Antigravity IDE", root_dir=agy_dir)
+    orch = AgentOrchestrator(meta_db=temp_meta_db, adapters={"agy_ide": adapter})
+
+    # 通过 CommandBus 执行重命名
+    cmd_bus = orch.command_bus
+    env = {
+        "action": "execute_command",
+        "client_msg_id": "cmsg_rename_sync_888",
+        "command_type": "RENAME_SESSION",
+        "session_id": f"agy_ide:{raw_id}",
+        "payload": {"title": "双向同步新中文名"},
+    }
+    ack = await cmd_bus.execute_command(env)
+    assert ack["status"] == "success"
+    assert ack["result"]["title"] == "双向同步新中文名"
+
+    # 1. 验证 meta_db 包含新标题
+    meta = temp_meta_db.get_session_overrides().get(f"agy_ide:{raw_id}")
+    assert meta is not None
+    assert meta["title"] == "双向同步新中文名"
+
+    # 2. 验证原生 conversation_summaries.db 已被双向回写
+    conn = sqlite3.connect(str(sum_db))
+    row = conn.execute("SELECT title, preview FROM conversation_summaries WHERE conversation_id = ?", (raw_id,)).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == "双向同步新中文名"
+    assert row[1] == "双向同步新中文名"
+
+
+
 

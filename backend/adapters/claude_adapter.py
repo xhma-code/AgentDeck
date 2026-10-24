@@ -9,6 +9,7 @@ Claude Code 本地 JSONL 会话存储、进程状态与通信适配器。
 """
 
 from __future__ import annotations
+from backend.adapters.tool_utils import extract_snippet
 
 import copy
 import json
@@ -345,3 +346,90 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         data = compute_claude_token_usage(fpath, limit)
         self._token_usage_cache[cache_key] = (mtime, data)
         return data
+
+    def rename_session(self, raw_session_id: str, new_title: str) -> bool:
+        """为 Claude Code 会话同步更新本地标题缓存与伴生元数据。"""
+        fpath = self._find_session_file(raw_session_id)
+        if not fpath or not fpath.exists():
+            return False
+        try:
+            meta_file = fpath.parent / f"{raw_session_id}.meta.json"
+            meta_doc: dict[str, Any] = {}
+            if meta_file.exists():
+                try:
+                    meta_doc = json.loads(meta_file.read_text(encoding="utf-8"))
+                except Exception:
+                    meta_doc = {}
+            meta_doc["title"] = new_title
+            meta_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+            meta_file.write_text(json.dumps(meta_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._session_meta_cache[raw_session_id] = meta_doc
+            self.invalidate_cache()
+            logger.info(f"已同步更新 Claude Code 会话元数据标题: {raw_session_id[:8]} -> {new_title}")
+            return True
+        except Exception as exc:
+            logger.warning(f"同步更新 Claude Code 原生会话元数据失败: {exc}")
+            return False
+
+    def search_sessions_content(
+        self, query: str, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        """在 Claude Code 的 JSONL 会话文件中两阶段快速检索内容。"""
+        results: list[dict[str, Any]] = []
+        q = query.strip()
+        if not q:
+            return results
+        q_bytes = q.lower().encode("utf-8", errors="ignore")
+
+        files: list[Path] = []
+        if self.sessions_dir.exists():
+            files.extend(list(self.sessions_dir.glob("*.jsonl")))
+        if self.projects_dir.exists():
+            files.extend(list(self.projects_dir.glob("**/*.jsonl")))
+
+        files.sort(key=lambda p: p.stat().st_mtime_ns if p.exists() else 0, reverse=True)
+
+        for fpath in files:
+            if len(results) >= limit:
+                break
+            try:
+                with open(fpath, "rb") as fp:
+                    raw_data = fp.read()
+                if q_bytes not in raw_data.lower():
+                    continue
+
+                raw_session_id = fpath.stem
+                msgs = self.get_session_messages(raw_session_id, limit=80)
+                matched_item = None
+                for m in reversed(msgs):
+                    if m.content and q.lower() in m.content.lower():
+                        matched_item = {"type": "content", "snippet": extract_snippet(m.content, q)}
+                        break
+                    if m.thinking and q.lower() in m.thinking.lower():
+                        matched_item = {"type": "thinking", "snippet": extract_snippet(m.thinking, q)}
+                        break
+                    for tc in m.tool_calls:
+                        if tc.args_summary and q.lower() in tc.args_summary.lower():
+                            matched_item = {"type": "tool", "snippet": extract_snippet(tc.args_summary, q)}
+                            break
+                        if tc.output and q.lower() in tc.output.lower():
+                            matched_item = {"type": "tool", "snippet": extract_snippet(tc.output, q)}
+                            break
+
+                if matched_item:
+                    results.append({
+                        "raw_session_id": raw_session_id,
+                        "type": matched_item["type"],
+                        "snippet": matched_item["snippet"],
+                    })
+                else:
+                    results.append({
+                        "raw_session_id": raw_session_id,
+                        "type": "content",
+                        "snippet": extract_snippet(raw_data.decode("utf-8", errors="ignore")[:300], q),
+                    })
+            except Exception as exc:
+                logger.debug(f"检索 Claude 会话文件异常 ({fpath.name}): {exc}")
+
+        return results
+

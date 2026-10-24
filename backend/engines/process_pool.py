@@ -9,6 +9,7 @@
 """
 
 from __future__ import annotations
+from backend.adapters.tool_utils import extract_snippet
 
 import asyncio
 import uuid
@@ -397,5 +398,82 @@ class AgentOrchestrator:
 
     async def resolve_tool_approval(self, unified_id: str, decision: str, feedback: str = "") -> dict[str, Any]:
         return await self.approval_coordinator.resolve(unified_id=unified_id, decision=decision, feedback=feedback)
+
+    def search_sessions(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
+        """全量跨 Agent 会话内容与元数据高速穿透检索。"""
+        q = (query or "").strip()
+        if not q:
+            return []
+
+        all_sessions = self.list_all_sessions(limit_per_agent=100)
+        sess_map = {s["unified_id"]: s for s in all_sessions}
+
+        results: list[dict[str, Any]] = []
+        matched_uids: set[str] = set()
+        q_lower = q.lower()
+
+        # 1. 优先匹配已有聚合会话的标题、摘要与项目名称
+        for s in all_sessions:
+            uid = s["unified_id"]
+            title = str(s.get("title") or "")
+            preview = str(s.get("preview") or "")
+            proj = str(s.get("project_name") or "")
+
+            if q_lower in title.lower():
+                matched_uids.add(uid)
+                results.append({
+                    "unified_id": uid,
+                    "type": "title",
+                    "snippet": extract_snippet(title, q),
+                    "session": s,
+                })
+            elif q_lower in preview.lower():
+                matched_uids.add(uid)
+                results.append({
+                    "unified_id": uid,
+                    "type": "preview",
+                    "snippet": extract_snippet(preview, q),
+                    "session": s,
+                })
+            elif q_lower in proj.lower():
+                matched_uids.add(uid)
+                results.append({
+                    "unified_id": uid,
+                    "type": "project",
+                    "snippet": extract_snippet(proj, q),
+                    "session": s,
+                })
+
+        # 2. 深入各个 Agent 底层存储扫描会话内容
+        for atype, adapter in self.adapters.items():
+            if len(results) >= limit:
+                break
+            try:
+                sub_matches = adapter.search_sessions_content(q, limit=limit)
+                for item in sub_matches:
+                    raw_id = item["raw_session_id"]
+                    uid = f"{atype}:{raw_id}"
+                    if uid in matched_uids:
+                        continue
+                    matched_uids.add(uid)
+
+                    s_obj = sess_map.get(uid)
+                    if not s_obj and hasattr(adapter, "get_session"):
+                        single_sess = adapter.get_session(raw_id)
+                        if single_sess:
+                            s_obj = single_sess.to_dict()
+
+                    results.append({
+                        "unified_id": uid,
+                        "type": item["type"],
+                        "snippet": item["snippet"],
+                        "session": s_obj,
+                    })
+                    if len(results) >= limit:
+                        break
+            except Exception as exc:
+                logger.debug(f"Agent {atype} 搜索异常: {exc}")
+
+        return results
 
 AgentProcessPool = AgentOrchestrator
