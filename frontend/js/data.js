@@ -53,6 +53,7 @@ import {
   getAgentDisplayName,
   isSessionWorking,
 } from "./session-helper.js";
+import { loadSessionMessages, loadOlderMessages } from "./data-messages.js";
 
 export {
   cleanFriendlyTitle,

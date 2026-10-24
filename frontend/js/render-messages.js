@@ -188,6 +188,10 @@ import {
 
 export { renderMdDocQuickCards } from "./render-step-cards.js";
 import { renderMdDocQuickCards } from "./render-step-cards.js";
+import { AGENT_META } from "./config.js";
+import { isSessionWorking } from "./data.js";
+import { renderLiveStreamOverlay } from "./render-views.js";
+import { formatRelativeTime, getBasename } from "./utils.js";
 
 export function renderMessagesList() {
   const container = document.getElementById("messages-container");

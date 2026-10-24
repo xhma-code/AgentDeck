@@ -10,6 +10,7 @@ import {
   gitPathToSlotId,
 } from "./utils.js";
 import { renderUnifiedDiffHtml } from "./diff-viewer.js";
+import { GIT_STATUS_BADGES } from "./config.js";
 
 export function highlightSlashItem(idx) {
   state.slashHighlightIndex = idx;

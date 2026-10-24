@@ -4,6 +4,7 @@
 
 import { state } from "./state.js";
 import { escapeHtml, escapeJsSingleQuote, icons } from "./utils.js";
+import { renderUnifiedDiffHtml } from "./diff-viewer.js";
 
 export function renderApprovalBanners() {
   const topBanner = document.getElementById("global-approval-banner");

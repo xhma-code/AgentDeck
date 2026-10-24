@@ -25,6 +25,10 @@ export let wsHeartbeatTimer = null;
 export let wsPongTimeoutTimer = null;
 export let lastPongReceived = Date.now();
 export let lastWsSyncToastTime = 0;
+let wsDisconnectStreak = 0;
+let silentSessionsTimer = null;
+let silentMessagesTimer = null;
+let deferredListRenderTimer = null;
 
 import {
   showRoamingBanner,
@@ -41,7 +45,6 @@ export function triggerAutoRoaming(triggerSource = "network") {
     connectWebSocket();
   });
 }
-
 
 export function clearWsHeartbeat() {
   if (wsHeartbeatTimer) {
@@ -78,7 +81,6 @@ export function startWsHeartbeat() {
     }
   }, 15000);
 }
-
 
 export function connectWebSocket() {
   clearWsHeartbeat();
@@ -174,7 +176,6 @@ export function connectWebSocket() {
     setTimeout(connectWebSocket, 2200);
   };
 }
-
 
 export function handleRealtimeEvent(envelope) {
   const { type, payload } = envelope;
@@ -368,7 +369,6 @@ export function extractReadableSnippetFromFrame(frame) {
   return "";
 }
 
-
 export function scheduleSilentSessionsRefresh(delayMs = 350) {
   if (silentSessionsTimer) clearTimeout(silentSessionsTimer);
   silentSessionsTimer = setTimeout(() => {
@@ -397,4 +397,3 @@ export function scheduleDeferredSessionListRender(delayMs = 1200) {
     }
   }, delayMs);
 }
-

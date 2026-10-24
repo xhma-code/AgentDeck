@@ -25,6 +25,7 @@ import {
   getSessionPriorityWeight,
   getAgentDisplayName,
 } from "./data.js";
+import { sortSessions } from "./render-session-card.js";
 
 let cachedAgentsHealth = null;
 
@@ -120,6 +121,8 @@ import {
   renderSidebarAwakeLock,
   renderAgentsHealthModal,
 } from "./render-status-badges.js";
+import { isSessionAttentionNeeded } from "./data.js";
+import { renderCompactSessionItem } from "./render-session-card.js";
 
 export function renderSessionList() {
   const container = document.getElementById("session-list-container");

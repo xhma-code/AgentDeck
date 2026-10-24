@@ -3,7 +3,6 @@
  */
 
 import {
-  GIT_STATUS_BADGES,
   MODES_BY_AGENT,
   DEFAULT_MODELS_BY_AGENT,
 } from "./config.js";
@@ -11,20 +10,15 @@ import { state } from "./state.js";
 import {
   escapeHtml,
   escapeJsSingleQuote,
-  formatTokenCount,
-  formatElapsedSec,
-  gitPathToSlotId,
   icons,
 } from "./utils.js";
-import {
-  renderUnifiedDiffHtml,
-} from "./markdown.js";
 import {
   isSessionWorking,
   getAgentDisplayName,
 } from "./data.js";
 
 let qrExpireTimer = null;
+let liveStreamRaf = null;
 
 export function renderModelOptionsForAgent(selectEl, agentType, selectedModelId = "") {
   if (!selectEl) return;
@@ -396,3 +390,9 @@ export {
   renderSlashMenu,
   renderGitStatusBody,
 } from "./render-modal-views.js";
+import { handleSendPrompt, handleAbortCurrentSession } from "./actions.js";
+import { AGENT_META } from "./config.js";
+import { cleanFriendlyTitle, getProjectInfo, getModelContextLimit } from "./data.js";
+import { renderMarkdownHtml } from "./markdown.js";
+import { updateCollapseStepsPillVisibility, scrollToBottom } from "./render-messages.js";
+import { renderOtherRunningPill } from "./render-session-card.js";

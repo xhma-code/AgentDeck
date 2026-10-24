@@ -3,6 +3,7 @@
  */
 
 import { DEFAULT_MODELS_BY_AGENT } from "./config.js";
+import { isSessionStatusActive } from "./session-helper.js";
 
 export const state = {
   token: localStorage.getItem("agentdeck_token") || "",

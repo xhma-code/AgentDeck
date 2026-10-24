@@ -9,6 +9,8 @@ import {
   selectSession,
   getProjectInfo,
 } from "./data.js";
+import { escapeHtml } from "./utils.js";
+import { renderModelOptionsForAgent, renderModeOptionsForAgent } from "./render-views.js";
 
 export function bindSessionListScrollGuardian() {
   const container = document.getElementById("session-list-container");

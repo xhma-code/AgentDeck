@@ -337,6 +337,9 @@ export {
   renderQuestionOptionsHtml,
   renderInteractiveQuestionsCard,
 } from "./render-interactive-questions.js";
+import { renderUnifiedDiffHtml } from "./diff-viewer.js";
+import { isReadOnlyTool } from "./render-messages.js";
+import { saveToBoundedStore } from "./utils.js";
 
 export function renderMdDocQuickCards(mdFiles) {
   if (!mdFiles || mdFiles.length === 0) return "";
