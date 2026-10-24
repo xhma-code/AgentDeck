@@ -156,53 +156,77 @@ class OpenCodeHttpBridge:
         """兼容别名：探测本地 opencode serve HTTP 服务是否存活。"""
         return self.is_server_running()
 
-    def send_message(self, session_id: str, prompt: str, model_name: str = "") -> Optional[dict[str, Any]]:
-        """发送消息（优先使用 OpenCode 2 /api/session/{id}/prompt，回退 OpenCode 1 /session/{id}/message）。"""
-        # 优先尝试 OpenCode 2 API
+    def create_session(self, title: str = "", directory: str = "") -> Optional[str]:
+        """通过 OpenCode 官方 HTTP 接口创建会话（遵循 POST /api/session 规范）。"""
         try:
-            body_v2: dict[str, Any] = {"text": prompt}
-            data_v2 = json.dumps(body_v2).encode("utf-8")
-            req_v2 = self._make_request(f"/api/session/{session_id}/prompt", data=data_v2, method="POST")
-            with urllib.request.urlopen(req_v2, timeout=30.0) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-                return json.loads(raw) if raw else {"ok": True}
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (404, 405):
+            payload: dict[str, Any] = {}
+            if title:
+                payload["title"] = title
+            if directory:
+                payload["location"] = {"directory": directory}
+            data = json.dumps(payload).encode("utf-8")
+            req = self._make_request("/api/session", data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                if resp.status in (200, 201):
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    doc = json.loads(raw) if raw else {}
+                    if isinstance(doc, dict) and isinstance(doc.get("data"), dict):
+                        return doc["data"].get("id")
+        except Exception as exc:
+            logger.debug(f"通过 OpenCode HTTP 接口创建会话跳过/失败: {exc}")
+        return None
+
+    def send_message(self, session_id: str, prompt: str, model_name: str = "") -> Optional[dict[str, Any]]:
+        """发送消息：自适应 OpenCode 2 (/api/session/{id}/prompt) 与 OpenCode 1 (/session/{id}/message)。"""
+        # 1. 若为 ses_ 前缀，优先调用 OpenCode 2.x API
+        if session_id.startswith("ses"):
+            clean_model = (model_name or "").strip()
+            if clean_model and clean_model != "default":
+                try:
+                    model_data = json.dumps({"model": clean_model}).encode("utf-8")
+                    req_m = self._make_request(f"/api/session/{session_id}/model", data=model_data, method="POST")
+                    with urllib.request.urlopen(req_m, timeout=3.0) as resp:
+                        pass
+                except Exception as exc:
+                    logger.debug(f"OpenCode 2 切换模型跳过/失败 ({session_id[:8]} -> {clean_model}): {exc}")
+
+            try:
+                body_v2: dict[str, Any] = {"text": prompt}
+                data_v2 = json.dumps(body_v2).encode("utf-8")
+                req_v2 = self._make_request(f"/api/session/{session_id}/prompt", data=data_v2, method="POST")
+                with urllib.request.urlopen(req_v2, timeout=30.0) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    return json.loads(raw) if raw else {"ok": True}
+            except urllib.error.HTTPError as exc:
+                err_body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
                 log_structured_error(
                     problem=f"调用 OpenCode 2 API 发送消息失败 ({session_id[:8]})",
-                    cause=str(exc),
-                    fix="已自动尝试回退模式或 CLI 执行。",
+                    cause=f"{exc} {err_body}".strip(),
+                    fix="已自动回退至 opencode run CLI 子进程执行。",
                     exc=exc,
                 )
-        except (urllib.error.URLError, TimeoutError, OSError):
-            pass
-        except Exception as exc:
-            log_structured_error(
-                problem=f"调用 OpenCode 2 API 发送消息非预期异常 ({session_id[:8]})",
-                cause=str(exc),
-                fix="系统已自动尝试回退模式或 CLI 执行。",
-                exc=exc,
-            )
+                return None
+            except Exception as exc:
+                logger.debug(f"OpenCode 2 API 遇到异常，回退 CLI: {exc}")
+                return None
 
-        # 回退 OpenCode 1 API
-        body_v1: dict[str, Any] = {
-            "parts": [{"type": "text", "text": prompt}],
-        }
-        if model_name and model_name != "default":
-            body_v1["model"] = model_name
-        data_v1 = json.dumps(body_v1).encode("utf-8")
-        req_v1 = self._make_request(f"/session/{session_id}/message", data=data_v1, method="POST")
+        # 2. 若非 ses_ 前缀（如 OpenCode 1.x UUID），尝试兼容 OpenCode 1.x HTTP 接口
         try:
+            body_v1: dict[str, Any] = {
+                "parts": [{"type": "text", "text": prompt}],
+            }
+            if model_name and model_name != "default":
+                body_v1["model"] = model_name
+            data_v1 = json.dumps(body_v1).encode("utf-8")
+            req_v1 = self._make_request(f"/session/{session_id}/message", data=data_v1, method="POST")
             with urllib.request.urlopen(req_v1, timeout=30.0) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 return json.loads(raw) if raw else {"ok": True}
+        except urllib.error.HTTPError as exc:
+            logger.debug(f"OpenCode 1 API 不适用或返回 HTTP {exc.code} ({session_id[:8]})，平滑降级至 CLI")
+            return None
         except Exception as exc:
-            log_structured_error(
-                problem=f"调用 opencode serve HTTP 接口发送消息失败 ({session_id[:8]})",
-                cause=str(exc),
-                fix="已自动回退至 opencode run CLI 子进程执行。",
-                exc=exc,
-            )
+            logger.debug(f"OpenCode 1 API 尝试跳过 ({session_id[:8]}): {exc}，平滑降级至 CLI")
             return None
 
     def respond_permission(self, session_id: str, permission_id: str, allow: bool) -> bool:
@@ -275,17 +299,21 @@ class OpenCodeHttpBridge:
             pass
         except Exception as exc:
             log_structured_error(
-                problem=f"调用 OpenCode 2 API 发送消息非预期异常 ({session_id[:8]})",
+                problem="获取 OpenCode 活跃会话状态非预期异常",
                 cause=str(exc),
-                fix="系统已自动尝试回退模式或 CLI 执行。",
+                fix="系统已自动跳过本次活跃状态检测。",
                 exc=exc,
             )
         return {}
 
 
     def abort_session(self, session_id: str) -> bool:
-        """调用官方 OpenCode API 中断指定会话正在运行的任务（遵循官方 POST /session/:id/abort 规范）。"""
-        for path in (f"/api/session/{session_id}/abort", f"/session/{session_id}/abort"):
+        """调用官方 OpenCode API 中断指定会话正在运行的任务（遵循官方 POST /api/session/:id/interrupt 规范）。"""
+        for path in (
+            f"/api/session/{session_id}/interrupt",
+            f"/api/session/{session_id}/abort",
+            f"/session/{session_id}/abort",
+        ):
             try:
                 req = self._make_request(path, data=b"{}", method="POST")
                 with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -300,13 +328,14 @@ class OpenCodeHttpBridge:
         return False
 
     def rename_session(self, session_id: str, new_title: str) -> bool:
-        """调用官方 OpenCode API 实时修改会话标题（遵循官方 POST /session/:id/rename 或 PATCH 规范）。"""
-        payload_rename = json.dumps({"title": new_title, "name": new_title}).encode("utf-8")
+        """调用官方 OpenCode API 实时修改会话标题（遵循官方 PATCH /api/session/:id 规范）。"""
+        payload_v2 = json.dumps({"title": new_title}).encode("utf-8")
+        payload_v1 = json.dumps({"title": new_title, "name": new_title}).encode("utf-8")
         candidates = [
-            (f"/api/session/{session_id}/rename", "POST", payload_rename),
-            (f"/session/{session_id}/rename", "POST", payload_rename),
-            (f"/api/session/{session_id}", "PATCH", payload_rename),
-            (f"/session/{session_id}", "PATCH", payload_rename),
+            (f"/api/session/{session_id}", "PATCH", payload_v2),
+            (f"/api/session/{session_id}/rename", "POST", payload_v2),
+            (f"/session/{session_id}/rename", "POST", payload_v1),
+            (f"/session/{session_id}", "PATCH", payload_v2),
         ]
         for path, method, data in candidates:
             try:

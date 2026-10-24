@@ -11,6 +11,7 @@ import copy
 import os
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -357,6 +358,15 @@ class OpenCodeAdapter(BaseAgentAdapter):
             is_v2=is_v2,
         )
 
+    def create_session(self, title: str = "", project_path: str = "") -> Optional[str]:
+        """创建 OpenCode 会话（优先通过官方 HTTP Bridge 创建并获取 ses_ 前缀 ID）。"""
+        if self.http_bridge.is_server_running():
+            sid = self.http_bridge.create_session(title=title, directory=project_path)
+            if sid:
+                return sid
+        import uuid
+        return f"ses_{uuid.uuid4().hex[:20]}"
+
     def build_cli_command(
         self,
         raw_session_id: str,
@@ -365,20 +375,23 @@ class OpenCodeAdapter(BaseAgentAdapter):
         model_name: str = "",
         approved_tools: Optional[list[str]] = None,
     ) -> list[str]:
-        """为 OpenCode 组装命令行（支持 run 与 --auto）。"""
+        """为 OpenCode 组装命令行（遵循 opencode run [flags] [<message...>] 规范）。"""
         clean_model = (model_name or "").strip()
         if clean_model == "default":
             clean_model = ""
         bin_path = str(self.cli_bin or "opencode")
-        if bin_path.endswith(".ps1"):
+        if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd.exe", "/c", bin_path]
+        elif bin_path.endswith(".ps1"):
             cmd = ["pwsh", "-NoProfile", "-File", bin_path]
         else:
             cmd = [bin_path]
-        cmd.extend(["run", "--session", raw_session_id, "--prompt", prompt])
+        cmd.extend(["run", "--session", raw_session_id])
         if clean_model:
             cmd.extend(["--model", clean_model])
         if execution_mode in ("accept_edits", "auto"):
             cmd.append("--auto")
+        cmd.append(prompt)
         return cmd
 
     def respond_permission(

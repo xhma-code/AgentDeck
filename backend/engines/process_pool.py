@@ -229,10 +229,21 @@ class AgentOrchestrator:
     ) -> tuple[str, dict[str, Any]]:
         """深模块：一站式创建并初始化新会话（规范化ID、模式、持久化与冷启动提示调度）。"""
         real_agent = agent_type if agent_type != "agy_ide" else "agy_cli"
-        raw_id = str(uuid.uuid4())
-        unified_id = f"{real_agent}:{raw_id}"
         workdir = project_path.strip() or str(PROJECT_ROOT)
         final_title = title.strip() or (initial_prompt.strip()[:50] if initial_prompt else f"新建 {real_agent} 会话")
+
+        raw_id = ""
+        adapter = self.adapters.get(real_agent)
+        if adapter and hasattr(adapter, "create_session"):
+            try:
+                raw_id = adapter.create_session(title=final_title, project_path=workdir) or ""
+            except Exception as c_exc:
+                logger.debug(f"适配器多态创建会话异常: {c_exc}")
+
+        if not raw_id:
+            raw_id = f"ses_{uuid.uuid4().hex[:20]}" if real_agent == "opencode" else str(uuid.uuid4())
+
+        unified_id = f"{real_agent}:{raw_id}"
         norm_mode = self.normalize_execution_mode(real_agent, execution_mode)
 
         meta = self.meta_db.upsert_session_meta(
