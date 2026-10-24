@@ -239,26 +239,90 @@ class AntigravityLanguageServerBridge:
             logger.debug(f"Connect-RPC POST {method} 失败 ({url}): {exc}")
         return False, None
 
+    def get_session_last_plan_model(self, cascade_id: str) -> str:
+        """从 LS 会话步骤历史中提取最近一次成功使用的 planModel 枚举。"""
+        candidates = self._scan_ls_processes()
+        payload = {"cascadeId": cascade_id}
+        for pid, token in candidates:
+            ports = self._find_listening_ports(pid)
+            for port in ports:
+                scheme = self._probe_connect_port(port, token)
+                if not scheme:
+                    continue
+                ok, raw = self._raw_post(
+                    scheme=scheme,
+                    port=port,
+                    csrf_token=token,
+                    method="GetCascadeTrajectory",
+                    body=payload,
+                    timeout=2.0,
+                )
+                if ok and raw:
+                    try:
+                        data = json.loads(raw.decode("utf-8"))
+                        steps = data.get("trajectory", {}).get("steps", [])
+                        for s in reversed(steps):
+                            u = s.get("userInput") or {}
+                            pc = u.get("userConfig", {}).get("plannerConfig") or {}
+                            pm = pc.get("planModel")
+                            if pm and isinstance(pm, str) and pm.startswith("MODEL_"):
+                                return pm
+                            rm = pc.get("requestedModel") or {}
+                            rm_m = rm.get("model")
+                            if rm_m and isinstance(rm_m, str) and rm_m.startswith("MODEL_"):
+                                return rm_m
+                    except Exception as exc:
+                        logger.debug(f"解析 GetCascadeTrajectory 异常: {exc}")
+        return ""
+
+    def resolve_ls_model(self, model_input: str = "", cascade_id: str = "") -> str:
+        """多层级自适应解析出合法的 Language Server 底层模型枚举（如 MODEL_PLACEHOLDER_M319）。"""
+        m = (model_input or "").strip()
+        if m and m.lower() != "default":
+            if m.upper().startswith("MODEL_"):
+                return m.upper()
+            if m.lower() in MODEL_ID_TO_LS_MAP:
+                return MODEL_ID_TO_LS_MAP[m.lower()]
+            configs = self.get_cascade_model_configs()
+            for c in configs:
+                if c.get("label", "").lower() == m.lower() or c.get("modelId", "").lower() == m.lower():
+                    mid = c.get("modelId", "")
+                    return MODEL_ID_TO_LS_MAP.get(mid.lower(), mid)
+
+        # 优先复用当前会话已配置的模型
+        if cascade_id:
+            last_m = self.get_session_last_plan_model(cascade_id)
+            if last_m:
+                return last_m
+
+        # 降级为服务端默认推荐模型
+        def_raw = getattr(self, "_cached_default_model", "")
+        if not def_raw:
+            self.get_cascade_model_configs()
+            def_raw = getattr(self, "_cached_default_model", "")
+        if def_raw:
+            if def_raw.upper().startswith("MODEL_"):
+                return def_raw.upper()
+            return MODEL_ID_TO_LS_MAP.get(def_raw.lower(), def_raw)
+
+        return "MODEL_PLACEHOLDER_M319"
+
     def send_cascade_message(
         self, cascade_id: str, prompt: str, model_id: str = ""
     ) -> bool:
         """通过 Connect-RPC 直接向运行中的 Antigravity IDE 会话发送用户指令（全实例智能穿透路由）。"""
         candidates = self._scan_ls_processes()
+        ls_model = self.resolve_ls_model(model_id, cascade_id=cascade_id)
         payload: dict[str, Any] = {
             "cascadeId": cascade_id,
-            "messageText": prompt,
             "items": [{"text": prompt}],
         }
-        if model_id and model_id != "default":
-            ls_model = MODEL_ID_TO_LS_MAP.get(model_id.lower(), model_id)
-            if ls_model.lower().startswith("model_placeholder_"):
-                ls_model = ls_model.upper()
+        if ls_model:
             payload["cascadeConfig"] = {
                 "plannerConfig": {
+                    "planModel": ls_model,
                     "requestedModel": {
-                        "modelOrAlias": {
-                            "model": ls_model,
-                        }
+                        "model": ls_model,
                     },
                 }
             }
