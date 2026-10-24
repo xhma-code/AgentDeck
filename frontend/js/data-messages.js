@@ -272,8 +272,10 @@ export async function loadOlderMessages() {
   }
 
   const container = document.getElementById("messages-container");
-  const prevScrollHeight = container ? container.scrollHeight : 0;
-  const prevScrollTop = container ? container.scrollTop : 0;
+  // 记录视口当前顶部第一条可见消息卡片作为物理锚点，杜绝内容插入时的跳动
+  const anchorEl = container ? container.querySelector("[data-user-msg-id], article") : null;
+  const anchorId = anchorEl ? (anchorEl.getAttribute("data-user-msg-id") || anchorEl.getAttribute("data-turn-key") || "") : "";
+  const anchorTopBefore = anchorEl ? anchorEl.getBoundingClientRect().top : 0;
 
   try {
     const data = await apiFetch(
@@ -301,10 +303,25 @@ export async function loadOlderMessages() {
     state.autoScrollLocked = true;
     renderMessagesList();
 
-    // 保持视觉阅读锚点不跳动
-    if (container) {
-      const newScrollHeight = container.scrollHeight;
-      container.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+    // 双重 RAF 物理锚定：确保更早历史消息插入并重排后，用户视线焦点元素在视口中绝对静止
+    if (container && anchorEl) {
+      const targetAnchor = anchorId ? container.querySelector(`[data-user-msg-id="${anchorId}"], [data-turn-key="${anchorId}"]`) : null;
+      const elToTrack = targetAnchor || anchorEl;
+
+      const adjustScroll = () => {
+        if (!container || !elToTrack) return;
+        const curTop = elToTrack.getBoundingClientRect().top;
+        const delta = curTop - anchorTopBefore;
+        if (Math.abs(delta) > 0.5) {
+          container.scrollTop += delta;
+        }
+      };
+
+      adjustScroll();
+      requestAnimationFrame(() => {
+        adjustScroll();
+        requestAnimationFrame(adjustScroll);
+      });
     }
   } catch (e) {
     state.loadingOlderMessages = false;

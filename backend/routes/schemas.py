@@ -40,6 +40,11 @@ class ToolApprovalDecisionRequest(BaseModel):
     feedback: str = Field(default="", description="拒绝或补充指导意见")
 
 
+class SwitchSessionModelRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    model_name: str = Field(..., description="选定切换的模型名称")
+
+
 class SessionMetaUpdateRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
 

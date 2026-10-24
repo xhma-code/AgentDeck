@@ -22,6 +22,7 @@ import {
   highlightSlashItem,
   scrollToBottom,
   scrollToCurrentPrompt,
+  toggleStickyPromptExpanded,
 } from "./render.js";
 import {
   openNewSessionModal,
@@ -416,6 +417,7 @@ window.appActions = {
     scrollToBottom();
   },
   scrollToCurrentPrompt,
+  toggleStickyPromptExpanded,
   loadFullOutput,
   insertSlashCommand,
   executeSlashDirectly,

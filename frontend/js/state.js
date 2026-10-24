@@ -72,6 +72,8 @@ export const state = {
   pendingTurnThinking: {}, // unified_id -> timestamp (ms)
   optimisticMessages: {}, // unified_id -> array of unconfirmed user message objects
   autoScrollLocked: false,
+  stickyPromptExpanded: true, // 悬浮指令默认展示全部内容
+  stickyPromptActiveIndex: 0, // 当前悬浮展示的提问下标
   expandedTurns: {}, // turnKey -> boolean
   turnThinkingExpanded: {}, // turnKey -> boolean（用户主动展开思考时在运行中保持展开）
   turnFilterEdits: {}, // turnKey -> boolean（为 true 时仅显示产生改动的步骤）

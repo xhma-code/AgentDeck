@@ -270,21 +270,66 @@ export function scrollToBottom(smooth = false) {
 }
 
 
+export function renderStickyPromptContent(userElsOverride = null) {
+  const container = document.getElementById("messages-container");
+  const contentEl = document.getElementById("sticky-prompt-content");
+  const badgeEl = document.getElementById("sticky-prompt-badge");
+  const stickyBar = document.getElementById("sticky-user-prompt-bar");
+  if (!container || !contentEl) return;
+
+  const userEls = userElsOverride || Array.from(container.querySelectorAll("[data-user-msg-id]"));
+  if (userEls.length === 0) return;
+
+  const total = userEls.length;
+  let idx = typeof state.stickyPromptActiveIndex === "number" ? state.stickyPromptActiveIndex : 0;
+  if (idx < 0) idx = 0;
+  if (idx >= total) idx = total - 1;
+  state.stickyPromptActiveIndex = idx;
+
+  const activeEl = userEls[idx];
+  const rawText = activeEl.getAttribute("data-user-msg-text") || "";
+  const cleanText = rawText.trim();
+
+  // 1. 文本内容与展开/单行样式（点击文字直接切换收起/展开全部）
+  contentEl.textContent = cleanText;
+  if (state.stickyPromptExpanded !== false) {
+    contentEl.className =
+      "text-xs text-zinc-200 font-medium leading-relaxed max-h-36 sm:max-h-48 overflow-y-auto whitespace-pre-wrap break-words subtle-scrollbar hover:text-sky-200 transition-colors cursor-pointer select-text flex-1";
+    contentEl.title = "点击收起为单行";
+  } else {
+    contentEl.className =
+      "text-xs text-zinc-200 font-medium truncate whitespace-nowrap overflow-hidden hover:text-sky-200 transition-colors cursor-pointer select-text flex-1";
+    contentEl.title = "点击展开显示全部指令内容";
+  }
+
+  // 2. 优化微标：单条提问时直接隐藏；多条提问时仅显示极窄的 1/8 纯数字胶囊，去掉“指令”冗余字样
+  if (badgeEl) {
+    if (total > 1) {
+      badgeEl.textContent = `${idx + 1}/${total}`;
+      badgeEl.classList.remove("hidden");
+    } else {
+      badgeEl.classList.add("hidden");
+    }
+  }
+
+  if (stickyBar) {
+    stickyBar.dataset.targetId = activeEl.getAttribute("data-user-msg-id") || "";
+  }
+}
+
+export function toggleStickyPromptExpanded(e) {
+  if (e) e.stopPropagation();
+  state.stickyPromptExpanded = !state.stickyPromptExpanded;
+  renderStickyPromptContent();
+}
+
 export function updateStickyPromptVisibility() {
   const container = document.getElementById("messages-container");
   const stickyBar = document.getElementById("sticky-user-prompt-bar");
-  const stickyText = document.getElementById("sticky-prompt-text");
   const headerEl = document.querySelector("header");
-  if (!container || !stickyBar || !stickyText) return;
+  if (!container || !stickyBar) return;
 
-  // 若处于最底部最新消息区域且未锁定滚动（非向上翻看历史模式），不显示置顶指令栏
-  const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-  if (distFromBottom <= 120 && !state.autoScrollLocked) {
-    stickyBar.classList.add("hidden");
-    return;
-  }
-
-  const userEls = container.querySelectorAll("[data-user-msg-id]");
+  const userEls = Array.from(container.querySelectorAll("[data-user-msg-id]"));
   if (userEls.length === 0) {
     stickyBar.classList.add("hidden");
     return;
@@ -297,29 +342,39 @@ export function updateStickyPromptVisibility() {
   const containerRect = container.getBoundingClientRect();
   const topThreshold = containerRect.top + 16;
 
-  let activeUserEl = null;
+  let activeIdx = -1;
   for (let i = 0; i < userEls.length; i++) {
     const el = userEls[i];
     const rect = el.getBoundingClientRect();
     if (rect.bottom < topThreshold) {
-      activeUserEl = el;
+      activeIdx = i;
     } else {
       break;
     }
   }
 
-  if (activeUserEl) {
-    const text = activeUserEl.getAttribute("data-user-msg-text") || "";
-    const cleanText = text.replace(/\s+/g, " ").trim();
-    stickyText.textContent = cleanText;
-    stickyBar.dataset.targetId = activeUserEl.getAttribute("data-user-msg-id") || "";
+  // 需求 3：文字定位在最新位置也要显示最后一条指令
+  const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+  if (distFromBottom <= 120 && userEls.length > 0) {
+    const lastEl = userEls[userEls.length - 1];
+    const lastRect = lastEl.getBoundingClientRect();
+    // 只要最后一条指令的气泡没有停留在视口顶端（即已被滚上去或视口在最底部），始终悬浮显示最后一条指令
+    if (lastRect.top < topThreshold || activeIdx === -1) {
+      activeIdx = userEls.length - 1;
+    }
+  }
+
+  if (activeIdx >= 0) {
+    state.stickyPromptActiveIndex = activeIdx;
+    renderStickyPromptContent(userEls);
     stickyBar.classList.remove("hidden");
   } else {
     stickyBar.classList.add("hidden");
   }
 }
 
-export function scrollToCurrentPrompt() {
+export function scrollToCurrentPrompt(e) {
+  if (e) e.stopPropagation();
   const stickyBar = document.getElementById("sticky-user-prompt-bar");
   const targetId = stickyBar?.dataset.targetId;
   if (!targetId) return;

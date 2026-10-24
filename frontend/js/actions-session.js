@@ -39,6 +39,26 @@ let sessionLongPressStartX = 0;
 let sessionLongPressStartY = 0;
 let sessionLongPressMoved = false;
 
+function disableTextSelection() {
+  try {
+    document.documentElement.style.webkitUserSelect = "none";
+    document.documentElement.style.userSelect = "none";
+    document.body.style.webkitUserSelect = "none";
+    document.body.style.userSelect = "none";
+    document.body.style.webkitTouchCallout = "none";
+  } catch (e) {}
+}
+
+function enableTextSelection() {
+  try {
+    document.documentElement.style.webkitUserSelect = "";
+    document.documentElement.style.userSelect = "";
+    document.body.style.webkitUserSelect = "";
+    document.body.style.userSelect = "";
+    document.body.style.webkitTouchCallout = "";
+  } catch (e) {}
+}
+
 export function toggleSessionMenu(ev) {
   if (ev) ev.stopPropagation();
   const menu = document.getElementById("session-action-menu");
@@ -60,10 +80,17 @@ export function toggleSessionMenu(ev) {
 export function closeSessionContextMenu() {
   const menu = document.getElementById("session-context-menu");
   if (menu) menu.classList.add("hidden");
+  enableTextSelection();
 }
 
 export function openSessionContextMenu(unifiedId, x, y, ev) {
-  if (ev) ev.preventDefault();
+  try {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+  } catch (e) {}
+  disableTextSelection();
   sessionContextTargetId = unifiedId;
   const menu = document.getElementById("session-context-menu");
   if (!menu) return;
@@ -174,6 +201,10 @@ export function handleSessionTouchStart(ev, unifiedId) {
     clearTimeout(sessionLongPressTimer);
     sessionLongPressTimer = null;
   }
+  try {
+    ev.stopPropagation();
+  } catch (e) {}
+  disableTextSelection();
   sessionLongPressTimer = setTimeout(() => {
     if (sessionLongPressMoved) return;
     const menu = document.getElementById("session-context-menu");
@@ -182,13 +213,16 @@ export function handleSessionTouchStart(ev, unifiedId) {
       return;
     }
     try {
-      ev.preventDefault();
+      if (ev.cancelable) {
+        ev.preventDefault();
+      }
+      ev.stopPropagation();
     } catch (e) {}
     openSessionContextMenu(unifiedId, sessionLongPressStartX, sessionLongPressStartY, ev);
     if (navigator.vibrate) {
-      try { navigator.vibrate(10); } catch (e) {}
+      try { navigator.vibrate(15); } catch (e) {}
     }
-  }, 500);
+  }, 800);
 }
 
 export function handleSessionTouchMove(ev) {
@@ -196,7 +230,7 @@ export function handleSessionTouchMove(ev) {
   const touch = ev.touches[0];
   const dx = Math.abs(touch.clientX - sessionLongPressStartX);
   const dy = Math.abs(touch.clientY - sessionLongPressStartY);
-  if (dx > 10 || dy > 10) {
+  if (dx > 16 || dy > 16) {
     sessionLongPressMoved = true;
     if (sessionLongPressTimer) {
       clearTimeout(sessionLongPressTimer);
@@ -211,14 +245,16 @@ export function handleSessionTouchEnd(ev) {
     sessionLongPressTimer = null;
   }
   sessionLongPressMoved = false;
+  enableTextSelection();
 }
 
-export function handleSessionTouchCancel() {
+export function handleSessionTouchCancel(ev) {
   if (sessionLongPressTimer) {
     clearTimeout(sessionLongPressTimer);
     sessionLongPressTimer = null;
   }
   sessionLongPressMoved = false;
+  enableTextSelection();
 }
 
 export async function toggleCurrentPin() {
@@ -537,6 +573,107 @@ export async function deleteSession(unifiedId, ev) {
 }
 
 if (typeof window !== "undefined") {
+  const blockSessionItemDefault = (ev) => {
+    const target = ev.target;
+    if (!target) return;
+    const el = target.closest ? target.closest("[data-session-item]") : null;
+    if (!el) return;
+    try {
+      ev.preventDefault();
+      ev.stopPropagation();
+    } catch (e) {}
+    return false;
+  };
+
+  window.addEventListener("contextmenu", blockSessionItemDefault, { capture: true, passive: false });
+  window.addEventListener("selectstart", blockSessionItemDefault, { capture: true, passive: false });
+  window.addEventListener("dragstart", blockSessionItemDefault, { capture: true, passive: false });
+  document.addEventListener("gesturestart", blockSessionItemDefault, { capture: true, passive: false });
+  document.addEventListener("gesturechange", blockSessionItemDefault, { capture: true, passive: false });
+  document.addEventListener("gestureend", blockSessionItemDefault, { capture: true, passive: false });
+
+  const container = document.getElementById("session-list-container");
+  let globalPressTimer = null;
+  let globalPressStartX = 0;
+  let globalPressStartY = 0;
+  let globalPressedId = null;
+  let globalMoved = false;
+
+  const clearGlobalPress = () => {
+    if (globalPressTimer) {
+      clearTimeout(globalPressTimer);
+      globalPressTimer = null;
+    }
+    globalPressedId = null;
+    globalMoved = false;
+    enableTextSelection();
+  };
+
+  document.addEventListener("touchstart", (ev) => {
+    if (ev.touches.length !== 1) return;
+    const touch = ev.touches[0];
+    const target = ev.target;
+    if (!target) return;
+    const el = target.closest ? target.closest("[data-session-item]") : null;
+    if (!el) return;
+    globalPressedId = el.getAttribute("data-session-id") || el.getAttribute("data-session-item");
+    if (!globalPressedId) return;
+    globalPressStartX = touch.clientX;
+    globalPressStartY = touch.clientY;
+    globalMoved = false;
+    if (globalPressTimer) {
+      clearTimeout(globalPressTimer);
+      globalPressTimer = null;
+    }
+    try {
+      ev.stopPropagation();
+    } catch (e) {}
+    disableTextSelection();
+    globalPressTimer = setTimeout(() => {
+      if (globalMoved || !globalPressedId) return;
+      const menu = document.getElementById("session-context-menu");
+      if (menu && !menu.classList.contains("hidden")) {
+        closeSessionContextMenu();
+        return;
+      }
+      try {
+        if (ev.cancelable) {
+          ev.preventDefault();
+        }
+        ev.stopPropagation();
+      } catch (e) {}
+      openSessionContextMenu(globalPressedId, globalPressStartX, globalPressStartY, ev);
+      if (navigator.vibrate) {
+        try {
+          navigator.vibrate(15);
+        } catch (e) {}
+      }
+      globalPressedId = null;
+      if (globalPressTimer) {
+        clearTimeout(globalPressTimer);
+        globalPressTimer = null;
+      }
+    }, 650);
+  }, { passive: false, capture: true });
+
+  document.addEventListener("touchmove", (ev) => {
+    if (ev.touches.length !== 1) return;
+    if (!globalPressedId) return;
+    const touch = ev.touches[0];
+    const dx = Math.abs(touch.clientX - globalPressStartX);
+    const dy = Math.abs(touch.clientY - globalPressStartY);
+    if (dx > 12 || dy > 12) {
+      globalMoved = true;
+      if (globalPressTimer) {
+        clearTimeout(globalPressTimer);
+        globalPressTimer = null;
+      }
+    }
+  }, { passive: true, capture: true });
+
+  document.addEventListener("touchend", clearGlobalPress, { passive: true, capture: true });
+  document.addEventListener("touchcancel", clearGlobalPress, { passive: true, capture: true });
+
   document.addEventListener("click", (ev) => {
     const menu = document.getElementById("session-context-menu");
     if (!menu || menu.classList.contains("hidden")) return;

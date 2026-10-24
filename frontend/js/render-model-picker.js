@@ -15,7 +15,12 @@ export function renderModelOptionsForAgent(selectEl, agentType, selectedModelId 
       ? list
       : DEFAULT_MODELS_BY_AGENT[agentType] || DEFAULT_MODELS_BY_AGENT.agy_cli;
 
-  const defaultModelItem = models.find((m) => m.is_default) || models[0];
+  let userPrefItem = null;
+  try {
+    const userPrefModel = localStorage.getItem("agentdeck_preferred_model_" + agentType);
+    if (userPrefModel) userPrefItem = models.find((m) => m.id === userPrefModel);
+  } catch (_) {}
+  const defaultModelItem = userPrefItem || models.find((m) => m.is_default) || models[0];
   const activeId = selectedModelId || (defaultModelItem ? defaultModelItem.id : "");
   if (selectEl.tagName === "SELECT") {
     selectEl.innerHTML = models
@@ -74,8 +79,15 @@ export function renderModelPicker() {
       ? list
       : DEFAULT_MODELS_BY_AGENT[agentType] || DEFAULT_MODELS_BY_AGENT.agy_cli;
 
-  const defaultModelItem = models.find((m) => m.is_default) || models[0];
   const availableIds = new Set(models.map((m) => m.id));
+  let userPrefItem = null;
+  try {
+    const userPrefModel = localStorage.getItem("agentdeck_preferred_model_" + agentType);
+    if (userPrefModel && availableIds.has(userPrefModel)) {
+      userPrefItem = models.find((m) => m.id === userPrefModel);
+    }
+  } catch (_) {}
+  const defaultModelItem = userPrefItem || models.find((m) => m.is_default) || models[0];
   const activeId =
     sess?.model_name && availableIds.has(sess.model_name)
       ? sess.model_name

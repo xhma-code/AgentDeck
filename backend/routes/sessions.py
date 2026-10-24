@@ -11,6 +11,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
+from backend.core.logger import logger
 from backend.routes.deps import (
     get_meta_db,
     get_orchestrator,
@@ -20,6 +21,7 @@ from backend.routes.schemas import (
     CreateSessionRequest,
     SendPromptRequest,
     SessionMetaUpdateRequest,
+    SwitchSessionModelRequest,
     ToolApprovalDecisionRequest,
     MarkAllViewedRequest,
     SyncViewedRequest,
@@ -134,6 +136,36 @@ async def get_session_messages(
         content={"ok": True, **detail},
         headers={"ETag": msg_etag, "Cache-Control": "no-cache"},
     )
+
+
+@router.post("/{unified_id:path}/model")
+async def switch_session_model(
+    unified_id: str,
+    req: SwitchSessionModelRequest,
+    request: Request,
+    _auth: bool = Depends(verify_request_auth),
+) -> dict[str, Any]:
+    """切换指定会话选定的模型并持久化到本地元数据库。"""
+    clean_model = req.model_name.strip()
+    if not clean_model:
+        raise HTTPException(status_code=400, detail="模型名称不能为空")
+
+    meta_db = get_meta_db(request)
+    orchestrator = get_orchestrator(request)
+
+    if ":" not in unified_id:
+        raise HTTPException(status_code=400, detail="会话 ID 格式非法")
+    agent_type, raw_id = unified_id.split(":", 1)
+
+    updated = meta_db.upsert_session_meta(
+        unified_id=unified_id,
+        agent_type=agent_type,
+        raw_session_id=raw_id,
+        model_name=clean_model,
+    )
+    orchestrator.bump_version()
+    logger.info(f"已成功持久化会话模型切换: {unified_id} -> {clean_model}")
+    return {"ok": True, "unified_id": unified_id, "model_name": clean_model, "meta": updated}
 
 
 @router.patch("/{unified_id:path}/meta")

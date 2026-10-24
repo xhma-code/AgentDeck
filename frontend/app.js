@@ -317,6 +317,7 @@ async function initApp() {
 
   const msgContainer = document.getElementById("messages-container");
   if (msgContainer) {
+    let olderPullThrottle = false;
     msgContainer.addEventListener("scroll", () => {
       const distFromBottom =
         msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight;
@@ -327,7 +328,16 @@ async function initApp() {
       }
       updateCollapseStepsPillVisibility();
       updateStickyPromptVisibility();
-    });
+
+      // 向上翻阅历史记录：当页面向下拉动或滚动至顶部附近时，自动触发加载更早历史记录
+      if (msgContainer.scrollTop <= 60 && state.hasMoreMessages && !state.loadingOlderMessages && !olderPullThrottle) {
+        olderPullThrottle = true;
+        window.appActions.loadOlderMessages();
+        setTimeout(() => {
+          olderPullThrottle = false;
+        }, 1000);
+      }
+    }, { passive: true });
   }
 
   // 自适应监测底部控制舱高度（含输入框撑高、移动端软键盘、审批横幅变化），动态更新浮动药丸吸附位置

@@ -155,6 +155,7 @@ async def get_system_status(
         "pair_code_expires_at": auth_mgr.bootstrap_pair_code_expires_at,
         "channels": channels,
         "workflows": discover_quick_workflows(),
+        "models_by_agent": orchestrator.get_available_models(),
         **overview,
     }
 

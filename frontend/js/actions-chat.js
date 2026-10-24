@@ -148,6 +148,14 @@ export async function handleModeChange(newMode) {
 
 export async function handleModelChange(newModel) {
   if (!state.selectedSessionId) return;
+  const s =
+    state.sessions.find((item) => item.unified_id === state.selectedSessionId) ||
+    state.allSessions.find((item) => item.unified_id === state.selectedSessionId);
+  const agentType = s?.agent_type || "agy_cli";
+  try {
+    localStorage.setItem(`agentdeck_preferred_model_${agentType}`, newModel);
+  } catch (_) {}
+
   try {
     await apiFetch(
       `/api/v1/sessions/${encodeURIComponent(state.selectedSessionId)}/model`,
@@ -156,8 +164,8 @@ export async function handleModelChange(newModel) {
         body: JSON.stringify({ model_name: newModel }),
       }
     );
-    const s = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
     if (s) s.model_name = newModel;
+    renderModelPicker();
     showToast("模型已切换", "success");
   } catch (e) {
     showToast("模型切换失败", "error");
@@ -281,6 +289,25 @@ export function selectSlashCommand(cmd) {
   }
 }
 
+let lastModelsFetchTs = 0;
+async function silentRefreshModels() {
+  const now = Date.now();
+  if (now - lastModelsFetchTs < 10000) return;
+  lastModelsFetchTs = now;
+  try {
+    const res = await apiFetch("/api/v1/models");
+    if (res && res.ok && res.models_by_agent) {
+      state.modelsByAgent = res.models_by_agent;
+      const popover = document.getElementById("model-picker-popover");
+      if (popover && !popover.classList.contains("hidden")) {
+        renderModelPicker();
+      }
+    }
+  } catch (err) {
+    console.debug("静默预检模型列表跳过:", err);
+  }
+}
+
 export function toggleModelPicker(e, forceOpen) {
   if (e) {
     if (typeof e.stopPropagation === "function") e.stopPropagation();
@@ -306,6 +333,7 @@ export function toggleModelPicker(e, forceOpen) {
     popover.classList.remove("hidden");
     btn.classList.add("border-sky-500/50", "bg-zinc-800");
     if (arrow) arrow.classList.add("rotate-180");
+    silentRefreshModels();
   } else {
     popover.classList.add("hidden");
     btn.classList.remove("border-sky-500/50", "bg-zinc-800");

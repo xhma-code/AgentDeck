@@ -5,6 +5,7 @@ Antigravity 会话列表扫描、模型配额合并与消息文件读取引擎�
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,16 +89,8 @@ def query_antigravity_sessions(
             extra_cols.append("nesting_depth")
         extra_select = (", " + ", ".join(extra_cols)) if extra_cols else ""
 
-        sql = f"""
-            SELECT conversation_id, title, preview, step_count,
-                   last_modified_time, workspace_uris, status, not_fully_idle
-                   {extra_select}
-            FROM conversation_summaries
-            WHERE killed = 0
-            ORDER BY last_modified_time DESC
-            LIMIT ?
-        """
-        # 性能极致优化：单次批量预查所有已记录的子进程归属与活跃状态（杜绝循环内的 N+1 次 SQLite 查询与磁盘 IO）
+        # 性能极致优化：单次批量预查所有已记录的子进程归属与活跃状态
+        all_known_subagent_ids: set[str] = set()
         active_subagents_by_parent: dict[str, int] = {}
         if has_parent_col:
             try:
@@ -113,6 +106,7 @@ def query_antigravity_sessions(
                     s_cid = str(sr.get("conversation_id") or "")
                     p_cid = str(sr.get("parent_conversation_id") or "")
                     if s_cid:
+                        all_known_subagent_ids.add(s_cid)
                         known_parent_map[s_cid] = p_cid
                         if p_cid:
                             s_not_idle = bool(sr.get("not_fully_idle"))
@@ -129,6 +123,16 @@ def query_antigravity_sessions(
                                     active_subagents_by_parent[p_cid] = active_subagents_by_parent.get(p_cid, 0) + 1
             except Exception as e:
                 logger.debug(f"读取 Antigravity 子会话映射关系忽略容错: {e}")
+
+        sql = f"""
+            SELECT conversation_id, title, preview, step_count,
+                   last_modified_time, workspace_uris, status, not_fully_idle
+                   {extra_select}
+            FROM conversation_summaries
+            WHERE killed = 0
+            ORDER BY last_modified_time DESC
+            LIMIT ?
+        """
 
         rows = safe_query_external_sqlite(summary_db_path, sql, (limit,))
         for r in rows:
@@ -166,6 +170,11 @@ def query_antigravity_sessions(
 
             title = (r.get("title") or "").strip()
             preview = (r.get("preview") or "").strip()
+            if not title and preview:
+                clean_p = preview.split("\n")[0].strip()
+                clean_p = clean_p.replace("<USER_REQUEST>", "").replace("</USER_REQUEST>", "").strip()
+                if clean_p:
+                    title = clean_p[:40]
             raw_paths = r.get("workspace_uris") or r.get("workspace_paths") or ""
             p_path = decode_workspace_uri(str(raw_paths))
             raw_up = r.get("last_modified_time") or r.get("updated_at")
@@ -214,9 +223,22 @@ def query_antigravity_sessions(
             for b_item in brain_dir.iterdir():
                 if not b_item.is_dir() or b_item.name in sessions_map:
                     continue
+                cid = b_item.name
+                if cid in all_known_subagent_ids or cid in known_parent_map:
+                    continue
                 tp = b_item / ".system_generated" / "logs" / "transcript.jsonl"
                 if not tp.is_file():
                     continue
+                # 检查第一行：若是子进程系统指令直接跳过
+                try:
+                    with open(tp, "r", encoding="utf-8") as f_chk:
+                        chk_l = f_chk.readline()
+                        if chk_l:
+                            chk_it = json.loads(chk_l)
+                            if chk_it.get("source") == "SYSTEM" or chk_it.get("type") == "SYSTEM_MESSAGE" or "not actually sent by the user" in str(chk_it.get("content", "")):
+                                continue
+                except Exception:
+                    pass
                 try:
                     st = tp.stat()
                     up_iso = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
@@ -230,13 +252,36 @@ def query_antigravity_sessions(
                 p_cid = known_parent_map.get(cid)
                 is_sub = cid in known_parent_map
                 parent_uid = f"{agent_type}:{p_cid}" if p_cid else None
+
+                fallback_title = ""
+                fallback_preview = "来自本地日志"
+                if tp.is_file():
+                    try:
+                        with open(tp, "r", encoding="utf-8") as f_tp:
+                            for _ in range(5):
+                                line = f_tp.readline()
+                                if not line:
+                                    break
+                                try:
+                                    item = json.loads(line)
+                                    if item.get("type") == "USER_INPUT" and item.get("content"):
+                                        c_text = str(item["content"]).replace("<USER_REQUEST>", "").replace("</USER_REQUEST>", "").strip().split("\n")[0]
+                                        if c_text:
+                                            fallback_title = c_text[:40]
+                                            fallback_preview = c_text
+                                            break
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
                 sessions_map[cid] = UnifiedSession(
                     unified_id=f"{agent_type}:{cid}",
                     agent_type=agent_type,
                     agent_label=agent_label,
                     raw_session_id=cid,
-                    title=f"会话 {cid[:8]}",
-                    preview="来自本地日志",
+                    title=fallback_title or f"会话 {cid[:8]}",
+                    preview=fallback_preview,
                     project_path="",
                     status=status,
                     step_count=1,
@@ -285,9 +330,9 @@ def resolve_agy_default_model(
     # 1. 优先读取状态配置文件中的显式选定模型
     state_file = root_dir / "antigravity_state.pbtxt"
     if not state_file.exists() and agent_type == "agy_cli":
-        ide_state = Path(os.path.expanduser("~/.gemini/antigravity/antigravity_state.pbtxt"))
-        if ide_state.exists():
-            state_file = ide_state
+        global_state = Path(os.path.expanduser("~/.gemini/antigravity/antigravity_state.pbtxt"))
+        if global_state.exists():
+            state_file = global_state
 
     parsed_model = parse_state_selected_model(state_file)
     if parsed_model:
@@ -612,6 +657,11 @@ def query_antigravity_single_session(
 
             title = (r.get("title") or "").strip()
             preview = (r.get("preview") or "").strip()
+            if not title and preview:
+                clean_p = preview.split("\n")[0].strip()
+                clean_p = clean_p.replace("<USER_REQUEST>", "").replace("</USER_REQUEST>", "").strip()
+                if clean_p:
+                    title = clean_p[:40]
             raw_paths = r.get("workspace_uris") or r.get("workspace_paths") or ""
             p_path = decode_workspace_uri(str(raw_paths))
             raw_up = r.get("last_modified_time") or r.get("updated_at")

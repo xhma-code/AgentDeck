@@ -25,6 +25,7 @@ def aggregate_all_sessions(
     limit_per_agent: int = 40,
 ) -> list[dict[str, Any]]:
     """聚合 4 大 Agent 的会话列表，合并本地置顶/执行模式与实时进程状态。"""
+    deleted_ids = meta_db.get_deleted_session_ids()
     overrides = meta_db.get_session_overrides()
     all_ws = meta_db.list_workspaces(include_hidden=True)
     bookmarked_keys: set[str] = set()
@@ -75,6 +76,31 @@ def aggregate_all_sessions(
     elif len(target_adapters) == 1:
         all_sessions.extend(_fetch_adapter_sessions(target_adapters[0]))
 
+    # 同源 Antigravity 会话跨端去重（避免 Fork-to-CLI 后列表中同时出现原会话与镜像会话）
+    deduped_sessions: list[UnifiedSession] = []
+    antigravity_by_raw: dict[str, list[UnifiedSession]] = {}
+    for sess in all_sessions:
+        if sess.agent_type in ("agy_ide", "agy_cli"):
+            antigravity_by_raw.setdefault(sess.raw_session_id, []).append(sess)
+        else:
+            deduped_sessions.append(sess)
+
+    for raw_id, group in antigravity_by_raw.items():
+        if len(group) == 1:
+            deduped_sessions.append(group[0])
+        else:
+            # 优先选择拥有有效业务标题（非 "会话 xxx"）的会话
+            with_meaningful_title = [
+                s for s in group
+                if not (s.title.startswith("会话 ") and s.title[3:].strip() in s.raw_session_id)
+            ]
+            if len(with_meaningful_title) == 1:
+                deduped_sessions.append(with_meaningful_title[0])
+            else:
+                best = max(group, key=lambda s: str(s.updated_at or ""))
+                deduped_sessions.append(best)
+    all_sessions = deduped_sessions
+
     # 性能优化：按 Agent 类型单次预热可用模型 ID 集合，杜绝循环内重复计算
     valid_ids_by_agent: dict[str, set[str]] = {}
     for a_type, adp in adapters.items():
@@ -89,6 +115,8 @@ def aggregate_all_sessions(
     seen_ids: set[str] = set()
 
     for sess in all_sessions:
+        if sess.unified_id in deleted_ids:
+            continue
         seen_ids.add(sess.unified_id)
         ov = overrides.get(sess.unified_id)
         if ov:
@@ -126,7 +154,19 @@ def aggregate_all_sessions(
 
         merged.append(sess.to_dict())
 
+    seen_agy_raw_ids: set[str] = {
+        s.raw_session_id for s in all_sessions if s.agent_type in ("agy_ide", "agy_cli")
+    }
+
     for uid, ov in overrides.items():
+        if uid in deleted_ids or int(ov.get("is_deleted") or 0) == 1:
+            continue
+        if ov.get("parent_unified_id"):
+            continue
+        atype = str(ov.get("agent_type") or "claude_code")
+        raw_id = str(ov.get("raw_session_id") or "")
+        if atype in ("agy_ide", "agy_cli") and raw_id in seen_agy_raw_ids:
+            continue
         if uid not in seen_ids:
             atype = str(ov.get("agent_type") or "claude_code")
             if agent_filter and agent_filter != "all" and agent_filter != atype:
@@ -144,6 +184,8 @@ def aggregate_all_sessions(
 
             if sess_obj:
                 sess = sess_obj
+                if sess.is_subagent or sess.parent_unified_id:
+                    continue
                 sess.is_pinned = int(ov.get("is_pinned") or 0)
                 sess.execution_mode = str(ov.get("execution_mode") or ExecutionMode.ASK.value)
                 if ov.get("model_name"):
@@ -275,6 +317,7 @@ def fetch_session_detail(
             ]
 
     pa = pending_approvals.get(unified_id)
+    deleted_ids = meta_db.get_deleted_session_ids()
     overrides = meta_db.get_session_overrides().get(unified_id, {})
     session_actual_model = ""
     if adapter and hasattr(adapter, "get_session_model"):

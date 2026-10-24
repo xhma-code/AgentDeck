@@ -4,17 +4,17 @@
 
 export const DEFAULT_MODELS_BY_AGENT = {
   agy_cli: [
-    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速", is_recommended: true, is_default: true },
-    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡", is_recommended: true },
-    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快", is_recommended: true },
+    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡", is_recommended: true, is_default: true },
+    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速", is_recommended: false },
+    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快", is_recommended: false },
     { id: "claude-sonnet-4-6-thinking", label: "Claude Sonnet 4.6 (Thinking)", tag: "Notice", is_recommended: true },
     { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", tag: "Notice", is_recommended: true },
     { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "Notice", is_recommended: true },
   ],
   agy_ide: [
-    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速", is_recommended: true, is_default: true },
-    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡", is_recommended: true },
-    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快", is_recommended: true },
+    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡", is_recommended: true, is_default: true },
+    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速", is_recommended: false },
+    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快", is_recommended: false },
     { id: "claude-sonnet-4-6-thinking", label: "Claude Sonnet 4.6 (Thinking)", tag: "Notice", is_recommended: true },
     { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", tag: "Notice", is_recommended: true },
     { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "Notice", is_recommended: true },
