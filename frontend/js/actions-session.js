@@ -105,18 +105,47 @@ export function openSessionContextMenu(unifiedId, x, y, ev) {
   if (text) text.textContent = isPinned ? "取消置顶" : "置顶";
 
   menu.classList.remove("hidden");
-  const menuWidth = 112;
-  const menuHeight = 110;
-  let left = x - 20;
-  let top = y - 10;
-  const padding = 10;
+  const menuWidth = menu.offsetWidth || 112;
+  const menuHeight = menu.offsetHeight || 110;
+  const padding = 8;
+
+  // 获取被长按会话卡片的 DOM 节点，使弹框固定靠右侧对齐
+  let itemEl = null;
+  if (ev && ev.target && ev.target.closest) {
+    itemEl = ev.target.closest("[data-session-item]");
+  }
+  if (!itemEl && unifiedId) {
+    const escaped = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(unifiedId) : unifiedId.replace(/["\\]/g, "\\$&");
+    itemEl = document.querySelector(`[data-session-item="${escaped}"]`);
+  }
+
+  let left, top;
+  if (itemEl) {
+    const rect = itemEl.getBoundingClientRect();
+    // 固定在会话卡片靠右侧（留出边距）
+    left = rect.right - menuWidth - padding;
+    top = rect.top + 4;
+  } else {
+    // 兜底：若未直接命中卡片则固定在抽屉或屏幕靠右侧
+    const drawer = document.getElementById("sidebar-drawer");
+    if (drawer) {
+      const dRect = drawer.getBoundingClientRect();
+      left = dRect.right - menuWidth - padding;
+    } else {
+      left = window.innerWidth - menuWidth - padding;
+    }
+    top = (y || 100) - 10;
+  }
+
+  // 视口安全边界检测
   if (left + menuWidth > window.innerWidth - padding) {
     left = window.innerWidth - menuWidth - padding;
   }
+  if (left < padding) left = padding;
+
   if (top + menuHeight > window.innerHeight - padding) {
     top = window.innerHeight - menuHeight - padding;
   }
-  if (left < padding) left = padding;
   if (top < padding) top = padding;
 
   menu.style.left = left + "px";
