@@ -55,6 +55,7 @@ export async function submitPairCodeManual(code) {
 export function closeQrModal() {
   state.pairedSuccessNotice = null;
   state.selectedQrNet = null;
+  state.isRefreshingQr = false;
   stopQrExpireCountdown();
   const m = document.getElementById("qr-modal");
   if (m) m.classList.add("hidden");

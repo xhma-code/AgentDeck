@@ -262,13 +262,20 @@ export function onNewSessionAgentChange(agentType) {
 }
 
 export async function refreshPairCodeAndQr() {
+  if (state.isRefreshingQr) return;
+  state.isRefreshingQr = true;
+  renderQrModalContent();
   try {
     await apiFetch("/api/v1/auth/refresh_pair_code", { method: "POST" });
     await loadSystemStatus();
     startQrExpireCountdown();
+    renderQrModalContent();
     showToast("配对码已刷新", "success");
   } catch (e) {
     showToast("刷新失败: " + e.message, "error");
+  } finally {
+    state.isRefreshingQr = false;
+    renderQrModalContent();
   }
 }
 

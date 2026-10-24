@@ -40,6 +40,7 @@ export function startQrExpireCountdown() {
     state.qrExpired = true;
     renderQrModalContent();
   }, remainMs);
+  renderQrModalContent();
 }
 
 export function renderQrModalContent() {
@@ -153,11 +154,23 @@ export function renderQrModalContent() {
                     <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
                   </div>
                   <div class="text-[11px] text-zinc-300 font-medium">二维码已过期 (10分钟时限)</div>
-                  <button onclick="window.appActions.refreshPairCodeAndQr()"
-                    class="px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs shadow-md transition active:scale-95 cursor-pointer flex items-center gap-1.5">
-                    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                    <span>点击立即刷新</span>
-                  </button>
+                  ${
+                    state.isRefreshingQr
+                      ? `
+                        <button disabled
+                          class="px-3 py-1.5 rounded-lg bg-sky-500/50 text-zinc-950 font-bold text-xs shadow-md flex items-center gap-1.5 cursor-not-allowed">
+                          <div class="w-3.5 h-3.5 border-2 border-zinc-950 border-t-transparent rounded-full animate-spin"></div>
+                          <span>正在刷新...</span>
+                        </button>
+                      `
+                      : `
+                        <button onclick="window.appActions.refreshPairCodeAndQr()"
+                          class="px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs shadow-md transition active:scale-95 cursor-pointer flex items-center gap-1.5">
+                          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                          <span>点击立即刷新</span>
+                        </button>
+                      `
+                  }
                 </div>
               `
               : ""
