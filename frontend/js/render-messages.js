@@ -139,6 +139,7 @@ export function groupMessagesIntoTurns(messages) {
       if (hasThinking || hasTools || isIntermediateNote) {
         processRecords.push({
           step_index: step.step_index,
+          created_at: step.created_at,
           thinking: hasThinking ? step.thinking.trim() : "",
           thinking_len: step.thinking_len || (hasThinking ? step.thinking.trim().length : 0),
           intermediateNote: isIntermediateNote ? text : "",
@@ -155,9 +156,30 @@ export function groupMessagesIntoTurns(messages) {
       }
     });
 
+    let durationStr = "";
+    if (firstStep && lastStep && firstStep.created_at && lastStep.created_at) {
+      durationStr = getDurationStrFromDates(firstStep.created_at, lastStep.created_at);
+    }
+    // 若首尾步骤差值为 0（单 Step 或同秒内完成），且内部包含已记录耗时的工具，则以各工具耗时累加值补全
+    if (!durationStr && processRecords.length > 0) {
+      let totalToolSec = 0;
+      for (const rec of processRecords) {
+        for (const tc of rec.tool_calls || []) {
+          if (tc.duration_str) {
+            const m = tc.duration_str.match(/^([\d.]+)\s*s$/);
+            if (m) totalToolSec += parseFloat(m[1]);
+          }
+        }
+      }
+      if (totalToolSec > 0) {
+        durationStr = formatDuration(totalToolSec * 1000);
+      }
+    }
+
     turns.push({
       type: "assistant_turn",
       turnKey,
+      durationStr,
       processRecords,
       primarySteps,
       questions: turnQuestions,
@@ -191,7 +213,7 @@ import { renderMdDocQuickCards } from "./render-step-cards.js";
 import { AGENT_META } from "./config.js";
 import { isSessionWorking } from "./data.js";
 import { renderLiveStreamOverlay } from "./render-views.js";
-import { formatRelativeTime, getBasename } from "./utils.js";
+import { formatRelativeTime, getBasename, getDurationStrFromDates, formatDuration } from "./utils.js";
 
 export function renderMessagesList() {
   const container = document.getElementById("messages-container");

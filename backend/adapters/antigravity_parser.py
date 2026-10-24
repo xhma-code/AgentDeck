@@ -36,6 +36,7 @@ from backend.adapters.tool_utils import (
     extract_tool_summary_and_diff,
     is_read_only_tool,
     truncate_tool_output,
+    extract_duration_from_output,
 )
 from backend.core.database import utc_now_iso
 from backend.core.logger import log_structured_error, logger
@@ -152,6 +153,9 @@ def parse_agy_step_dict(
                     tc.output = trunc_out
                     tc.is_truncated = is_trunc
                     tc.full_output_len = full_len
+                    dur = extract_duration_from_output(content_raw)
+                    if dur:
+                        tc.duration_str = dur
                     placed = True
                     break
             if not placed:

@@ -6,6 +6,7 @@ import { state } from "./state.js";
 import {
   escapeHtml,
   escapeJsSingleQuote,
+  extractToolDuration,
   getBasename,
   icons,
 } from "./utils.js";
@@ -19,6 +20,7 @@ export function renderTurnProcessBar(turn) {
     toolCount,
     editedFiles,
     hasHighRisk,
+    durationStr,
   } = turn;
 
   if (!processRecords || processRecords.length === 0) return "";
@@ -201,6 +203,7 @@ export function renderTurnProcessBar(turn) {
                 const targetText = isEditTool
                   ? getBasename(tc.file_path || tc.args_summary) || tc.args_summary
                   : tc.args_summary;
+                const durStr = extractToolDuration(tc);
 
                 return `
                   <div class="${cardClass}">
@@ -216,9 +219,18 @@ export function renderTurnProcessBar(turn) {
                           ${escapeHtml(targetText)}
                         </span>
                       </div>
-                      <span class="text-[9px] text-zinc-500 font-mono shrink-0">${escapeHtml(
-                        tc.status || "DONE"
-                      )}</span>
+                      <div class="flex items-center gap-1.5 shrink-0">
+                        ${
+                          durStr
+                            ? `<span class="text-[10px] text-zinc-400 font-mono">${escapeHtml(
+                                durStr
+                              )}</span>`
+                            : ""
+                        }
+                        <span class="text-[9px] text-zinc-500 font-mono">${escapeHtml(
+                          tc.status || "DONE"
+                        )}</span>
+                      </div>
                     </div>
                     ${
                       tc.diff_text
@@ -319,6 +331,13 @@ export function renderTurnProcessBar(turn) {
           <span class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5 shrink-0">
             <svg class="w-3.5 h-3.5 text-sky-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
             <span class="whitespace-nowrap">${totalActions} 步操作</span>
+            ${
+              durationStr
+                ? `<span class="text-zinc-500 font-normal">·</span><span class="text-[11px] font-mono text-zinc-400 font-normal">${escapeHtml(
+                    durationStr
+                  )}</span>`
+                : ""
+            }
           </span>
           <div class="flex items-center gap-1 min-w-0 overflow-hidden">
             ${badges.join("")}

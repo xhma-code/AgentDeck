@@ -51,6 +51,7 @@ class UnifiedToolCall:
     risk_level: str = "normal"
     status: str = "DONE"
     file_path: str = ""
+    duration_str: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         from backend.adapters.tool_utils import is_read_only_tool

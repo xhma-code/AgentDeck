@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.adapters.models import resolve_model_context_limit
+from backend.core.logger import logger
 from backend.core.workspace import normalize_project_path
 
 # 单条工具输出截断阈值（4KB 或 100 行）
@@ -306,3 +307,38 @@ def extract_interactive_questions(tool_name: str, raw_args: Any) -> list[dict[st
             }
         )
     return extracted
+
+
+
+def format_duration_seconds(seconds: float) -> str:
+    """统一秒级耗时格式化为可读字符串（<0.1s / 1.2s / 4s / 1m 5s）。"""
+    if seconds <= 0:
+        return ""
+    if seconds < 0.1:
+        return "<0.1s"
+    if seconds < 10:
+        return f"{seconds:.1f}s"
+    if seconds < 60:
+        return f"{int(round(seconds))}s"
+    m = int(seconds // 60)
+    s = int(round(seconds % 60))
+    return f"{m}m {s}s" if s > 0 else f"{m}m"
+
+
+def extract_duration_from_output(raw_output: str) -> str:
+    """从工具输出中提取耗时（例如 run_command 的 Created At 与 Completed At）。"""
+    if not raw_output:
+        return ""
+    m1 = re.search(r"Created At:\s*([^\r\n]+)", raw_output)
+    m2 = re.search(r"Completed At:\s*([^\r\n]+)", raw_output)
+    if m1 and m2:
+        try:
+            from datetime import datetime
+            t1 = datetime.fromisoformat(m1.group(1).strip())
+            t2 = datetime.fromisoformat(m2.group(1).strip())
+            diff = (t2 - t1).total_seconds()
+            if diff > 0:
+                return format_duration_seconds(diff)
+        except (ValueError, TypeError) as err:
+            logger.debug("解析工具输出执行时间戳失败: %s", err)
+    return ""

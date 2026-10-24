@@ -25,6 +25,29 @@ export function cleanFriendlyText(text) {
 }
 const cleanFriendlyTitle = cleanFriendlyText;
 
+export function formatDuration(durationMs) {
+  if (typeof durationMs !== "number" || isNaN(durationMs) || durationMs <= 0) return "";
+  const sec = durationMs / 1000;
+  if (sec < 0.1) return "<0.1s";
+  if (sec < 10) return `${sec.toFixed(1)}s`;
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+export function getDurationStrFromDates(startIso, endIso) {
+  if (!startIso || !endIso) return "";
+  const t1 = new Date(startIso).getTime();
+  const t2 = new Date(endIso).getTime();
+  if (isNaN(t1) || isNaN(t2) || t2 <= t1) return "";
+  return formatDuration(t2 - t1);
+}
+
+export function extractToolDuration(tc) {
+  return (tc && tc.duration_str) || "";
+}
+
 export function formatRelativeTime(isoStr) {
   if (!isoStr) return "";
   const dt = new Date(isoStr);
