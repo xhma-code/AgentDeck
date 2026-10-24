@@ -242,13 +242,11 @@ class AntigravityLanguageServerBridge:
     def send_cascade_message(
         self, cascade_id: str, prompt: str, model_id: str = ""
     ) -> bool:
-        """通过 Connect-RPC 直接向运行中的 Antigravity IDE 会话发送用户指令。"""
-        hub = self.detect_hub()
-        if not hub:
-            return False
-
+        """通过 Connect-RPC 直接向运行中的 Antigravity IDE 会话发送用户指令（全实例智能穿透路由）。"""
+        candidates = self._scan_ls_processes()
         payload: dict[str, Any] = {
             "cascadeId": cascade_id,
+            "messageText": prompt,
             "items": [{"text": prompt}],
         }
         if model_id and model_id != "default":
@@ -265,46 +263,57 @@ class AntigravityLanguageServerBridge:
                 }
             }
 
-        ok, _ = self._raw_post(
-            scheme=hub["scheme"],
-            port=hub["port"],
-            csrf_token=hub["csrf_token"],
-            method="SendUserCascadeMessage",
-            body=payload,
-            timeout=2.5,
-        )
-        if ok:
-            logger.info(
-                f"已通过 Language Server Connect-RPC (port={hub['port']}) 直接向 IDE 会话 {cascade_id[:8]} 发送指令"
-            )
-            return True
+        for pid, token in candidates:
+            ports = self._find_listening_ports(pid)
+            for port in ports:
+                scheme = self._probe_connect_port(port, token)
+                if not scheme:
+                    continue
+                ok, _ = self._raw_post(
+                    scheme=scheme,
+                    port=port,
+                    csrf_token=token,
+                    method="SendUserCascadeMessage",
+                    body=payload,
+                    timeout=3.0,
+                )
+                if ok:
+                    logger.info(
+                        f"已通过 Language Server (PID={pid}, Port={port}) Connect-RPC 直接向 IDE 会话 {cascade_id[:8]} 发送指令"
+                    )
+                    return True
+
         log_structured_error(
             problem=f"通过 Connect-RPC 向 IDE 发送指令失败 (ID={cascade_id[:8]})",
-            cause="Language Server 无响应或未在监听",
-            fix="系统将自动回退至 Fork-to-CLI 安全克隆接力执行。",
+            cause="所有检测到的 Language Server 实例均未持有该会话或无响应",
+            fix="请确认 Antigravity IDE 中当前已打开该项目与对应会话。",
         )
         return False
 
     def cancel_cascade(self, cascade_id: str) -> bool:
-        """通过 Connect-RPC 取消运行中的 Antigravity IDE 会话。"""
-        hub = self.detect_hub()
-        if not hub:
-            return False
-        ok, _ = self._raw_post(
-            scheme=hub["scheme"],
-            port=hub["port"],
-            csrf_token=hub["csrf_token"],
-            method="CancelCascadeInvocation",
-            body={"cascadeId": cascade_id},
-            timeout=2.0,
-        )
-        if not ok:
-            log_structured_error(
-                problem=f"通过 Connect-RPC 取消 IDE 会话失败 (ID={cascade_id[:8]})",
-                cause="Language Server 无响应或已离线",
-                fix="系统将通过本地强杀进程树兜底处理。",
-            )
-        return ok
+        """通过 Connect-RPC 取消运行中的 Antigravity IDE 会话（全实例智能穿透路由）。"""
+        candidates = self._scan_ls_processes()
+        payload = {"cascadeId": cascade_id}
+        for pid, token in candidates:
+            ports = self._find_listening_ports(pid)
+            for port in ports:
+                scheme = self._probe_connect_port(port, token)
+                if not scheme:
+                    continue
+                ok, _ = self._raw_post(
+                    scheme=scheme,
+                    port=port,
+                    csrf_token=token,
+                    method="CancelCascadeInvocation",
+                    body=payload,
+                    timeout=2.0,
+                )
+                if ok:
+                    logger.info(
+                        f"已通过 Language Server (PID={pid}, Port={port}) Connect-RPC 取消 IDE 会话: {cascade_id[:8]}"
+                    )
+                    return True
+        return False
 
     def get_default_model_id(self) -> str:
         """从 LS Connect-RPC 获取当前服务端推荐或覆盖的默认模型 ID。"""

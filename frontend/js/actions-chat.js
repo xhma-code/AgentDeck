@@ -87,9 +87,13 @@ export async function handleSendPrompt(customPrompt = null) {
     });
 
     const data = (res && res.result) ? res.result : (res || {});
+    if (data && data.error) {
+      showToast(data.error, "error");
+      return;
+    }
     // 始终在原会话执行，保持当前选中会话不变
-    if (data && data.status === "sent_to_language_server") {
-      showToast("已下发至桌面 IDE 执行", "info");
+    if (data && (data.status === "sent_to_language_server" || data.status === "sent_via_direct_service")) {
+      showToast("已成功下发至桌面 Agent 执行", "info");
     }
     await loadSessions();
     await loadSessionMessages(state.selectedSessionId, true);

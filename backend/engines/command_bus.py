@@ -318,6 +318,9 @@ class CommandBus:
         await self.orchestrator.abort_session(session_id, reason=reason)
         return {"unified_id": session_id, "status": "aborted", "reason": reason}
 
+    async def _handle_tool_approval(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        return await self._handle_approve_tool(session_id=session_id, payload=payload, **_)
+
     async def _handle_approve_tool(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
         """审批工具调用。"""
         if not session_id:
@@ -366,7 +369,7 @@ class CommandBus:
 
         # 1. 尝试向正在运行的子进程 stdin 管道或 HTTP bridge / LS 注入答案
         delivered = False
-        active_proc = self.orchestrator.active_processes.get(session_id)
+        active_proc = getattr(self.orchestrator, "active_processes", {}).get(session_id)
         if active_proc and active_proc.stdin and not active_proc.stdin.is_closing():
             try:
                 line = (json.dumps(answers, ensure_ascii=False) if isinstance(answers, (dict, list)) else str(answers)) + "\n"

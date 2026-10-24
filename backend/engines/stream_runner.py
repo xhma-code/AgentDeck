@@ -136,6 +136,7 @@ class StreamRunner:
         if target_bump:
             target_bump()
 
+        # 1. 优先尝试原生直发通道（如 Antigravity LS Connect-RPC 或 OpenCode HTTP Bridge）
         if actual_agent_type == "agy_ide" and hasattr(adapter, "send_prompt_via_ls"):
             try:
                 ls_model = chosen_model if (chosen_model and chosen_model != "default") else ""
@@ -160,8 +161,46 @@ class StreamRunner:
                         "via_direct_ls": True,
                         "status": "sent_to_language_server",
                     }
+                else:
+                    return {
+                        "ok": False,
+                        "unified_id": actual_unified_id,
+                        "error": "未能在运行中的 Antigravity IDE 实例中找到该会话，请确保桌面端已打开对应工程。",
+                    }
             except Exception as exc:
                 logger.error("通过 Language Server 下发指令失败: %s", exc)
+                return {
+                    "ok": False,
+                    "unified_id": actual_unified_id,
+                    "error": f"连接 Antigravity IDE 语言服务异常: {exc}",
+                }
+
+        if hasattr(adapter, "try_direct_dispatch"):
+            try:
+                direct_res = adapter.try_direct_dispatch(
+                    raw_session_id=actual_raw_id,
+                    prompt=prompt,
+                    model_name=chosen_model,
+                    workdir=workdir,
+                )
+                if direct_res:
+                    if actual_unified_id in self.active_direct_tasks:
+                        old_task = self.active_direct_tasks[actual_unified_id]
+                        if not old_task.done():
+                            old_task.cancel()
+                    self.active_direct_tasks[actual_unified_id] = asyncio.create_task(
+                        self.watch_direct_turn_progress(
+                            actual_unified_id, actual_agent_type, actual_raw_id
+                        )
+                    )
+                    return {
+                        "ok": True,
+                        "unified_id": actual_unified_id,
+                        "direct_dispatch": direct_res,
+                        "status": "sent_via_direct_service",
+                    }
+            except Exception as exc:
+                logger.debug(f"通过原生直连通道派发异常: {exc}")
 
         ctx = TurnContext(
             unified_id=actual_unified_id,
@@ -197,6 +236,8 @@ class StreamRunner:
             idle_count = 0
             for _ in range(80):
                 await asyncio.sleep(1.5)
+                if hasattr(adapter, "invalidate_cache"):
+                    adapter.invalidate_cache()
                 curr_items, _, _ = adapter.get_session_messages_page(raw_session_id, limit=5)
                 curr_step = curr_items[-1].step_index if curr_items else 0
                 if curr_step > last_step:
