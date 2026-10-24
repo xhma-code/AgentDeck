@@ -264,18 +264,12 @@ class CommandBus:
         return {"unified_id": unified_id, "meta": meta}
 
     async def _handle_delete_session(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
-        """删除会话索引元数据。"""
+        """删除会话：委托 Orchestrator 深模块一站式彻底物理删除并写入墓碑。"""
         target_id = session_id or str(payload.get("unified_id") or "").strip()
         if not target_id:
             raise ValueError("缺少要删除的 session_id")
 
-        self.orchestrator.meta_db.delete_session_meta(target_id)
-        self.orchestrator.bump_version()
-
-        await self.orchestrator.broadcast_event(
-            "SESSION_DELETED",
-            {"unified_id": target_id},
-        )
+        await self.orchestrator.delete_session(target_id)
         return {"unified_id": target_id, "deleted": True}
 
     async def _handle_send_prompt(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:

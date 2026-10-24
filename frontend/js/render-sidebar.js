@@ -385,7 +385,7 @@ export function renderSessionList() {
     }
   }
   for (const s of filtered) {
-    if (!s.is_project) continue;
+    if (!s.is_project || isSubagentSession(s)) continue;
     const info = getProjectInfo(s.project_path);
     if (!info.key) continue;
     if (!projectMap.has(info.key)) {
@@ -425,9 +425,9 @@ export function renderSessionList() {
     }
   }
 
-  // 3. 临时与最近对话（优先展示非项目的散落临时对话 + 最近活跃对话）
-  const looseList = filtered.filter((s) => !s.is_project);
-  const pool = looseList.length > 0 ? looseList : filtered;
+  // 3. 临时与最近对话（优先展示非项目的散落临时对话 + 最近活跃对话，排除子进程）
+  const looseList = filtered.filter((s) => !s.is_project && !isSubagentSession(s));
+  const pool = looseList.length > 0 ? looseList : filtered.filter((s) => !isSubagentSession(s));
   const recentDisplayList = q ? pool : pool.slice(0, 15);
 
   let html = "";

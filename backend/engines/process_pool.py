@@ -350,6 +350,43 @@ class AgentOrchestrator:
         self.bump_version()
         return True
 
+    async def delete_session(self, unified_id: str) -> bool:
+        """深模块彻底删除会话：终止活跃任务、调用适配器物理删除、写入墓碑并广播。"""
+        if not unified_id or ":" not in unified_id:
+            return False
+
+        agent_type, raw_id = unified_id.split(":", 1)
+
+        # 1. 若当前会话活跃执行中，先安全中止
+        if self.is_session_active(unified_id):
+            try:
+                await self.abort_session(unified_id, reason="会话已被用户删除")
+            except Exception as abort_exc:
+                logger.warning(f"中止待删除会话 {unified_id} 异常: {abort_exc}")
+
+        # 2. 委托对应适配器执行底层物理清理（文件与库表）
+        adapter = self.adapters.get(agent_type)
+        if adapter and hasattr(adapter, "delete_session"):
+            try:
+                adapter.delete_session(raw_id)
+            except Exception as adp_exc:
+                logger.warning(f"适配器物理删除会话 {unified_id} 异常: {adp_exc}")
+
+        # 3. 内部数据库写入墓碑软删除标记，彻底隔绝重新抓取
+        self.meta_db.mark_session_deleted(unified_id)
+
+        # 4. 递增状态版本号并失效适配器短效缓存
+        self.bump_version()
+        if adapter and hasattr(adapter, "invalidate_cache"):
+            try:
+                adapter.invalidate_cache()
+            except Exception:
+                pass
+
+        # 5. 全网广播 SESSION_DELETED 事件
+        await self.broadcast_event("SESSION_DELETED", {"unified_id": unified_id})
+        return True
+
     async def send_prompt_to_session(
         self, unified_id: str, prompt: str, project_path: Optional[str] = None,
         execution_mode: Optional[str] = None, model_name: Optional[str] = None,

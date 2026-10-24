@@ -2,9 +2,10 @@ export function initEarlyCachedSessions() {
   try {
     const raw = localStorage.getItem("agentdeck_cached_sessions_v1");
     if (!raw) return null;
-    const cached = JSON.parse(raw);
+    let cached = JSON.parse(raw);
     if (!Array.isArray(cached) || cached.length === 0) return null;
 
+    cached = cached.filter((s) => s && !isSubagentSession(s));
     for (const s of cached) {
       if (s) {
         s.title = cleanFriendlyTitle(s.title);
@@ -184,7 +185,7 @@ export async function loadSessions(silent = false) {
     if (data && data._etag) {
       state.sessionsETag = data._etag;
     }
-    const incomingSessions = data.sessions || [];
+    const incomingSessions = (data.sessions || []).filter((s) => s && !isSubagentSession(s));
     let hasNewerRemoteViewed = false;
     for (const s of incomingSessions) {
       if (s) {

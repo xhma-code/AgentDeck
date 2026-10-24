@@ -240,11 +240,9 @@ async def delete_session(
     request: Request,
     _auth: bool = Depends(verify_request_auth),
 ) -> dict[str, Any]:
-    """删除指定会话在数据库中的索引元数据。"""
-    meta_db = get_meta_db(request)
+    """彻底删除指定会话（终止运行、清理底层存储、登记墓碑并全端广播）。"""
     orchestrator = get_orchestrator(request)
-    meta_db.delete_session_meta(unified_id)
-    orchestrator.bump_version()
+    await orchestrator.delete_session(unified_id)
     return {"ok": True, "deleted": unified_id}
 
 

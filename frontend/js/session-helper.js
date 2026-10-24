@@ -54,6 +54,7 @@ export function isSubagentSession(s) {
   if (s.parent_unified_id) return true;
   const title = String(s.title || "").toLowerCase();
   if (title.includes("(subagent)") || title.includes("subagent)")) return true;
+  if (title.startsWith("subagent ") || title === "subagent") return true;
   return false;
 }
 

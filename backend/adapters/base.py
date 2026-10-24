@@ -212,6 +212,10 @@ class BaseAgentAdapter(ABC):
         """将新标题回写同步至底层 Agent 的原生存储或数据库。"""
         return False
 
+    def delete_session(self, raw_session_id: str) -> bool:
+        """尝试从原生持久化存储中物理删除该会话（包括数据库行或日志文件）。默认返回 False。"""
+        return False
+
     def respond_permission(
         self,
         raw_session_id: str,
