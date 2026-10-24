@@ -4,7 +4,7 @@
 
 import { state } from "./state.js";
 import { apiFetch, showToast } from "./api.js";
-import { loadSessions, loadSessionMessages } from "./data.js";
+import { loadSessions } from "./data.js";
 import { renderInteractiveQuestionsCard } from "./render-interactive-questions.js";
 import { handleSendPrompt } from "./actions-chat.js";
 
@@ -88,104 +88,112 @@ export async function handleTogglePin(unifiedId, currentPinned, ev) {
   }
 }
 
-export const questionActions = {
-  toggleQuestionOption(turnKey, qi, opt, isMulti) {
-    const qKey = `${turnKey}_q${qi}`;
-    if (!state.questionSelections[qKey]) {
-      state.questionSelections[qKey] = [];
-    }
-    const cur = state.questionSelections[qKey];
-    if (isMulti) {
-      if (cur.includes(opt)) {
-        state.questionSelections[qKey] = cur.filter((x) => x !== opt);
-      } else {
-        state.questionSelections[qKey] = [...cur, opt];
-      }
+export function toggleQuestionOption(turnKey, qi, opt, isMulti) {
+  const qKey = `${turnKey}_q${qi}`;
+  if (!state.questionSelections[qKey]) {
+    state.questionSelections[qKey] = [];
+  }
+  const cur = state.questionSelections[qKey];
+  if (isMulti) {
+    if (cur.includes(opt)) {
+      state.questionSelections[qKey] = cur.filter((x) => x !== opt);
     } else {
-      state.questionSelections[qKey] = [opt];
+      state.questionSelections[qKey] = [...cur, opt];
     }
+  } else {
+    state.questionSelections[qKey] = [opt];
+  }
 
-    const cardEl = document.getElementById(`interactive-questions-card-${turnKey}`);
-    const turn = state.turnsMap[turnKey];
-    if (cardEl && turn) {
-      cardEl.outerHTML = renderInteractiveQuestionsCard(turn, true);
-    }
-  },
-  onQuestionWriteInInput(turnKey, qi, inputEl) {
+  const cardEl = document.getElementById(`interactive-questions-card-${turnKey}`);
+  const turn = state.turnsMap[turnKey];
+  if (cardEl && turn) {
+    cardEl.outerHTML = renderInteractiveQuestionsCard(turn, true);
+  }
+}
+
+export function onQuestionWriteInInput(turnKey, qi, inputEl) {
+  const qKey = `${turnKey}_q${qi}`;
+  state.questionWriteIns[qKey] = inputEl.value;
+}
+
+export async function submitQuestionAnswers(turnKey) {
+  const turn = state.turnsMap[turnKey];
+  if (!turn || !turn.questions || turn.questions.length === 0) return;
+
+  const parts = [];
+  turn.questions.forEach((q, qi) => {
     const qKey = `${turnKey}_q${qi}`;
-    state.questionWriteIns[qKey] = inputEl.value;
-  },
-  async submitQuestionAnswers(turnKey) {
-    const turn = state.turnsMap[turnKey];
-    if (!turn || !turn.questions || turn.questions.length === 0) return;
+    const chosen = state.questionSelections[qKey] || [];
+    const writeIn = (state.questionWriteIns[qKey] || "").trim();
 
-    const parts = [];
-    turn.questions.forEach((q, qi) => {
-      const qKey = `${turnKey}_q${qi}`;
-      const chosen = state.questionSelections[qKey] || [];
-      const writeIn = (state.questionWriteIns[qKey] || "").trim();
+    const combined = [...chosen];
+    if (writeIn) {
+      combined.push(`补充: ${writeIn}`);
+    }
 
-      const combined = [...chosen];
-      if (writeIn) {
-        combined.push(`补充: ${writeIn}`);
+    if (combined.length > 0) {
+      if (turn.questions.length === 1) {
+        parts.push(combined.join("; "));
+      } else {
+        parts.push(`问题「${q.question}」选择: ${combined.join("; ")}`);
       }
-
-      if (combined.length > 0) {
-        if (turn.questions.length === 1) {
-          parts.push(combined.join("; "));
-        } else {
-          parts.push(`问题「${q.question}」选择: ${combined.join("; ")}`);
-        }
-      }
-    });
-
-    if (parts.length === 0) {
-      showToast("请至少选择一项或输入补充回答", "info");
-      return;
     }
+  });
 
-    const finalAnswer = parts.join("\n");
-    if (!state.persistedQuestionDecisions) {
-      state.persistedQuestionDecisions = {};
+  if (parts.length === 0) {
+    showToast("请至少选择一项或输入补充回答", "info");
+    return;
+  }
+
+  const finalAnswer = parts.join("\n");
+  if (!state.persistedQuestionDecisions) {
+    state.persistedQuestionDecisions = {};
+  }
+  state.persistedQuestionDecisions[turnKey] = {
+    answeredAt: Date.now(),
+    answerText: finalAnswer,
+  };
+
+  const cardEl = document.getElementById(`interactive-questions-card-${turnKey}`);
+  if (cardEl) {
+    cardEl.outerHTML = renderInteractiveQuestionsCard(turn, false);
+  }
+
+  await handleSendPrompt(finalAnswer);
+}
+
+export async function skipQuestionAnswers(turnKey) {
+  const turn = state.turnsMap[turnKey];
+  if (!turn || !turn.questions || turn.questions.length === 0) return;
+
+  const parts = [];
+  turn.questions.forEach((q) => {
+    const firstOpt = q.options && q.options.length > 0 ? q.options[0] : "";
+    if (firstOpt) {
+      parts.push(firstOpt);
     }
-    state.persistedQuestionDecisions[turnKey] = {
-      answeredAt: Date.now(),
-      answerText: finalAnswer,
-    };
+  });
 
-    const cardEl = document.getElementById(`interactive-questions-card-${turnKey}`);
-    if (cardEl) {
-      cardEl.outerHTML = renderInteractiveQuestionsCard(turn, false);
-    }
+  const fallbackAns = parts.length > 0 ? parts.join("; ") : "按默认方案执行";
+  if (!state.persistedQuestionDecisions) {
+    state.persistedQuestionDecisions = {};
+  }
+  state.persistedQuestionDecisions[turnKey] = {
+    answeredAt: Date.now(),
+    answerText: fallbackAns,
+  };
 
-    await handleSendPrompt(finalAnswer);
-  },
-  async skipQuestionAnswers(turnKey) {
-    const turn = state.turnsMap[turnKey];
-    if (!turn || !turn.questions || turn.questions.length === 0) return;
+  const cardEl = document.getElementById(`interactive-questions-card-${turnKey}`);
+  if (cardEl) {
+    cardEl.outerHTML = renderInteractiveQuestionsCard(turn, false);
+  }
 
-    const parts = [];
-    turn.questions.forEach((q) => {
-      const firstOpt = q.options && q.options.length > 0 ? q.options[0] : "";
-      if (firstOpt) {
-        parts.push(firstOpt);
-      }
-    });
+  await handleSendPrompt(fallbackAns);
+}
 
-    const fallbackAns = parts.length > 0 ? parts.join("; ") : "按默认方案执行";
-    if (!state.persistedQuestionDecisions) {
-      state.persistedQuestionDecisions = {};
-    }
-    state.persistedQuestionDecisions[turnKey] = {
-      answeredAt: Date.now(),
-      answerText: fallbackAns,
-    };
-
-    const cardEl = document.getElementById(`interactive-questions-card-${turnKey}`);
-    if (cardEl) {
-      cardEl.outerHTML = renderInteractiveQuestionsCard(turn, false);
-    }
-
-    await handleSendPrompt(fallbackAns);
-  },
+export const questionActions = {
+  toggleQuestionOption,
+  onQuestionWriteInInput,
+  submitQuestionAnswers,
+  skipQuestionAnswers,
 };

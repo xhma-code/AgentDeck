@@ -40,6 +40,10 @@ class StreamRunner:
         broadcast_event_fn: Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]],
         request_approval_fn: Callable[..., Coroutine[Any, Any, dict[str, Any]]],
         abort_session_fn: Callable[..., Coroutine[Any, Any, None]],
+        meta_db: Optional[MetaDatabase] = None,
+        normalize_mode_fn: Optional[Callable[[str, Optional[str]], str]] = None,
+        resolve_default_model_fn: Optional[Callable[[str], str]] = None,
+        bump_version_fn: Optional[Callable[[], None]] = None,
     ) -> None:
         self.adapters = adapters
         self.active_processes = active_processes
@@ -49,6 +53,10 @@ class StreamRunner:
         self.broadcast_event = broadcast_event_fn
         self.request_mobile_tool_approval = request_approval_fn
         self.abort_session = abort_session_fn
+        self.meta_db = meta_db
+        self.normalize_mode_fn = normalize_mode_fn
+        self.resolve_default_model_fn = resolve_default_model_fn
+        self.bump_version_fn = bump_version_fn
 
     def build_cli_command(
         self,
@@ -75,7 +83,7 @@ class StreamRunner:
         self,
         unified_id: str,
         prompt: str,
-        meta_db: MetaDatabase,
+        meta_db: Optional[MetaDatabase] = None,
         project_path: Optional[str] = None,
         execution_mode: Optional[str] = None,
         model_name: Optional[str] = None,
@@ -86,6 +94,10 @@ class StreamRunner:
         bump_version_fn: Optional[Callable[[], None]] = None,
         allow_real_process_in_test: bool = False,
     ) -> dict[str, Any]:
+        target_db = meta_db or self.meta_db
+        target_norm = normalize_mode_fn or self.normalize_mode_fn
+        target_res = resolve_default_model_fn or self.resolve_default_model_fn
+        target_bump = bump_version_fn or self.bump_version_fn
         if ":" not in unified_id:
             raise ValueError(f"无效的 unified_id: {unified_id}")
         agent_type, raw_id = unified_id.split(":", 1)
@@ -98,7 +110,7 @@ class StreamRunner:
             forked = fork_ide_session_to_cli(
                 ide_root=getattr(adapter, "root_dir", Path(os.path.expanduser("~/.gemini/antigravity"))),
                 ide_raw_session_id=raw_id,
-                meta_db=meta_db,
+                meta_db=target_db,
             )
             if forked.get("ok"):
                 actual_unified_id, actual_agent_type, actual_raw_id = (
@@ -108,12 +120,12 @@ class StreamRunner:
                 )
                 adapter = self.adapters.get(actual_agent_type)
 
-        norm_mode = normalize_mode_fn(actual_agent_type, execution_mode) if normalize_mode_fn else "ask"
+        norm_mode = target_norm(actual_agent_type, execution_mode) if target_norm else "ask"
         workdir = project_path or str(PROJECT_ROOT)
-        def_model = resolve_default_model_fn(actual_agent_type) if resolve_default_model_fn else ""
+        def_model = target_res(actual_agent_type) if target_res else ""
         chosen_model = model_name or def_model
 
-        meta_db.upsert_session_meta(
+        target_db.upsert_session_meta(
             unified_id=actual_unified_id,
             agent_type=actual_agent_type,
             raw_session_id=actual_raw_id,
@@ -121,8 +133,8 @@ class StreamRunner:
             execution_mode=norm_mode,
             model_name=chosen_model,
         )
-        if bump_version_fn:
-            bump_version_fn()
+        if target_bump:
+            target_bump()
 
         if actual_agent_type == "agy_ide" and hasattr(adapter, "send_prompt_via_ls"):
             try:

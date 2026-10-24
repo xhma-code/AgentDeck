@@ -4,7 +4,11 @@
 
 import { state } from "./state.js";
 import { apiFetch, showToast } from "./api.js";
-import { requestNotificationPermission } from "./utils.js";
+import {
+  requestNotificationPermission,
+  copyTextToClipboard,
+  applyButtonCheckmark,
+} from "./utils.js";
 import { loadSessions, loadSessionMessages } from "./data.js";
 import {
   renderSessionList,
@@ -12,6 +16,7 @@ import {
   renderMessagesList,
   renderLiveStreamOverlay,
   updatePromptActionBtnState,
+  renderSlashMenu,
 } from "./render.js";
 import { openNewSessionModal } from "./modals.js";
 
@@ -156,3 +161,76 @@ export async function handleModelChange(newModel) {
     showToast("模型切换失败", "error");
   }
 }
+
+export async function copyCodeBlock(codeId, btnEl) {
+  const pre = document.getElementById(`code-pre-${codeId}`);
+  if (!pre) return;
+  const text = pre.innerText || pre.textContent || "";
+  const ok = await copyTextToClipboard(text);
+  if (ok) {
+    if (btnEl) applyButtonCheckmark(btnEl, { iconSize: "w-3 h-3" });
+    showToast("代码已复制", "success");
+  } else {
+    showToast("复制失败，请手动选择复制", "error");
+  }
+}
+
+export async function copyThinkingText(detailId, btnEl, e) {
+  if (e) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+  const entry = state.lazyDetailsStore[detailId];
+  const text = entry ? entry.raw : "";
+  if (!text) {
+    showToast("思考内容为空", "info");
+    return;
+  }
+  const ok = await copyTextToClipboard(text);
+  if (ok) {
+    if (btnEl) applyButtonCheckmark(btnEl, { iconSize: "w-3 h-3" });
+    showToast("已复制思考过程", "success");
+  } else {
+    showToast("复制失败，请手动选择复制", "error");
+  }
+}
+
+export async function loadFullOutput(unifiedId, stepIndex, btnEl, ev) {
+  if (ev) ev.stopPropagation();
+  if (!unifiedId) return;
+  if (btnEl) btnEl.textContent = "加载中...";
+  try {
+    const res = await apiFetch(
+      `/api/v1/sessions/${encodeURIComponent(unifiedId)}/steps/${stepIndex}/full`
+    );
+    if (res.full_output) {
+      state.fullOutputStore[`${unifiedId}_${stepIndex}`] = res.full_output;
+      const msg = state.messages.find((m) => m.step_index === stepIndex);
+      if (msg && Array.isArray(msg.tool_calls)) {
+        msg.tool_calls.forEach((tc) => {
+          tc.output = res.full_output;
+          tc.is_truncated = false;
+        });
+      }
+    }
+    renderMessagesList();
+  } catch (_) {
+    if (btnEl) btnEl.textContent = "重试加载";
+  }
+}
+
+export function insertSlashCommand(cmd) {
+  const inputEl = document.getElementById("prompt-input");
+  if (!inputEl) return;
+  inputEl.value = `${cmd} `;
+  inputEl.focus();
+  state.slashMenuOpen = false;
+  renderSlashMenu();
+}
+
+export function executeSlashDirectly(cmd) {
+  state.slashMenuOpen = false;
+  renderSlashMenu();
+  handleSendPrompt(cmd);
+}
+

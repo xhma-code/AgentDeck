@@ -19,7 +19,6 @@ import {
   renderMessagesList,
   renderQrModalContent,
   startQrExpireCountdown,
-  renderSlashMenu,
   highlightSlashItem,
   scrollToBottom,
 } from "./render.js";
@@ -28,11 +27,6 @@ import {
   confirmCreateNewSession,
   updateDrawerVisibility,
 } from "./modals.js";
-import {
-  escapeHtml,
-  copyTextToClipboard,
-  applyButtonCheckmark,
-} from "./utils.js";
 import { renderUnifiedDiffHtml } from "./diff-viewer.js";
 import { renderTurnProcessBar } from "./render-step-cards.js";
 
@@ -42,15 +36,40 @@ import {
   handleAbortCurrentSession,
   handleModeChange,
   handleModelChange,
+  copyCodeBlock,
+  copyThinkingText,
+  loadFullOutput,
+  insertSlashCommand,
+  executeSlashDirectly,
 } from "./actions-chat.js";
 import {
   submitApprovalDecision,
   startHoldToApprove,
   cancelHoldToApprove,
   handleTogglePin,
-  questionActions,
+  toggleQuestionOption,
+  onQuestionWriteInInput,
+  submitQuestionAnswers,
+  skipQuestionAnswers,
 } from "./actions-approval.js";
-import { modalActions } from "./actions-modals.js";
+import {
+  closePairingGuideModal,
+  submitPairCodeManual,
+  closeQrModal,
+  copyQrUrl,
+  openFilePreview,
+  closeDocModal,
+  openDiffFullscreen,
+  openDiffFullscreenById,
+  copyCurrentDocContent,
+  openTokenUsageModal,
+  closeTokenUsageModal,
+  openAgentsHealthModal,
+  closeAgentsHealthModal,
+  openGitStatusModal,
+  toggleGitFileDiff,
+  viewFullGitDiff,
+} from "./actions-modals.js";
 
 export {
   handleSendPrompt,
@@ -64,10 +83,31 @@ export {
 };
 
 window.appActions = {
-  // 混入弹窗与问答动作集
-  ...modalActions,
-  ...questionActions,
+  // 弹窗动作
+  closePairingGuideModal,
+  submitPairCodeManual,
+  closeQrModal,
+  copyQrUrl,
+  openFilePreview,
+  closeDocModal,
+  openDiffFullscreen,
+  openDiffFullscreenById,
+  copyCurrentDocContent,
+  openTokenUsageModal,
+  closeTokenUsageModal,
+  openAgentsHealthModal,
+  closeAgentsHealthModal,
+  openGitStatusModal,
+  toggleGitFileDiff,
+  viewFullGitDiff,
 
+  // 问答动作
+  toggleQuestionOption,
+  onQuestionWriteInInput,
+  submitQuestionAnswers,
+  skipQuestionAnswers,
+
+  // 基础会话交互
   handleStatusBtnClick,
   selectSession,
   setFilter(filter) {
@@ -292,37 +332,8 @@ window.appActions = {
     renderMessagesList();
     if (container) container.scrollTop = prevTop;
   },
-  async copyCodeBlock(codeId, btnEl) {
-    const pre = document.getElementById(`code-pre-${codeId}`);
-    if (!pre) return;
-    const text = pre.innerText || pre.textContent || "";
-    const ok = await copyTextToClipboard(text);
-    if (ok) {
-      if (btnEl) applyButtonCheckmark(btnEl, { iconSize: "w-3 h-3" });
-      showToast("代码已复制", "success");
-    } else {
-      showToast("复制失败，请手动选择复制", "error");
-    }
-  },
-  async copyThinkingText(detailId, btnEl, e) {
-    if (e) {
-      e.stopPropagation();
-      e.preventDefault();
-    }
-    const entry = state.lazyDetailsStore[detailId];
-    const text = entry ? entry.raw : "";
-    if (!text) {
-      showToast("思考内容为空", "info");
-      return;
-    }
-    const ok = await copyTextToClipboard(text);
-    if (ok) {
-      if (btnEl) applyButtonCheckmark(btnEl, { iconSize: "w-3 h-3" });
-      showToast("已复制思考过程", "success");
-    } else {
-      showToast("复制失败，请手动选择复制", "error");
-    }
-  },
+  copyCodeBlock,
+  copyThinkingText,
   collapseCurrentExpandedSteps() {
     state.expandedTurns = {};
     state.turnThinkingExpanded = {};
@@ -342,40 +353,7 @@ window.appActions = {
     state.autoScrollLocked = false;
     scrollToBottom();
   },
-  async loadFullOutput(unifiedId, stepIndex, btnEl, ev) {
-    if (ev) ev.stopPropagation();
-    if (!unifiedId) return;
-    if (btnEl) btnEl.textContent = "加载中...";
-    try {
-      const res = await apiFetch(
-        `/api/v1/sessions/${encodeURIComponent(unifiedId)}/steps/${stepIndex}/full`
-      );
-      if (res.full_output) {
-        state.fullOutputStore[`${unifiedId}_${stepIndex}`] = res.full_output;
-        const msg = state.messages.find((m) => m.step_index === stepIndex);
-        if (msg && Array.isArray(msg.tool_calls)) {
-          msg.tool_calls.forEach((tc) => {
-            tc.output = res.full_output;
-            tc.is_truncated = false;
-          });
-        }
-      }
-      renderMessagesList();
-    } catch (_) {
-      if (btnEl) btnEl.textContent = "重试加载";
-    }
-  },
-  insertSlashCommand(cmd) {
-    const inputEl = document.getElementById("prompt-input");
-    if (!inputEl) return;
-    inputEl.value = `${cmd} `;
-    inputEl.focus();
-    state.slashMenuOpen = false;
-    renderSlashMenu();
-  },
-  executeSlashDirectly(cmd) {
-    state.slashMenuOpen = false;
-    renderSlashMenu();
-    handleSendPrompt(cmd);
-  },
+  loadFullOutput,
+  insertSlashCommand,
+  executeSlashDirectly,
 };

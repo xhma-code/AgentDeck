@@ -97,6 +97,10 @@ class AgentOrchestrator:
             broadcast_event_fn=self.broadcast_event,
             request_approval_fn=self.request_mobile_tool_approval,
             abort_session_fn=self.abort_session,
+            meta_db=self.meta_db,
+            normalize_mode_fn=self.normalize_execution_mode,
+            resolve_default_model_fn=self._resolve_default_model,
+            bump_version_fn=self.bump_version,
         )
         self._idle_ttl_task: Optional[asyncio.Task[None]] = None
         self._cache_store: dict[str, tuple[float, Any]] = {}
@@ -345,11 +349,9 @@ class AgentOrchestrator:
         auto_fork_ide: bool = True, approved_tools: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         return await self._stream_runner.dispatch_prompt(
-            unified_id=unified_id, prompt=prompt, meta_db=self.meta_db, project_path=project_path,
+            unified_id=unified_id, prompt=prompt, project_path=project_path,
             execution_mode=execution_mode, model_name=model_name, auto_fork_ide=auto_fork_ide,
-            approved_tools=approved_tools, normalize_mode_fn=self.normalize_execution_mode,
-            resolve_default_model_fn=self._resolve_default_model, bump_version_fn=self.bump_version,
-            allow_real_process_in_test=getattr(self, "_allow_real_process_in_test", False),
+            approved_tools=approved_tools, allow_real_process_in_test=getattr(self, "_allow_real_process_in_test", False),
         )
 
     def _build_cli_command(self, agent_type: str, raw_session_id: str, prompt: str, execution_mode: str, model_name: str = "", approved_tools: Optional[list[str]] = None) -> list[str]:
