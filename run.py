@@ -21,6 +21,7 @@ import uvicorn
 
 from backend.app import create_app
 from backend.core.logger import log_structured_error, logger
+from backend.core.network import is_local_port_listening
 from backend.core.tailscale_auth import render_terminal_qr_box
 
 
@@ -99,6 +100,10 @@ async def serve_multi_host(app, hosts: list[str], port: int) -> None:
 
 def free_port_if_occupied(port: int) -> None:
     """启动前检测并清理占用指定端口的本项目残留旧进程；若占用进程非 AgentDeck，则报错退出防止误杀。"""
+    # 0. 极速 Socket 预检（<1ms）：若端口未处于监听状态，直接极速返回，杜绝 psutil/powershell 全系统网络扫描开销
+    if not is_local_port_listening(port, timeout=0.03):
+        return
+
     current_pid = os.getpid()
     project_root_str = str(Path(__file__).resolve().parent).lower()
     occupied_pids: list[int] = []

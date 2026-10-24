@@ -46,6 +46,9 @@ export async function selectSession(unifiedId) {
   markSessionViewed(unifiedId);
 
   state.selectedSessionId = unifiedId;
+  try {
+    localStorage.setItem("agentdeck_last_selected_session", unifiedId);
+  } catch (_) {}
   if (prevId !== unifiedId) {
     state.codeBlockStore = {};
     state.expandedCodeBlocks = {};

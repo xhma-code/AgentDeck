@@ -130,17 +130,17 @@ export function renderMarkdownHtml(rawMd, scopeKey = "md") {
 
     const cardHtml = `
       <div class="md-code-card">
-        <div class="md-code-header">
-          <div class="flex items-center gap-2">
-            <span class="text-sky-400 font-semibold uppercase">${escapeHtml(displayLang)}</span>
-            <span class="text-[10px] text-zinc-500">${lineCount} 行</span>
+        <div class="md-code-header flex items-center justify-between gap-2 flex-nowrap">
+          <div class="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+            <span class="text-sky-400 font-semibold uppercase truncate">${escapeHtml(displayLang)}</span>
+            <span class="text-[10px] text-zinc-500 shrink-0">${lineCount} 行</span>
           </div>
           <button type="button" onclick="window.appActions.copyCodeBlock('${escapeJsSingleQuote(
             codeId
           )}', this)"
-            class="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-zinc-100 text-[11px] transition active:scale-95 flex items-center gap-1" title="复制代码">
-            <svg class="w-3 h-3 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-            <span>复制</span>
+            class="min-h-[36px] sm:min-h-0 sm:h-6 px-2.5 sm:px-2 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-zinc-100 text-[11px] transition-colors shrink-0 flex items-center justify-center gap-1 select-none min-w-[50px] cursor-pointer touch-manipulation" title="复制代码">
+            <svg class="w-3 h-3 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <span class="leading-none">复制</span>
           </button>
         </div>
         <div id="code-body-${escapeHtml(codeId)}" class="md-code-body ${

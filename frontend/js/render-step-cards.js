@@ -22,36 +22,6 @@ function hasMeaningfulOutput(output) {
   return stripped.length > 0;
 }
 
-function getTurnHumanActionSummary(turn) {
-  const { processRecords, editedFiles } = turn;
-  let hasRead = false;
-  let hasCommand = false;
-  let hasEdit = (editedFiles && editedFiles.length > 0);
-
-  for (const rec of processRecords || []) {
-    for (const tc of rec.tool_calls || []) {
-      if (isReadOnlyTool(tc)) {
-        hasRead = true;
-      } else if (tc.diff_text || /edit|write|replace|create/i.test(tc.name || "")) {
-        hasEdit = true;
-      } else {
-        hasCommand = true;
-      }
-    }
-  }
-
-  if (hasEdit && hasCommand) return "修改代码并执行命令";
-  if (hasRead && hasEdit) return "查阅代码并修改文件";
-  if (hasRead && hasCommand) return "查阅代码并执行命令";
-  if (hasEdit) {
-    return editedFiles.length === 1 ? `修改 ${editedFiles[0]}` : `修改 ${editedFiles.length} 个文件`;
-  }
-  if (hasCommand) return "执行命令行操作";
-  if (hasRead) return "查阅相关代码与文件";
-  return "处理会话任务";
-}
-
-
 export function renderTurnProcessBar(turn) {
   const {
     turnKey,
@@ -80,16 +50,22 @@ export function renderTurnProcessBar(turn) {
       </span>`
     );
   }
+  const isEditsOnly = Boolean(state.turnFilterEdits[turnKey]);
   if (editedFiles.length > 0) {
     const fileHint =
       editedFiles.length === 1
         ? `改动 ${editedFiles[0]}`
         : `改动 ${editedFiles.length} 文件`;
     badges.push(
-      `<span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium shrink-0 flex items-center gap-1">
+      `<button type="button" onclick="window.appActions.toggleTurnEditsOnly('${escapeJsSingleQuote(turnKey)}', event)"
+        class="px-1.5 py-0.5 rounded ${
+          isEditsOnly
+            ? "bg-emerald-500/25 text-emerald-200 border border-emerald-400 ring-1 ring-emerald-500/30"
+            : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
+        } text-[10px] font-medium shrink-0 flex items-center gap-1 transition active:scale-95 min-h-[36px] sm:min-h-0 px-2 sm:px-1.5 py-1 sm:py-0.5 cursor-pointer touch-manipulation" title="点击仅显示改动步骤">
         <svg class="w-3 h-3 text-emerald-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
         <span class="truncate max-w-[105px] sm:max-w-[180px]">${escapeHtml(fileHint)}</span>
-      </span>`
+      </button>`
     );
   }
   if (toolCount > 0) {
@@ -101,12 +77,32 @@ export function renderTurnProcessBar(turn) {
     );
   }
 
+  const recordsToRender = isEditsOnly
+    ? processRecords.filter((rec) =>
+        (rec.tool_calls || []).some((tc) =>
+          Boolean(tc.diff_text || /edit|write|replace|create/i.test(tc.name || ""))
+        )
+      )
+    : processRecords;
+
+  const filterNoticeHtml = isEditsOnly
+    ? `<div class="px-2 py-1 rounded-md bg-emerald-950/40 border border-emerald-500/25 flex items-center justify-between text-[11px] text-emerald-300">
+        <span class="flex items-center gap-1.5 font-medium">
+          <svg class="w-3.5 h-3.5 text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          <span>仅显示代码改动步骤 (${recordsToRender.length} 项)</span>
+        </span>
+        <button type="button" onclick="window.appActions.toggleTurnEditsOnly('${escapeJsSingleQuote(turnKey)}', event)"
+          class="text-[10px] text-emerald-400 hover:text-emerald-200 underline font-normal">
+          显示全部步骤
+        </button>
+      </div>`
+    : "";
 
   const detailsHtml = isExpanded
     ? `<div class="mt-2 pt-2 border-t border-zinc-800/80 space-y-2">
-        ${processRecords
+        ${filterNoticeHtml}
+        ${recordsToRender
           .map((rec) => {
-
 
             const noteHtml = rec.intermediateNote
               ? `
@@ -124,7 +120,11 @@ export function renderTurnProcessBar(turn) {
             const readTools = [];
             const actionTools = [];
             allTools.forEach((tc) => {
-              if (isReadOnlyTool(tc)) {
+              if (isEditsOnly) {
+                if (tc.diff_text || /edit|write|replace|create/i.test(tc.name || "")) {
+                  actionTools.push(tc);
+                }
+              } else if (isReadOnlyTool(tc)) {
                 readTools.push(tc);
               } else {
                 actionTools.push(tc);
@@ -202,14 +202,14 @@ export function renderTurnProcessBar(turn) {
                 return `
                   <div class="${cardClass}">
                     <div class="flex items-center justify-between gap-2">
-                      <div class="flex items-center gap-1.5 min-w-0">
+                      <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-x-auto no-scrollbar py-0.5">
                         <span class="px-1.5 py-0.5 rounded ${badgeBg} font-mono font-semibold text-[10px] flex items-center gap-1 shrink-0">
                           ${badgeSvg}
                           <span>${escapeHtml(tc.name)}</span>
                         </span>
                         <span class="font-mono text-[11px] ${
                           isEditTool ? "text-zinc-100 font-semibold" : "text-zinc-300"
-                        } truncate" title="${escapeHtml(tc.file_path || tc.args_summary)}">
+                        } whitespace-nowrap" title="${escapeHtml(tc.file_path || tc.args_summary)}">
                           ${escapeHtml(targetText)}
                         </span>
                       </div>
@@ -303,7 +303,7 @@ export function renderTurnProcessBar(turn) {
                                 tc.is_truncated
                                   ? `<button onclick="window.appActions.loadFullOutput('${escapeHtml(
                                       state.selectedSessionId
-                                    )}', ${rec.step_index}, this, event)" class="min-h-[34px] sm:min-h-[28px] px-2.5 py-1 rounded-md bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-sky-500/30 text-[10px] shrink-0">加载完整输出</button>`
+                                    )}', ${rec.step_index}, this, event)" class="min-h-[36px] sm:min-h-0 px-2.5 sm:px-1.5 py-1 sm:py-0.5 rounded bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 border border-sky-500/30 text-[10px] sm:text-[9px] shrink-0 transition active:scale-95 flex items-center justify-center cursor-pointer touch-manipulation">加载完整输出</button>`
                                   : ""
                               }
                             </summary>
@@ -341,18 +341,18 @@ export function renderTurnProcessBar(turn) {
         <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
           <span class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5 shrink-0">
             <svg class="w-3.5 h-3.5 text-sky-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-            <span class="whitespace-nowrap font-medium text-zinc-200">${escapeHtml(getTurnHumanActionSummary(turn))}</span>
-            ${
-              durationStr
-                ? `<span class="text-zinc-500 font-normal">·</span><span class="text-[11px] font-mono text-zinc-400 font-normal">${escapeHtml(
-                    durationStr
-                  )}</span>`
-                : ""
-            }
+            <span class="whitespace-nowrap">${totalActions} 个执行步骤</span>
           </span>
           <div class="flex items-center gap-1 min-w-0 overflow-hidden">
             ${badges.join("")}
           </div>
+          ${
+            durationStr
+              ? `<span class="text-zinc-500 font-normal shrink-0">·</span><span class="text-[11px] font-mono text-zinc-400 font-normal shrink-0">${escapeHtml(
+                  durationStr
+                )}</span>`
+              : ""
+          }
         </div>
         <div class="text-[11px] text-sky-400 hover:text-sky-300 font-medium shrink-0 px-2 py-1 -mr-1 rounded-md hover:bg-zinc-800/50 transition flex items-center gap-0.5">
           <span>${isExpanded ? "收起 ▴" : "展开 ▾"}</span>

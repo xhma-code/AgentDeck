@@ -62,7 +62,16 @@ export function renderCurrentSessionHeader() {
   const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
   if (!sess) {
     if (titleEl) {
-      titleEl.innerHTML = `<span class="text-xs sm:text-sm font-medium text-zinc-400 truncate">未选择对话</span>`;
+      if (!state.isAppInitialized && (!state.sessions || state.sessions.length === 0)) {
+        titleEl.innerHTML = `
+          <div class="flex items-center gap-2 animate-pulse py-1">
+            <div class="w-2 h-2 rounded-full bg-zinc-700"></div>
+            <div class="h-4 bg-zinc-800/80 rounded w-28 sm:w-40"></div>
+          </div>
+        `;
+      } else {
+        titleEl.innerHTML = `<span class="text-xs sm:text-sm font-medium text-zinc-400 truncate">未选择对话</span>`;
+      }
     }
     if (subtitleEl) subtitleEl.textContent = "";
     if (headerLogo) headerLogo.classList.remove("has-session-hidden-mobile");

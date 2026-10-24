@@ -1,3 +1,48 @@
+export function initEarlyCachedSessions() {
+  try {
+    const raw = localStorage.getItem("agentdeck_cached_sessions_v1");
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    if (!Array.isArray(cached) || cached.length === 0) return null;
+
+    for (const s of cached) {
+      if (s) {
+        s.title = cleanFriendlyTitle(s.title);
+        s.preview = cleanFriendlyText(s.preview);
+      }
+    }
+    state.allSessions = cached;
+    state.sessions = cached;
+
+    // 优先从 Hash / 本地记忆恢复已选会话
+    const hashId = getSessionIdFromHash();
+    const lastSelectedId = localStorage.getItem("agentdeck_last_selected_session");
+    let target = null;
+    if (hashId) {
+      target = cached.find((s) => s.unified_id === hashId);
+    }
+    if (!target && lastSelectedId) {
+      target = cached.find((s) => s.unified_id === lastSelectedId);
+    }
+    if (!target && cached.length > 0) {
+      target = pickDefaultSession(cached);
+    }
+
+    if (target) {
+      state.selectedSessionId = target.unified_id;
+      if (target.project_path) {
+        const pKey = getProjectInfo(target.project_path)?.key;
+        if (pKey) state.expandedProjects[pKey] = true;
+      }
+      return target.unified_id;
+    }
+    return true;
+  } catch (err) {
+    console.warn("读取本地历史会话缓存失败:", err);
+    return null;
+  }
+}
+
 /**
  * AgentDeck 数据加载、会话调度与版本感知
  */
@@ -174,6 +219,12 @@ export async function loadSessions(silent = false) {
 
     state.allSessions = incomingSessions;
     state.sessions = incomingSessions;
+    try {
+      localStorage.setItem(
+        "agentdeck_cached_sessions_v1",
+        JSON.stringify(incomingSessions.slice(0, 50))
+      );
+    } catch (_) {}
     if (data.pending_approvals) {
       state.pendingApprovals = data.pending_approvals;
     }

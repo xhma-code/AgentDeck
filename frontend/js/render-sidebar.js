@@ -1,3 +1,28 @@
+export function renderSidebarSkeleton() {
+  const container = document.getElementById("session-list-container");
+  if (!container) return;
+  container.innerHTML = `
+    <div class="space-y-3 p-1 animate-pulse" id="sidebar-skeleton-loader">
+      <div class="space-y-2">
+        <div class="h-3 w-16 bg-zinc-800/80 rounded px-1 mb-2"></div>
+        ${[1, 2, 3, 4, 5]
+          .map(
+            () => `
+          <div class="h-12 bg-zinc-900/50 rounded-xl border border-zinc-800/30 p-2.5 flex items-center justify-between gap-2">
+            <div class="space-y-1.5 flex-1 min-w-0">
+              <div class="h-3.5 bg-zinc-800/80 rounded w-3/4"></div>
+              <div class="h-2.5 bg-zinc-800/40 rounded w-1/2"></div>
+            </div>
+            <div class="w-2 h-2 rounded-full bg-zinc-800 shrink-0"></div>
+          </div>
+        `
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
 /**
  * AgentDeck 侧边栏与会话列表视图渲染器
  */
@@ -149,6 +174,10 @@ export function renderSessionList() {
   });
 
   if (filtered.length === 0) {
+    if (!state.isAppInitialized && (!state.allSessions || state.allSessions.length === 0)) {
+      renderSidebarSkeleton();
+      return;
+    }
     container.innerHTML = `
       <div class="p-6 text-center text-zinc-500 text-xs">
         <p class="mb-2">无匹配对话</p>
@@ -421,6 +450,9 @@ export function renderSessionList() {
   `;
 
   container.innerHTML = html;
+  container.classList.remove("content-fade-in");
+  void container.offsetWidth; // 触发 reflow
+  container.classList.add("content-fade-in");
   if (savedScrollTop > 0) {
     container.scrollTop = savedScrollTop;
   }

@@ -14,7 +14,16 @@ import {
 } from "./render.js";
 import { isSessionWorking } from "./session-helper.js";
 
+const inflightMessagesPromises = new Map();
+
 export async function loadSessionMessages(unifiedId, options = false) {
+  if (!unifiedId) return;
+  const silent = typeof options === "boolean" ? options : Boolean(options?.silent);
+  const reqKey = `${unifiedId}_${silent}`;
+  if (inflightMessagesPromises.has(reqKey)) {
+    return inflightMessagesPromises.get(reqKey);
+  }
+  const taskPromise = (async () => {
   const silent = typeof options === "boolean" ? options : Boolean(options?.silent);
   const limit = (typeof options === "object" && options?.limit) || 30;
 
@@ -68,26 +77,40 @@ export async function loadSessionMessages(unifiedId, options = false) {
       }
     } else {
       const optList = state.optimisticMessages[unifiedId] || [];
-      if (optList.length === 0) {
-        delete state.pendingTurnThinking[unifiedId];
-        delete state.streamingBuffer[unifiedId];
-      }
-      let statusChanged = false;
-      const targetSessions = [
-        ...(state.allSessions || []),
-        ...(state.sessions || []),
-      ];
-      for (const s of targetSessions) {
-        if (s && s.unified_id === unifiedId && (s.status === "running" || s.status === "desktop_active")) {
-          s.status = "idle";
-          statusChanged = true;
+      // 检查最新消息列表中是否仍有工具处于执行或等待状态，防止在多步长任务的间隙被误杀
+      let hasRunningStep = false;
+      if (incoming && incoming.length > 0) {
+        const lastMsg = incoming[incoming.length - 1];
+        if (lastMsg && (lastMsg.status === "RUNNING" || lastMsg.status === "PENDING")) {
+          hasRunningStep = true;
+        } else if (lastMsg && Array.isArray(lastMsg.tool_calls)) {
+          hasRunningStep = lastMsg.tool_calls.some(
+            (tc) => tc && (tc.status === "RUNNING" || tc.status === "PENDING")
+          );
         }
       }
-      if (statusChanged) {
-        renderSessionList();
-      }
-      if (unifiedId === state.selectedSessionId) {
-        renderLiveStreamOverlay();
+      if (!hasRunningStep) {
+        if (optList.length === 0) {
+          delete state.pendingTurnThinking[unifiedId];
+          delete state.streamingBuffer[unifiedId];
+        }
+        let statusChanged = false;
+        const targetSessions = [
+          ...(state.allSessions || []),
+          ...(state.sessions || []),
+        ];
+        for (const s of targetSessions) {
+          if (s && s.unified_id === unifiedId && (s.status === "running" || s.status === "desktop_active")) {
+            s.status = "idle";
+            statusChanged = true;
+          }
+        }
+        if (statusChanged) {
+          renderSessionList();
+        }
+        if (unifiedId === state.selectedSessionId) {
+          renderLiveStreamOverlay();
+        }
       }
     }
 

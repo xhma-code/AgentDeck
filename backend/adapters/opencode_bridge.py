@@ -11,11 +11,14 @@ import json
 import os
 import urllib.error
 import urllib.parse
+import socket
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
 from backend.core.logger import log_structured_error, logger
+from backend.core.network import is_local_port_listening
 
 class OpenCodeHttpBridge:
     """
@@ -38,6 +41,8 @@ class OpenCodeHttpBridge:
         self.state_dir = state_dir or Path(os.path.expanduser("~/.local/state/opencode"))
         self._service_cache: Optional[dict[str, Any]] = None
         self._service_cache_mtime: float = 0.0
+        self._server_running_cache: Optional[bool] = None
+        self._server_running_cache_ts: float = 0.0
 
     def _resolve_connection_info(self) -> tuple[str, str]:
         """动态解析当前的 base_url 与 password（支持环境变量、service.json 与显式参数）。"""
@@ -99,28 +104,53 @@ class OpenCodeHttpBridge:
         return req
 
     def is_server_running(self) -> bool:
-        """探测本地 opencode serve HTTP 服务是否在线（兼容 OpenCode 2 与 1）。"""
-        # 1. 优先探测 OpenCode 2 的 /api/session
+        """探测本地 opencode serve HTTP 服务是否在线（带 5s 缓存与端口快速预检）。"""
+        now = time.monotonic()
+        if self._server_running_cache is not None and (now - self._server_running_cache_ts < 5.0):
+            return self._server_running_cache
+
+        base_url, _ = self._resolve_connection_info()
+        # 极速 Socket 预检：若端口未开放监听，杜绝 urllib 阻塞 1.6 秒
+        try:
+            parts = urllib.parse.urlsplit(base_url)
+            host = parts.hostname or "127.0.0.1"
+            port = parts.port or 4096
+            if not is_local_port_listening(port, host=host, timeout=0.03):
+                self._server_running_cache = False
+                self._server_running_cache_ts = now
+                return False
+        except Exception as exc:
+            logger.debug(f"OpenCode 探活端口解析/预检异常 ({base_url}): {exc}")
+            self._server_running_cache = False
+            self._server_running_cache_ts = now
+            return False
+
+        # 端口已开放时，进一步校验 HTTP 接口可用性（紧凑超时 0.3s）
+        is_up = False
         try:
             req = self._make_request("/api/session", method="GET")
-            with urllib.request.urlopen(req, timeout=0.8) as resp:
+            with urllib.request.urlopen(req, timeout=0.3) as resp:
                 if resp.status == 200:
-                    return True
+                    is_up = True
         except (urllib.error.URLError, TimeoutError, OSError):
             pass
         except Exception as exc:
-            logger.error("探测 OpenCode 2 API 遇到非网络异常: 服务地址=%s, 异常=%s, 处理=尝试回退探测 v1", self.base_url, exc)
+            logger.error("探测 OpenCode 2 API 遇到非网络异常: 服务地址=%s, 异常=%s", base_url, exc)
 
-        # 2. 回退探测 OpenCode 1 的 /session
-        try:
-            req = self._make_request("/session", method="GET")
-            with urllib.request.urlopen(req, timeout=0.8) as resp:
-                return resp.status == 200
-        except (urllib.error.URLError, TimeoutError, OSError):
-            return False
-        except Exception as exc:
-            logger.error("探测 OpenCode 1 API 遇到非网络异常: 服务地址=%s, 异常=%s, 处理=判定服务未就绪", self.base_url, exc)
-            return False
+        if not is_up:
+            try:
+                req = self._make_request("/session", method="GET")
+                with urllib.request.urlopen(req, timeout=0.3) as resp:
+                    is_up = (resp.status == 200)
+            except (urllib.error.URLError, TimeoutError, OSError):
+                is_up = False
+            except Exception as exc:
+                logger.error("探测 OpenCode 1 API 遇到非网络异常: 服务地址=%s, 异常=%s", base_url, exc)
+                is_up = False
+
+        self._server_running_cache = is_up
+        self._server_running_cache_ts = now
+        return is_up
 
     def is_alive(self) -> bool:
         """兼容别名：探测本地 opencode serve HTTP 服务是否存活。"""

@@ -52,10 +52,17 @@ export function renderMessagesList() {
 
   if (state.loadingMessages) {
     container.innerHTML = `
-      <div class="space-y-3 p-3">
-        <div class="skeleton-block h-14 w-2/3 ml-auto"></div>
-        <div class="skeleton-block h-24 w-11/12"></div>
-        <div class="skeleton-block h-16 w-4/5"></div>
+      <div class="space-y-4 p-2 sm:p-4 max-w-3xl mx-auto w-full animate-pulse opacity-70" id="messages-loading-skeleton">
+        <div class="flex justify-end">
+          <div class="h-10 bg-zinc-800/70 rounded-2xl w-2/5"></div>
+        </div>
+        <div class="flex justify-start">
+          <div class="h-28 bg-zinc-900/80 border border-zinc-800/50 rounded-2xl w-4/5 p-3 space-y-2">
+            <div class="h-3 bg-zinc-800/90 rounded w-1/3"></div>
+            <div class="h-3 bg-zinc-800/50 rounded w-5/6"></div>
+            <div class="h-3 bg-zinc-800/40 rounded w-2/3"></div>
+          </div>
+        </div>
       </div>
     `;
     return;

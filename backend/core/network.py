@@ -214,3 +214,18 @@ def detect_tailscale_status() -> TailscaleStatus:
         lan_ip=lan_ip,
         zerotier_ip=zt_ip,
     )
+
+def is_local_port_listening(port: int, host: str = "127.0.0.1", timeout: float = 0.05) -> bool:
+    """
+    极速检测本地指定端口是否处于侦听状态（<1ms）。
+    在启动前或跨服务探活前使用，避免 psutil 全网卡扫描或长时间 HTTP 连接超时。
+    """
+    try:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            return s.connect_ex((host, port)) == 0
+    except Exception as exc:
+        logger.debug("检测本地端口 %s:%d 侦听状态异常: %s", host, port, exc)
+        return False
+

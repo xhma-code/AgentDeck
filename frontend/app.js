@@ -17,10 +17,13 @@ import {
   selectSession,
   checkFrontendVersion,
   isSessionWorking,
+  initEarlyCachedSessions,
 } from "./js/data.js";
+import { loadSessionMessages } from "./js/data-messages.js";
 import {
   renderSidebarStatus,
   renderSessionList,
+  renderSidebarSkeleton,
   renderCurrentSessionHeader,
   renderMessagesList,
   renderLiveStreamOverlay,
@@ -47,9 +50,31 @@ async function initApp() {
   updateDrawerVisibility();
   initDrawerSwipeGestures();
   bindSessionListScrollGuardian();
+
+  // 1. SWR 极速初渲染（0ms 首屏直出）：尝试加载本地缓存的最近已知会话
+  const earlySessionId = initEarlyCachedSessions();
+  if (earlySessionId) {
+    renderSessionList();
+    renderCurrentSessionHeader();
+    renderMessagesList(); // 立即渲染消息区（若有缓存则呈现消息，若无则呈现骨架屏，杜绝视口滞后）
+  } else {
+    renderSidebarSkeleton();
+  }
+
+  // 2. 鉴权与配对码预检
   await checkAndExchangePairCode();
+
+  // 3. 网络请求全面并行化：将会话消息拉取与列表聚合、系统状态并行执行
+  const targetInitId = typeof earlySessionId === "string" ? earlySessionId : (getSessionIdFromHash() || localStorage.getItem("agentdeck_last_selected_session"));
+  const initialMessagesPromise = targetInitId ? loadSessionMessages(targetInitId) : Promise.resolve();
+
   try {
-    await Promise.all([loadSystemStatus(), loadWorkspaces(), loadSessions()]);
+    await Promise.all([
+      loadSystemStatus(),
+      loadWorkspaces(),
+      loadSessions(),
+      initialMessagesPromise,
+    ]);
   } catch (err) {
     console.warn("冷启动连接当前通道失败，尝试漫游探测可用通道...", err);
     triggerAutoRoaming("initial_boot_fail");

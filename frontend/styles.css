@@ -435,6 +435,16 @@ details:not([open]) > summary .toggle-arrow-closed {
   border-radius: var(--radius-md);
 }
 
+/* 真实内容从骨架屏切换时的轻量渐显（150ms 规范） */
+@keyframes content-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.content-fade-in {
+  animation: content-fade-in 150ms ease-out forwards;
+}
+
 /* ==========================================================================
    移动端与桌面端沉浸式 GFM Markdown 排版 (.md-prose)
    字号 13px (0.8125rem)，行高 1.55，对齐 Antigravity-Deck 紧凑精致规范
@@ -677,6 +687,8 @@ details:not([open]) > summary .toggle-arrow-closed {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
   padding: 0.3rem 0.6rem;
   background: #101014;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
