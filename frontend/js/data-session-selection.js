@@ -26,7 +26,7 @@ export function updateSelectedSessionHighlight(prevId, nextId) {
       .querySelectorAll(`[data-session-item="${CSS.escape(prevId)}"]`)
       .forEach((el) => {
         el.className =
-          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 bg-zinc-900/45 border-transparent hover:bg-zinc-900 hover:border-zinc-800 text-zinc-300";
+          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-colors duration-150 flex items-center justify-between gap-2 bg-zinc-900/45 border-transparent hover:bg-zinc-900 hover:border-zinc-800 text-zinc-300";
       });
   }
   if (nextId) {
@@ -34,7 +34,7 @@ export function updateSelectedSessionHighlight(prevId, nextId) {
       .querySelectorAll(`[data-session-item="${CSS.escape(nextId)}"]`)
       .forEach((el) => {
         el.className =
-          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 bg-zinc-800/95 border-sky-500/50 text-zinc-100";
+          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-colors duration-150 flex items-center justify-between gap-2 bg-zinc-800/95 border-sky-500/50 text-zinc-100";
       });
   }
 }
@@ -44,6 +44,15 @@ export async function selectSession(unifiedId) {
   const wasMobileDrawerOpen = state.drawerOpen && window.innerWidth < 768;
   const wasUnread = state.unreadCompletedSessionIds.has(unifiedId);
   markSessionViewed(unifiedId);
+
+  // 释放上一个会话的完成暂留锁定：上一个会话仅在用户主动切换离开时平滑归位到原项目
+  let wasRetained = false;
+  if (prevId && prevId !== unifiedId) {
+    if (state.retainedActiveSessionIds && state.retainedActiveSessionIds.has(prevId)) {
+      state.retainedActiveSessionIds.delete(prevId);
+      wasRetained = true;
+    }
+  }
 
   state.selectedSessionId = unifiedId;
   try {
@@ -59,7 +68,7 @@ export async function selectSession(unifiedId) {
 
   // 自动展开当前选中会话所在的项目分组
   const sess = state.allSessions.find((s) => s.unified_id === unifiedId);
-  let needFullSidebarRender = wasUnread;
+  let needFullSidebarRender = wasUnread || wasRetained;
   if (sess && sess.project_path) {
     const pKey = getProjectInfo(sess.project_path).key;
     if (pKey && !state.expandedProjects[pKey]) {

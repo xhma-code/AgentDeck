@@ -13,6 +13,7 @@ import {
   escapeHtml,
   cleanFriendlyText,
   formatRelativeTime,
+  highlightText,
 } from "./utils.js";
 import {
   cleanFriendlyTitle,
@@ -21,10 +22,11 @@ import {
   getProjectInfo,
 } from "./session-helper.js";
 
-export function renderCompactSessionItem(s, showProjectTag = true) {
+export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = null) {
   const meta = AGENT_META[s.agent_type] || AGENT_META.claude_code;
   const isSelected = s.unified_id === state.selectedSessionId;
   const isUnread = isSessionCompletedUnread(s);
+  const q = state.searchQuery ? state.searchQuery.trim() : "";
 
   // 运行/等待审批/活跃/完成未看状态判定：优先在右侧显示对应状态徽标
   const isWorking = typeof isSessionWorking === "function" ? isSessionWorking(s.unified_id) : false;
@@ -84,16 +86,39 @@ export function renderCompactSessionItem(s, showProjectTag = true) {
 
   return `
     <div data-session-item="${escapeHtml(s.unified_id)}" onclick="window.appActions.selectSession('${escapeHtml(s.unified_id)}')"
-      class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 ${
+      class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-colors duration-150 flex items-center justify-between gap-2 ${
         isSelected
           ? "bg-zinc-800/95 border-sky-500/50 text-zinc-100"
           : isUnread
           ? "bg-sky-950/20 border-sky-500/30 hover:bg-sky-950/30 text-zinc-200"
           : "bg-zinc-900/45 border-transparent hover:bg-zinc-900 hover:border-zinc-800 text-zinc-300"
       }">
-      <div class="flex items-center gap-1.5 min-w-0 flex-1">
-        ${leadingBadgeHtml}
-        <span class="text-xs truncate font-medium ${isUnread ? "text-sky-200" : ""}">${escapeHtml(cleanFriendlyTitle(s.title))}</span>
+      <div class="flex flex-col min-w-0 flex-1 justify-center">
+        <div class="flex items-center gap-1.5 min-w-0">
+          ${leadingBadgeHtml}
+          <span class="text-xs truncate font-medium ${isUnread ? "text-sky-200" : ""}">${
+            q ? highlightText(cleanFriendlyTitle(s.title), q) : escapeHtml(cleanFriendlyTitle(s.title))
+          }</span>
+        </div>
+        ${
+          matchInfo && matchInfo.snippet
+            ? (() => {
+                let tagText = "对话:";
+                let tagClass = "text-sky-400/90";
+                if (matchInfo.type === "thinking") {
+                  tagText = "思考:";
+                  tagClass = "text-amber-400/90";
+                } else if (matchInfo.type === "tool") {
+                  tagText = "工具:";
+                  tagClass = "text-emerald-400/90";
+                }
+                return `<div class="text-[10px] text-zinc-400/90 truncate flex items-center gap-1 mt-0.5">
+                  <span class="${tagClass} shrink-0 text-[9px] font-mono leading-none">${tagText}</span>
+                  <span class="truncate leading-none">${highlightText(matchInfo.snippet, q)}</span>
+                </div>`;
+              })()
+            : ""
+        }
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
         ${
