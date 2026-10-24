@@ -282,3 +282,42 @@ class OpenCodeHttpBridge:
             )
         return {}
 
+
+    def abort_session(self, session_id: str) -> bool:
+        """调用官方 OpenCode API 中断指定会话正在运行的任务（遵循官方 POST /session/:id/abort 规范）。"""
+        for path in (f"/api/session/{session_id}/abort", f"/session/{session_id}/abort"):
+            try:
+                req = self._make_request(path, data=b"{}", method="POST")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status in (200, 204):
+                        logger.info(f"已通过 OpenCode 官方 HTTP 接口 ({path}) 中断会话 {session_id[:8]}")
+                        return True
+            except urllib.error.HTTPError as exc:
+                if exc.code not in (404, 405):
+                    logger.debug(f"OpenCode abort 请求失败 ({path}): {exc}")
+            except Exception as exc:
+                logger.debug(f"OpenCode abort 异常 ({path}): {exc}")
+        return False
+
+    def rename_session(self, session_id: str, new_title: str) -> bool:
+        """调用官方 OpenCode API 实时修改会话标题（遵循官方 POST /session/:id/rename 或 PATCH 规范）。"""
+        payload_rename = json.dumps({"title": new_title, "name": new_title}).encode("utf-8")
+        candidates = [
+            (f"/api/session/{session_id}/rename", "POST", payload_rename),
+            (f"/session/{session_id}/rename", "POST", payload_rename),
+            (f"/api/session/{session_id}", "PATCH", payload_rename),
+            (f"/session/{session_id}", "PATCH", payload_rename),
+        ]
+        for path, method, data in candidates:
+            try:
+                req = self._make_request(path, data=data, method=method)
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status in (200, 204):
+                        logger.info(f"已通过 OpenCode 官方 HTTP 接口 ({path}) 重命名会话: {session_id[:8]} -> {new_title}")
+                        return True
+            except urllib.error.HTTPError as exc:
+                if exc.code not in (404, 405):
+                    logger.debug(f"OpenCode rename 请求失败 ({path}): {exc}")
+            except Exception as exc:
+                logger.debug(f"OpenCode rename 异常 ({path}): {exc}")
+        return False

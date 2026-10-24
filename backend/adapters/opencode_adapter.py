@@ -442,10 +442,61 @@ class OpenCodeAdapter(BaseAgentAdapter):
         self._token_usage_cache[cache_key] = (0, data)
         return data
 
-    def rename_session(self, raw_session_id: str, new_title: str) -> bool:
-        """将新标题双向同步回写至 OpenCode 原生数据库 (opencode.db 的 session / session_v2 表)。"""
-        if not self.db_path.exists():
+    def delete_session(self, raw_session_id: str) -> bool:
+        """从 opencode.db 中物理删除指定会话及其关联消息。"""
+        if not self.db_path or not self.db_path.exists():
             return False
+        import sqlite3
+        try:
+            with sqlite3.connect(str(self.db_path), timeout=3.0) as conn:
+                if self._check_has_session_v2():
+                    conn.execute("DELETE FROM session_v2 WHERE id = ?", (raw_session_id,))
+                else:
+                    conn.execute("DELETE FROM session WHERE id = ?", (raw_session_id,))
+                conn.execute("DELETE FROM message WHERE session_id = ?", (raw_session_id,))
+                conn.commit()
+            return True
+        except Exception as exc:
+            logger.warning(f"删除 OpenCode 会话 {raw_session_id} 失败: {exc}")
+            return False
+
+    def cancel_session(self, raw_session_id: str) -> bool:
+        """通过官方 HTTP Bridge 中断正在运行的 OpenCode 会话任务。"""
+        if self.http_bridge.is_server_running():
+            return self.http_bridge.abort_session(raw_session_id)
+        return False
+
+    def try_direct_dispatch(
+        self,
+        raw_session_id: str,
+        prompt: str,
+        model_name: str = "",
+        workdir: str = "",
+    ) -> Optional[dict[str, Any]]:
+        """若 OpenCode 本地服务正在运行，优先通过官方 HTTP 桥接直连下发指令。"""
+        if self.http_bridge.is_server_running():
+            res = self.http_bridge.send_message(
+                session_id=raw_session_id,
+                prompt=prompt,
+                model_name=model_name,
+            )
+            if res:
+                return {"via_opencode_http": True, "result": res}
+        return None
+
+    def rename_session(self, raw_session_id: str, new_title: str) -> bool:
+        """将新标题双向同步回写至 OpenCode（优先官方 HTTP Bridge 实时广播，并同步更新 SQLite 双表）。"""
+        # 1. 优先尝试调用官方 HTTP Bridge 广播重命名
+        bridge_renamed = False
+        try:
+            if self.http_bridge.is_server_running():
+                bridge_renamed = self.http_bridge.rename_session(raw_session_id, new_title)
+        except Exception as bridge_exc:
+            logger.debug(f"通过 OpenCode HTTP 桥接重命名跳过: {bridge_exc}")
+
+        # 2. 同步持久化写入 SQLite 数据库中的 session 与 session_v2 表
+        if not self.db_path.exists():
+            return bridge_renamed
         import sqlite3
         from backend.core.logger import logger
         updated = False

@@ -347,6 +347,32 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         self._token_usage_cache[cache_key] = (mtime, data)
         return data
 
+    def delete_session(self, raw_session_id: str) -> bool:
+        """彻底物理删除 Claude Code 本地会话 JSONL 文件。"""
+        session_file = self._find_session_file(raw_session_id)
+        if session_file and session_file.exists():
+            try:
+                session_file.unlink(missing_ok=True)
+                self.invalidate_cache()
+                return True
+            except Exception as exc:
+                logger.warning(f"删除 Claude 会话文件 {session_file} 失败: {exc}")
+        return False
+
+    def cancel_session(self, raw_session_id: str) -> bool:
+        """尝试通过官方 claude stop 指令停止后台或外部运行的 Claude 会话。"""
+        import subprocess
+        bin_path = str(self.cli_bin or "claude")
+        try:
+            cmd = ["cmd.exe", "/c", bin_path, "stop", raw_session_id] if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")) else [bin_path, "stop", raw_session_id]
+            res = subprocess.run(cmd, capture_output=True, timeout=2.0)
+            if res.returncode == 0:
+                logger.info(f"已通过官方 claude stop 成功终止会话: {raw_session_id[:8]}")
+                return True
+        except Exception as exc:
+            logger.debug(f"调用 claude stop 异常 ({raw_session_id[:8]}): {exc}")
+        return False
+
     def rename_session(self, raw_session_id: str, new_title: str) -> bool:
         """为 Claude Code 会话同步更新本地标题缓存与伴生元数据。"""
         fpath = self._find_session_file(raw_session_id)
