@@ -275,6 +275,8 @@ export function renderStickyPromptContent(userElsOverride = null) {
   const contentEl = document.getElementById("sticky-prompt-content");
   const badgeEl = document.getElementById("sticky-prompt-badge");
   const stickyBar = document.getElementById("sticky-user-prompt-bar");
+  const rowEl = document.getElementById("sticky-prompt-row");
+  const jumpBtn = document.getElementById("sticky-prompt-jump-btn");
   if (!container || !contentEl) return;
 
   const userEls = userElsOverride || Array.from(container.querySelectorAll("[data-user-msg-id]"));
@@ -292,24 +294,38 @@ export function renderStickyPromptContent(userElsOverride = null) {
 
   // 1. 文本内容与展开/单行样式（点击文字直接切换收起/展开全部）
   contentEl.textContent = cleanText;
-  if (state.stickyPromptExpanded !== false) {
+  const isExpanded = state.stickyPromptExpanded !== false;
+
+  if (isExpanded) {
+    // 展开状态：支持多行展示与滚动，外层顶部对齐
     contentEl.className =
       "text-xs text-zinc-200 font-medium leading-relaxed max-h-36 sm:max-h-48 overflow-y-auto whitespace-pre-wrap break-words subtle-scrollbar hover:text-sky-200 transition-colors cursor-pointer select-text flex-1";
     contentEl.title = "点击收起为单行";
+    if (rowEl) {
+      rowEl.className = "max-w-5xl mx-auto flex items-start justify-between gap-2.5 min-h-[26px]";
+    }
+    if (jumpBtn) {
+      jumpBtn.classList.add("mt-0.5");
+    }
   } else {
+    // 收起状态：单行截断，文本与右侧按钮严格垂直居中（items-center + leading-normal）
     contentEl.className =
-      "text-xs text-zinc-200 font-medium truncate whitespace-nowrap overflow-hidden hover:text-sky-200 transition-colors cursor-pointer select-text flex-1";
+      "text-xs text-zinc-200 font-medium truncate whitespace-nowrap overflow-hidden leading-normal hover:text-sky-200 transition-colors cursor-pointer select-text flex-1";
     contentEl.title = "点击展开显示全部指令内容";
+    if (rowEl) {
+      rowEl.className = "max-w-5xl mx-auto flex items-center justify-between gap-2.5 min-h-[26px]";
+    }
+    if (jumpBtn) {
+      jumpBtn.classList.remove("mt-0.5");
+    }
   }
 
-  // 2. 优化微标：单条提问时直接隐藏；多条提问时仅显示极窄的 1/8 纯数字胶囊，去掉“指令”冗余字样
+  // 2. 右侧按钮内部的数字序号：与向上箭头合并一体（例如 ↑ 1/2）
   if (badgeEl) {
-    if (total > 1) {
-      badgeEl.textContent = `${idx + 1}/${total}`;
-      badgeEl.classList.remove("hidden");
-    } else {
-      badgeEl.classList.add("hidden");
-    }
+    badgeEl.textContent = `${idx + 1}/${total}`;
+  }
+  if (jumpBtn) {
+    jumpBtn.title = `第 ${idx + 1}/${total} 轮提问，点击返回原位置`;
   }
 
   if (stickyBar) {

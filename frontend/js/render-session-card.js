@@ -91,12 +91,6 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
       draggable="false"
       ondragstart="event.preventDefault(); return false;"
       onclick="window.appActions.selectSession('${escapeHtml(s.unified_id)}')"
-      oncontextmenu="event.preventDefault(); event.stopPropagation(); return false;"
-      onselectstart="event.preventDefault(); return false;"
-      ontouchstart=""
-      ontouchmove=""
-      ontouchend=""
-      ontouchcancel=""
       style="-webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; touch-action: pan-y; -webkit-tap-highlight-color: transparent;"
       class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-colors duration-150 flex items-center justify-between gap-2 ${
         isSelected

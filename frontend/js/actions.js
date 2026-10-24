@@ -60,6 +60,11 @@ import {
   toggleProjectCollapse,
   toggleProjectHide,
   deleteSession,
+  openSessionContextMenu,
+  closeSessionContextMenu,
+  contextTogglePin,
+  contextRenameSession,
+  contextDeleteSession,
 } from "./actions-session.js";
 
 import {
@@ -124,13 +129,18 @@ export {
 };
 
 window.appActions = {
-  // 会话与三点操作菜单
+  // 会话长按与三点操作菜单
   toggleSessionMenu,
   toggleCurrentPin,
   renameCurrentSession,
   closeRenameModal,
   confirmRenameSession,
   deleteCurrentSession,
+  openSessionContextMenu,
+  closeSessionContextMenu,
+  contextTogglePin,
+  contextRenameSession,
+  contextDeleteSession,
   jumpToRunningSession,
   markAllSessionsViewed,
   toggleProject,

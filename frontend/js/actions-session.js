@@ -34,6 +34,7 @@ import { handleTogglePin } from "./actions-approval.js";
 import { dispatchCommand } from "./command-queue.js";
 
 let sessionContextTargetId = null;
+let renamingSessionId = null;
 let sessionLongPressTimer = null;
 let sessionLongPressStartX = 0;
 let sessionLongPressStartY = 0;
@@ -103,11 +104,12 @@ export function openSessionContextMenu(unifiedId, x, y, ev) {
   if (icon) icon.className = isPinned ? "text-amber-400 text-xs" : "text-zinc-400 text-xs";
   if (text) text.textContent = isPinned ? "取消置顶" : "置顶";
 
+  menu.classList.remove("hidden");
   const menuWidth = 112;
   const menuHeight = 110;
-  let left = x;
-  let top = y;
-  const padding = 8;
+  let left = x - 20;
+  let top = y - 10;
+  const padding = 10;
   if (left + menuWidth > window.innerWidth - padding) {
     left = window.innerWidth - menuWidth - padding;
   }
@@ -119,14 +121,14 @@ export function openSessionContextMenu(unifiedId, x, y, ev) {
 
   menu.style.left = left + "px";
   menu.style.top = top + "px";
-  menu.classList.remove("hidden");
 }
 
 export async function contextTogglePin() {
+  const targetId = sessionContextTargetId;
   closeSessionContextMenu();
-  if (!sessionContextTargetId) return;
+  if (!targetId) return;
   const allList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
-  const target = allList.find((s) => s.unified_id === sessionContextTargetId);
+  const target = allList.find((s) => s.unified_id === targetId);
   if (!target) return;
   try {
     await handleTogglePin(target.unified_id, !!target.is_pinned);
@@ -137,11 +139,13 @@ export async function contextTogglePin() {
 }
 
 export function contextRenameSession() {
+  const targetId = sessionContextTargetId;
   closeSessionContextMenu();
-  if (!sessionContextTargetId) return;
+  if (!targetId) return;
   const allList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
-  const target = allList.find((s) => s.unified_id === sessionContextTargetId);
+  const target = allList.find((s) => s.unified_id === targetId);
   if (!target) return;
+  renamingSessionId = target.unified_id;
   const modal = document.getElementById("rename-session-modal");
   const input = document.getElementById("rename-session-input");
   if (modal && input) {
@@ -186,66 +190,10 @@ export async function confirmRenameSessionWithTitleForId(unifiedId, trimmed) {
 }
 
 export async function contextDeleteSession() {
+  const targetId = sessionContextTargetId;
   closeSessionContextMenu();
-  if (!sessionContextTargetId) return;
-  await deleteSession(sessionContextTargetId);
-}
-
-export function handleSessionTouchStart(ev, unifiedId) {
-  if (ev.touches.length !== 1) return;
-  const touch = ev.touches[0];
-  sessionLongPressStartX = touch.clientX;
-  sessionLongPressStartY = touch.clientY;
-  sessionLongPressMoved = false;
-  if (sessionLongPressTimer) {
-    clearTimeout(sessionLongPressTimer);
-    sessionLongPressTimer = null;
-  }
-  try {
-    ev.stopPropagation();
-  } catch (e) {}
-  disableTextSelection();
-  sessionLongPressTimer = setTimeout(() => {
-    if (sessionLongPressMoved) return;
-    const menu = document.getElementById("session-context-menu");
-    if (menu && !menu.classList.contains("hidden")) {
-      closeSessionContextMenu();
-      return;
-    }
-    try {
-      if (ev.cancelable) {
-        ev.preventDefault();
-      }
-      ev.stopPropagation();
-    } catch (e) {}
-    openSessionContextMenu(unifiedId, sessionLongPressStartX, sessionLongPressStartY, ev);
-    if (navigator.vibrate) {
-      try { navigator.vibrate(15); } catch (e) {}
-    }
-  }, 800);
-}
-
-export function handleSessionTouchMove(ev) {
-  if (ev.touches.length !== 1) return;
-  const touch = ev.touches[0];
-  const dx = Math.abs(touch.clientX - sessionLongPressStartX);
-  const dy = Math.abs(touch.clientY - sessionLongPressStartY);
-  if (dx > 16 || dy > 16) {
-    sessionLongPressMoved = true;
-    if (sessionLongPressTimer) {
-      clearTimeout(sessionLongPressTimer);
-      sessionLongPressTimer = null;
-    }
-  }
-}
-
-export function handleSessionTouchEnd(ev) {
-  if (sessionLongPressTimer) {
-    clearTimeout(sessionLongPressTimer);
-    sessionLongPressTimer = null;
-  }
-  sessionLongPressMoved = false;
-  enableTextSelection();
+  if (!targetId) return;
+  await deleteSession(targetId);
 }
 
 export function handleSessionTouchCancel(ev) {
@@ -270,6 +218,7 @@ export function renameCurrentSession() {
   if (menu) menu.classList.add("hidden");
   const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
   if (!curSess) return;
+  renamingSessionId = curSess.unified_id;
   const modal = document.getElementById("rename-session-modal");
   const input = document.getElementById("rename-session-input");
   if (modal && input) {
@@ -282,7 +231,7 @@ export function renameCurrentSession() {
   } else {
     const newTitle = window.prompt("重命名：", curSess.title);
     if (newTitle && newTitle.trim()) {
-      confirmRenameSessionWithTitle(newTitle.trim());
+      confirmRenameSessionWithTitleForId(curSess.unified_id, newTitle.trim());
     }
   }
 }
@@ -290,14 +239,16 @@ export function renameCurrentSession() {
 export function closeRenameModal() {
   const modal = document.getElementById("rename-session-modal");
   if (modal) modal.classList.add("hidden");
+  renamingSessionId = null;
 }
 
 export async function confirmRenameSession() {
   const input = document.getElementById("rename-session-input");
   const newTitle = input ? input.value.trim() : "";
+  const targetId = renamingSessionId || state.selectedSessionId;
   closeRenameModal();
-  if (!newTitle) return;
-  await confirmRenameSessionWithTitle(newTitle);
+  if (!newTitle || !targetId) return;
+  await confirmRenameSessionWithTitleForId(targetId, newTitle);
 }
 
 export async function confirmRenameSessionWithTitle(trimmed) {
@@ -322,33 +273,8 @@ export async function confirmRenameSessionWithTitle(trimmed) {
 export async function deleteCurrentSession() {
   const menu = document.getElementById("session-action-menu");
   if (menu) menu.classList.add("hidden");
-  const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
-  if (!curSess) return;
-  if (!window.confirm(`确定删除「${curSess.title}」？此操作不可逆。`)) return;
-  try {
-    state.sessions = state.sessions.filter((s) => s.unified_id !== curSess.unified_id);
-    state.allSessions = state.allSessions.filter((s) => s.unified_id !== curSess.unified_id);
-    const nextSess = pickDefaultSession(state.sessions);
-    state.selectedSessionId = nextSess?.unified_id || null;
-    renderSessionList();
-    renderCurrentSessionHeader();
-    if (state.selectedSessionId) {
-      selectSession(state.selectedSessionId);
-    } else {
-      history.replaceState(null, "", window.location.pathname + window.location.search);
-      state.messages = [];
-      renderMessagesList();
-    }
-    await dispatchCommand({
-      command_type: "DELETE_SESSION",
-      session_id: curSess.unified_id,
-      payload: {},
-    });
-    showToast("已删除", "success");
-  } catch (err) {
-    showToast(`删除失败: ${err.message}`, "error");
-    loadSessions();
-  }
+  if (!state.selectedSessionId) return;
+  await deleteSession(state.selectedSessionId);
 }
 
 export function relayToNewAgentSession() {
@@ -545,27 +471,31 @@ export async function toggleProjectHide(projectPath, currentHidden, ev) {
 
 export async function deleteSession(unifiedId, ev) {
   if (ev) ev.stopPropagation();
-  const curSess = state.sessions.find((s) => s.unified_id === unifiedId) || (state.allSessions || []).find((s) => s.unified_id === unifiedId);
+  const allList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  const curSess = allList.find((s) => s.unified_id === unifiedId);
   if (!curSess) return;
-  if (!window.confirm(`确定从列表中移除会话“${curSess.title}”？
-仅移除本地记录，不删除源文件。`)) {
+  if (!window.confirm(`确定删除「${curSess.title}」？此操作不可逆。`)) {
     return;
   }
   try {
     await apiFetch(`/api/v1/sessions/${encodeURIComponent(unifiedId)}`, { method: "DELETE" });
-    showToast("已从列表移除", "success");
+    showToast("已删除", "success");
     state.sessions = state.sessions.filter((s) => s.unified_id !== curSess.unified_id);
     state.allSessions = (state.allSessions || []).filter((s) => s.unified_id !== curSess.unified_id);
-    const nextSess = pickDefaultSession(state.sessions);
-    state.selectedSessionId = nextSess?.unified_id || null;
-    renderSessionList();
-    renderCurrentSessionHeader();
-    if (state.selectedSessionId) {
-      selectSession(state.selectedSessionId);
+    if (state.selectedSessionId === curSess.unified_id) {
+      const nextSess = pickDefaultSession(state.sessions);
+      state.selectedSessionId = nextSess?.unified_id || null;
+      renderSessionList();
+      renderCurrentSessionHeader();
+      if (state.selectedSessionId) {
+        selectSession(state.selectedSessionId);
+      } else {
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+        state.messages = [];
+        renderMessagesList();
+      }
     } else {
-      history.replaceState(null, "", window.location.pathname + window.location.search);
-      state.messages = [];
-      renderMessagesList();
+      renderSessionList();
     }
   } catch (err) {
     showToast(`删除失败: ${err.message}`, "error");
@@ -573,117 +503,141 @@ export async function deleteSession(unifiedId, ev) {
 }
 
 if (typeof window !== "undefined") {
-  const blockSessionItemDefault = (ev) => {
-    const target = ev.target;
-    if (!target) return;
-    const el = target.closest ? target.closest("[data-session-item]") : null;
-    if (!el) return;
-    try {
-      ev.preventDefault();
-      ev.stopPropagation();
-    } catch (e) {}
-    return false;
-  };
+  let longPressTimer = null;
+  let startX = 0;
+  let startY = 0;
+  let longPressTargetId = null;
+  let isMoved = false;
+  let lastLongPressTime = 0;
 
-  window.addEventListener("contextmenu", blockSessionItemDefault, { capture: true, passive: false });
-  window.addEventListener("selectstart", blockSessionItemDefault, { capture: true, passive: false });
-  window.addEventListener("dragstart", blockSessionItemDefault, { capture: true, passive: false });
-  document.addEventListener("gesturestart", blockSessionItemDefault, { capture: true, passive: false });
-  document.addEventListener("gesturechange", blockSessionItemDefault, { capture: true, passive: false });
-  document.addEventListener("gestureend", blockSessionItemDefault, { capture: true, passive: false });
-
-  const container = document.getElementById("session-list-container");
-  let globalPressTimer = null;
-  let globalPressStartX = 0;
-  let globalPressStartY = 0;
-  let globalPressedId = null;
-  let globalMoved = false;
-
-  const clearGlobalPress = () => {
-    if (globalPressTimer) {
-      clearTimeout(globalPressTimer);
-      globalPressTimer = null;
+  const cancelLongPress = () => {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
     }
-    globalPressedId = null;
-    globalMoved = false;
+    longPressTargetId = null;
+    isMoved = false;
     enableTextSelection();
   };
 
+  // 1. 触摸长按手势识别（针对左侧抽屉菜单与会话列表项）
   document.addEventListener("touchstart", (ev) => {
-    if (ev.touches.length !== 1) return;
+    // 菜单已打开时，若点击在菜单之外，关闭菜单
+    const menu = document.getElementById("session-context-menu");
+    if (menu && !menu.classList.contains("hidden")) {
+      if (!menu.contains(ev.target)) {
+        closeSessionContextMenu();
+      }
+    }
+
+    if (ev.touches.length !== 1) {
+      cancelLongPress();
+      return;
+    }
+
     const touch = ev.touches[0];
     const target = ev.target;
     if (!target) return;
-    const el = target.closest ? target.closest("[data-session-item]") : null;
-    if (!el) return;
-    globalPressedId = el.getAttribute("data-session-id") || el.getAttribute("data-session-item");
-    if (!globalPressedId) return;
-    globalPressStartX = touch.clientX;
-    globalPressStartY = touch.clientY;
-    globalMoved = false;
-    if (globalPressTimer) {
-      clearTimeout(globalPressTimer);
-      globalPressTimer = null;
+
+    // 若点击的是卡片内的独立功能按钮（如置顶星标按钮），不触发会话长按
+    if (target.closest("button") || target.closest("a")) {
+      cancelLongPress();
+      return;
     }
-    try {
-      ev.stopPropagation();
-    } catch (e) {}
+
+    const itemEl = target.closest ? target.closest("[data-session-item]") : null;
+    if (!itemEl) {
+      cancelLongPress();
+      return;
+    }
+
+    const unifiedId = itemEl.getAttribute("data-session-id") || itemEl.getAttribute("data-session-item");
+    if (!unifiedId) {
+      cancelLongPress();
+      return;
+    }
+
+    startX = touch.clientX;
+    startY = touch.clientY;
+    longPressTargetId = unifiedId;
+    isMoved = false;
+
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+    }
+
     disableTextSelection();
-    globalPressTimer = setTimeout(() => {
-      if (globalMoved || !globalPressedId) return;
-      const menu = document.getElementById("session-context-menu");
-      if (menu && !menu.classList.contains("hidden")) {
-        closeSessionContextMenu();
-        return;
-      }
-      try {
-        if (ev.cancelable) {
-          ev.preventDefault();
-        }
-        ev.stopPropagation();
-      } catch (e) {}
-      openSessionContextMenu(globalPressedId, globalPressStartX, globalPressStartY, ev);
+
+    // 500ms 长按判定时间
+    longPressTimer = setTimeout(() => {
+      if (isMoved || !longPressTargetId) return;
+
+      lastLongPressTime = Date.now();
       if (navigator.vibrate) {
-        try {
-          navigator.vibrate(15);
-        } catch (e) {}
+        try { navigator.vibrate(20); } catch (e) {}
       }
-      globalPressedId = null;
-      if (globalPressTimer) {
-        clearTimeout(globalPressTimer);
-        globalPressTimer = null;
-      }
-    }, 650);
+
+      openSessionContextMenu(longPressTargetId, startX, startY, ev);
+      longPressTargetId = null;
+      longPressTimer = null;
+    }, 500);
   }, { passive: false, capture: true });
 
+  // 2. 触摸移动与滚动时取消长按判定（防止误触）
   document.addEventListener("touchmove", (ev) => {
-    if (ev.touches.length !== 1) return;
-    if (!globalPressedId) return;
+    if (!longPressTimer || ev.touches.length !== 1) return;
     const touch = ev.touches[0];
-    const dx = Math.abs(touch.clientX - globalPressStartX);
-    const dy = Math.abs(touch.clientY - globalPressStartY);
+    const dx = Math.abs(touch.clientX - startX);
+    const dy = Math.abs(touch.clientY - startY);
     if (dx > 12 || dy > 12) {
-      globalMoved = true;
-      if (globalPressTimer) {
-        clearTimeout(globalPressTimer);
-        globalPressTimer = null;
-      }
+      isMoved = true;
+      cancelLongPress();
     }
   }, { passive: true, capture: true });
 
-  document.addEventListener("touchend", clearGlobalPress, { passive: true, capture: true });
-  document.addEventListener("touchcancel", clearGlobalPress, { passive: true, capture: true });
+  document.addEventListener("touchend", () => {
+    if (longPressTimer) {
+      cancelLongPress();
+    }
+  }, { passive: true, capture: true });
 
-  document.addEventListener("click", (ev) => {
+  document.addEventListener("touchcancel", cancelLongPress, { passive: true, capture: true });
+  window.addEventListener("scroll", cancelLongPress, { passive: true, capture: true });
+
+  // 3. 核心拦截：阻止长按抬手后浏览器派发的合成 click 事件穿透触发 selectSession 和关闭菜单
+  window.addEventListener("click", (ev) => {
+    if (Date.now() - lastLongPressTime < 450) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      return false;
+    }
+
+    // 普通点击：若菜单处于显示状态且点击在菜单外部，平滑关闭菜单
     const menu = document.getElementById("session-context-menu");
-    if (!menu || menu.classList.contains("hidden")) return;
-    if (menu.contains(ev.target)) return;
-    closeSessionContextMenu();
-  });
-  document.addEventListener("touchstart", (ev) => {
-    const menu = document.getElementById("session-context-menu");
-    if (!menu || menu.classList.contains("hidden")) return;
-    if (menu.contains(ev.target)) return;
-    closeSessionContextMenu();
-  }, { passive: true });
+    if (menu && !menu.classList.contains("hidden")) {
+      if (!menu.contains(ev.target)) {
+        closeSessionContextMenu();
+      }
+    }
+  }, { capture: true, passive: false });
+
+  // 4. 支持右键菜单（支持桌面/鼠标或长按触发系统右键）
+  window.addEventListener("contextmenu", (ev) => {
+    const target = ev.target;
+    if (!target) return;
+    const itemEl = target.closest ? target.closest("[data-session-item]") : null;
+    if (itemEl) {
+      try {
+        ev.preventDefault();
+        ev.stopPropagation();
+      } catch (e) {}
+      const unifiedId = itemEl.getAttribute("data-session-id") || itemEl.getAttribute("data-session-item");
+      if (unifiedId) {
+        lastLongPressTime = Date.now();
+        openSessionContextMenu(unifiedId, ev.clientX, ev.clientY, ev);
+      }
+      return false;
+    }
+  }, { capture: true, passive: false });
 }
