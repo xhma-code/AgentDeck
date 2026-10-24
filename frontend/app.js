@@ -140,27 +140,20 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (e.key === "Enter" && !e.shiftKey && window.innerWidth >= 768) {
         e.preventDefault();
         const btn = document.getElementById("prompt-action-btn");
-        if (btn?.dataset?.action === "abort" && !promptInput.value.trim()) {
-          // 当前为中断态且无内容输入时，按 Enter 不误触发中断
-          return;
+        if (btn && btn.getAttribute("data-mode") === "abort") {
+          window.appActions.abortSession();
+        } else {
+          window.appActions.sendPrompt();
         }
-        handleSendPrompt(null);
       }
     });
 
-    promptInput.addEventListener("input", (e) => {
-      updatePromptActionBtnState();
-      const val = e.target.value;
-      if (val.startsWith("/")) {
-        state.slashMenuOpen = true;
-        renderSlashMenu(val);
-      } else {
-        state.slashMenuOpen = false;
-        renderSlashMenu("");
-      }
+    promptInput.addEventListener("input", () => {
+      window.appActions.handlePromptInput();
     });
   }
 
+  // 点击外部收起弹出菜单
   document.addEventListener("click", (e) => {
     const modelPopover = document.getElementById("model-picker-popover");
     const modelBtn = document.getElementById("model-picker-btn");
@@ -208,10 +201,6 @@ window.addEventListener("DOMContentLoaded", async () => {
           if (mId === "doc-preview-modal") {
             document.body.style.overflow = "";
           }
-          if (mId === "qr-modal" && qrExpireTimer) {
-            clearTimeout(qrExpireTimer);
-            qrExpireTimer = null;
-          }
         }
       }
     }
@@ -248,6 +237,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
     document.documentElement.style.setProperty("--bottom-control-height", `${totalBottomHeight}px`);
   };
+  if (window.appActions) {
+    window.appActions.updateBottomControlHeight = updateBottomControlHeight;
+  }
   window.updateBottomControlHeight = updateBottomControlHeight;
 
   const footerEl = document.querySelector("footer");
