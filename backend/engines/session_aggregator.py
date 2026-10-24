@@ -93,6 +93,8 @@ def aggregate_all_sessions(
             sess.parent_unified_id = ov.get("parent_unified_id")
             if sess.parent_unified_id:
                 sess.is_subagent = True
+            if ov.get("last_viewed_at"):
+                sess.last_viewed_at = str(ov["last_viewed_at"])
 
         if not sess.model_name:
             sess.model_name = resolve_default_model_fn(sess.agent_type)
@@ -149,6 +151,8 @@ def aggregate_all_sessions(
                 if ov.get("parent_unified_id"):
                     sess.parent_unified_id = ov.get("parent_unified_id")
                     sess.is_subagent = True
+                if ov.get("last_viewed_at"):
+                    sess.last_viewed_at = str(ov["last_viewed_at"])
 
                 if not sess.model_name:
                     sess.model_name = resolve_default_model_fn(atype)
@@ -216,6 +220,7 @@ def aggregate_all_sessions(
                     project_name=proj_name,
                     parent_unified_id=ov.get("parent_unified_id"),
                     is_subagent=bool(ov.get("parent_unified_id")),
+                    last_viewed_at=ov.get("last_viewed_at"),
                 ).to_dict()
             )
 

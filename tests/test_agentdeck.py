@@ -2845,3 +2845,47 @@ def test_antigravity_session_instant_finish_and_sqlite_override(tmp_path: Path):
     single = adapter.get_session(cid)
     assert single is not None
     assert single.status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_session_viewed_cross_client_sync(tmp_path: Path):
+    """测试跨客户端已读状态上报、持久化与 WebSocket 广播闭环。"""
+    from backend.core.database import MetaDatabase
+    from backend.app import create_app
+    from starlette.testclient import TestClient
+
+    db = MetaDatabase(db_path=tmp_path / "sync_test.db")
+    app = create_app(meta_db=db)
+    orchestrator = app.state.orchestrator
+
+    uid = "claude_code:sess_viewed_test"
+    db.upsert_session_meta(
+        unified_id=uid,
+        agent_type="claude_code",
+        raw_session_id="sess_viewed_test",
+        title="测试会话",
+    )
+
+    with TestClient(app) as client:
+        # 1. 模拟手机端连接 WebSocket
+        with client.websocket_connect("/ws/stream?since_seq=0") as ws:
+            first_frame = ws.receive_json()
+            assert first_frame["type"] == "SESSION_STATE_SNAPSHOT"
+
+            # 2. 模拟电脑端调用查看接口 POST /viewed
+            resp = client.post(f"/api/v1/sessions/{uid}/viewed")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["ok"] is True
+            assert data["unified_id"] == uid
+            assert data["last_viewed_at"] is not None
+
+            # 3. 校验数据库已持久化写入 last_viewed_at
+            overrides = db.get_session_overrides()
+            assert overrides[uid]["last_viewed_at"] == data["last_viewed_at"]
+
+            # 4. 校验手机端 WebSocket 实时接收到 SESSION_VIEWED 广播帧
+            evt_frame = ws.receive_json()
+            assert evt_frame["type"] == "SESSION_VIEWED"
+            assert evt_frame["payload"]["unified_id"] == uid
+            assert evt_frame["payload"]["last_viewed_at"] == data["last_viewed_at"]

@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS t_unified_session_meta (
     is_pinned INTEGER DEFAULT 0,         -- 手机端是否置顶（0：否，1：是）
     execution_mode TEXT DEFAULT 'ask',   -- 手机端接管执行策略（plan / ask / accept_edits / auto）
     model_name TEXT DEFAULT '',          -- 会话当前选定的模型名称（如 claude-sonnet-5-5-high / gemini-4-argon-high）
+    last_viewed_at TEXT,                 -- 多端已查看时间戳（ISO 8601，用于跨端消除待查看蓝点）
     updated_at TEXT NOT NULL             -- 最近消息更新时间（ISO 8601）
 );
 
@@ -82,6 +83,7 @@ TABLE_COLUMN_COMMENTS: list[tuple[str, str, str, str]] = [
     ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "is_pinned", "手机端是否置顶（0：否，1：是）"),
     ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "execution_mode", "手机端接管执行策略（plan/ask/accept_edits/auto）"),
     ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "model_name", "会话当前选定的模型名称"),
+    ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "last_viewed_at", "多端已查看时间戳（ISO 8601）"),
     ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "updated_at", "最近消息更新时间（ISO 8601）"),
     ("t_tool_approval_log", "移动端工具调用审批审计日志表", "log_id", "审计日志自增主键"),
     ("t_tool_approval_log", "移动端工具调用审批审计日志表", "unified_id", "关联的统一会话主键"),

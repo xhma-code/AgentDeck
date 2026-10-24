@@ -112,6 +112,7 @@ class UnifiedSession:
     desktop_locked: bool = False
     parent_unified_id: Optional[str] = None
     is_subagent: bool = False
+    last_viewed_at: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

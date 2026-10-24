@@ -2,7 +2,7 @@
  * AgentDeck WebSocket 实时连接、断线重连、跨网络通道自愈漫游调度器
  */
 
-import { state, markSessionCompletedUnread } from "./state.js";
+import { state, markSessionCompletedUnread, saveLastViewedTimes } from "./state.js";
 import { triggerAlertNotification } from "./utils.js";
 import { showToast, showPairingGuideModal } from "./api.js";
 import {
@@ -279,6 +279,27 @@ export function handleRealtimeEvent(envelope) {
       }
     }
     loadSessions(true);
+    return;
+  }
+
+  if (type === "SESSION_VIEWED") {
+    const uid = payload && payload.unified_id;
+    const vAt = payload && payload.last_viewed_at;
+    if (uid) {
+      if (vAt) {
+        const vTime = new Date(vAt).getTime();
+        if (!isNaN(vTime)) {
+          state.sessionLastViewedTimes[uid] = Math.max(
+            state.sessionLastViewedTimes[uid] || 0,
+            vTime
+          );
+        }
+      }
+      state.unreadCompletedSessionIds.delete(uid);
+      saveLastViewedTimes();
+      renderSessionList();
+      renderOtherRunningPill();
+    }
     return;
   }
 

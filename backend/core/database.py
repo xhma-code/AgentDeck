@@ -85,6 +85,11 @@ class MetaDatabase:
                 TABLE_COLUMN_COMMENTS,
             )
 
+            # 自动迁移检查：确保 t_unified_session_meta 包含 last_viewed_at 列
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(t_unified_session_meta)").fetchall()]
+            if "last_viewed_at" not in cols:
+                conn.execute("ALTER TABLE t_unified_session_meta ADD COLUMN last_viewed_at TEXT;")
+
             # 首次初始化默认置入 AgentDeck 自身作为工作区
             agentdeck_root = str(PROJECT_ROOT.resolve()).replace("\\", "/")
             conn.execute(
@@ -159,6 +164,32 @@ class MetaDatabase:
                 (unified_id,),
             ).fetchone()
             return dict(row) if row else {}
+
+    def mark_session_viewed(self, unified_id: str, viewed_at: Optional[str] = None) -> str:
+        """记录会话在任意客户端被查看的时间戳，实现多端同步已读。"""
+        now = viewed_at or utc_now_iso()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT unified_id FROM t_unified_session_meta WHERE unified_id = ?",
+                (unified_id,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE t_unified_session_meta SET last_viewed_at = ? WHERE unified_id = ?",
+                    (now, unified_id),
+                )
+            else:
+                agent_type = unified_id.split(":", 1)[0] if ":" in unified_id else "claude_code"
+                raw_id = unified_id.split(":", 1)[1] if ":" in unified_id else unified_id
+                conn.execute(
+                    """
+                    INSERT INTO t_unified_session_meta (
+                        unified_id, agent_type, raw_session_id, last_viewed_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (unified_id, agent_type, raw_id, now, now),
+                )
+        return now
 
     def delete_session_meta(self, unified_id: str) -> bool:
         """从元数据库中彻底删除会话的自定义索引记录（用于被删除或过期的外部会话清理）。"""

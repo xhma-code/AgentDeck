@@ -148,6 +148,31 @@ async def update_session_meta(
     return {"ok": True, "meta": updated}
 
 
+@router.post("/{unified_id:path}/viewed")
+async def mark_session_viewed_endpoint(
+    unified_id: str,
+    request: Request,
+    _auth: bool = Depends(verify_request_auth),
+) -> dict[str, Any]:
+    """标记会话为已查看，记录服务端查看时间戳并通过 WebSocket 广播给所有客户端（跨端实时消红）。"""
+    if ":" not in unified_id:
+        raise HTTPException(status_code=400, detail="无效的 unified_id 格式")
+    meta_db = get_meta_db(request)
+    orchestrator = get_orchestrator(request)
+
+    viewed_at = meta_db.mark_session_viewed(unified_id)
+    orchestrator.bump_version()
+
+    await orchestrator.broadcast_event(
+        event_type="SESSION_VIEWED",
+        payload={
+            "unified_id": unified_id,
+            "last_viewed_at": viewed_at,
+        },
+    )
+    return {"ok": True, "unified_id": unified_id, "last_viewed_at": viewed_at}
+
+
 @router.delete("/{unified_id:path}")
 async def delete_session(
     unified_id: str,
