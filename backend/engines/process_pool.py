@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 import collections
 import time
 from pathlib import Path
@@ -21,7 +22,7 @@ from backend.adapters.base import BaseAgentAdapter, ExecutionMode
 from backend.adapters.claude_adapter import ClaudeCodeAdapter
 from backend.adapters.opencode_adapter import OpenCodeAdapter
 from backend.core.database import MetaDatabase
-from backend.core.logger import log_structured_error, logger
+from backend.core.logger import PROJECT_ROOT, log_structured_error, logger
 from backend.engines.approval import ApprovalCoordinator, PendingApproval
 from backend.engines.cache import EtagNegotiator, SessionMessagesEtagEntry
 from backend.engines.event_bus import RealtimeEventBus
@@ -48,7 +49,6 @@ __all__ = [
     "AgentOrchestrator",
     "AgentProcessPool",
 ]
-
 
 class AgentOrchestrator:
     """多 Agent 统一调度器、进程执行池与事件中枢。"""
@@ -139,27 +139,13 @@ class AgentOrchestrator:
             pending_count=len(self.pending_approvals), agent_filter=agent_filter, limit=limit,
         )
 
-    def check_session_messages_etag_matches(
-        self, if_none_match: Optional[str], unified_id: str,
-        limit: int = 30, before_step: Optional[int] = None, since_step: Optional[int] = None,
-    ) -> tuple[bool, Optional[str]]:
+    def check_session_messages_etag_matches(self, if_none_match: Optional[str], unified_id: str, limit: int = 30, before_step: Optional[int] = None, since_step: Optional[int] = None) -> tuple[bool, Optional[str]]:
         agent_type = unified_id.split(":", 1)[0] if ":" in unified_id else ""
-        return self._etag_negotiator.check_messages_etag_matches(
-            if_none_match=if_none_match, unified_id=unified_id, adapter=self.adapters.get(agent_type),
-            is_active=self.is_session_active(unified_id), is_pending=unified_id in self.pending_approvals,
-            limit=limit, before_step=before_step, since_step=since_step,
-        )
+        return self._etag_negotiator.check_messages_etag_matches(if_none_match=if_none_match, unified_id=unified_id, adapter=self.adapters.get(agent_type), is_active=self.is_session_active(unified_id), is_pending=unified_id in self.pending_approvals, limit=limit, before_step=before_step, since_step=since_step)
 
-    def get_session_messages_etag(
-        self, detail: dict[str, Any], unified_id: str,
-        limit: int = 30, before_step: Optional[int] = None, since_step: Optional[int] = None,
-    ) -> str:
+    def get_session_messages_etag(self, detail: dict[str, Any], unified_id: str, limit: int = 30, before_step: Optional[int] = None, since_step: Optional[int] = None) -> str:
         agent_type = unified_id.split(":", 1)[0] if ":" in unified_id else ""
-        return self._etag_negotiator.generate_and_cache_messages_etag(
-            detail=detail, unified_id=unified_id, adapter=self.adapters.get(agent_type),
-            is_active=self.is_session_active(unified_id), is_pending=unified_id in self.pending_approvals,
-            limit=limit, before_step=before_step, since_step=since_step,
-        )
+        return self._etag_negotiator.generate_and_cache_messages_etag(detail=detail, unified_id=unified_id, adapter=self.adapters.get(agent_type), is_active=self.is_session_active(unified_id), is_pending=unified_id in self.pending_approvals, limit=limit, before_step=before_step, since_step=since_step)
 
     def _extract_session_detail_fingerprint(self, detail: dict[str, Any]) -> str:
         return self._etag_negotiator.extract_session_detail_fingerprint(detail)
@@ -220,6 +206,45 @@ class AgentOrchestrator:
 
     def _resolve_default_model(self, agent_type: str) -> str:
         return resolve_default_model(self.adapters, agent_type)
+
+    async def create_session(
+        self,
+        agent_type: str,
+        project_path: str = "",
+        title: str = "",
+        initial_prompt: str = "",
+        model_name: Optional[str] = None,
+        execution_mode: Optional[str] = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """深模块：一站式创建并初始化新会话（规范化ID、模式、持久化与冷启动提示调度）。"""
+        real_agent = agent_type if agent_type != "agy_ide" else "agy_cli"
+        raw_id = str(uuid.uuid4())
+        unified_id = f"{real_agent}:{raw_id}"
+        workdir = project_path.strip() or str(PROJECT_ROOT)
+        final_title = title.strip() or (initial_prompt.strip()[:50] if initial_prompt else f"新建 {real_agent} 会话")
+        norm_mode = self.normalize_execution_mode(real_agent, execution_mode)
+
+        meta = self.meta_db.upsert_session_meta(
+            unified_id=unified_id,
+            agent_type=real_agent,
+            raw_session_id=raw_id,
+            project_path=workdir,
+            title=final_title,
+            execution_mode=norm_mode,
+            model_name=model_name.strip() if model_name else None,
+        )
+        self.bump_version()
+
+        if initial_prompt.strip():
+            await self.send_prompt_to_session(
+                unified_id=unified_id,
+                prompt=initial_prompt.strip(),
+                project_path=workdir,
+                execution_mode=norm_mode,
+                model_name=model_name.strip() if model_name else None,
+            )
+
+        return unified_id, meta
 
     def list_all_sessions(self, agent_filter: Optional[str] = None, limit_per_agent: int = 40) -> list[dict[str, Any]]:
         return aggregate_all_sessions(
@@ -327,26 +352,17 @@ class AgentOrchestrator:
             allow_real_process_in_test=getattr(self, "_allow_real_process_in_test", False),
         )
 
-    def _build_cli_command(
-        self, agent_type: str, raw_session_id: str, prompt: str,
-        execution_mode: str, model_name: str = "", approved_tools: Optional[list[str]] = None,
-    ) -> list[str]:
-        return self._stream_runner.build_cli_command(
-            agent_type, raw_session_id, prompt, execution_mode, model_name, approved_tools
-        )
+    def _build_cli_command(self, agent_type: str, raw_session_id: str, prompt: str, execution_mode: str, model_name: str = "", approved_tools: Optional[list[str]] = None) -> list[str]:
+        return self._stream_runner.build_cli_command(agent_type, raw_session_id, prompt, execution_mode, model_name, approved_tools)
 
     async def _handle_stream_line(self, ctx: TurnContext, line_str: str, proc: asyncio.subprocess.Process) -> None:
         await self._stream_runner._handle_stream_line(ctx=ctx, line_str=line_str, proc=proc)
 
-    async def _watch_direct_turn_progress(self, unified_id: str, agent_type: str, raw_session_id: str) -> None:
-        await self._stream_runner.watch_direct_turn_progress(unified_id, agent_type, raw_session_id)
+    async def _watch_direct_turn_progress(self, uid: str, atype: str, sid: str) -> None:
+        await self._stream_runner.watch_direct_turn_progress(uid, atype, sid)
 
     async def _run_agent_turn_stream(self, ctx: TurnContext) -> None:
-        await self._stream_runner.run_agent_turn_stream(
-            ctx=ctx,
-            allow_real_process_in_test=getattr(self, "_allow_real_process_in_test", False),
-            cmd_builder=self._build_cli_command,
-        )
+        await self._stream_runner.run_agent_turn_stream(ctx=ctx, allow_real_process_in_test=getattr(self, "_allow_real_process_in_test", False), cmd_builder=self._build_cli_command)
 
     async def _cleanup_proc_for_approval(self, proc: Optional[asyncio.subprocess.Process], uid: str) -> None:
         if proc and proc.pid:
@@ -368,31 +384,10 @@ class AgentOrchestrator:
         self.background_tasks.add(f_task)
         f_task.add_done_callback(self.background_tasks.discard)
 
+    async def request_mobile_tool_approval(self, approval_obj: Optional[PendingApproval] = None, *, unified_id: str = "", agent_type: str = "", raw_session_id: str = "", tool_call_id: str = "", tool_name: str = "", args_summary: str = "", diff_text: str = "", risk_level: str = "normal", prompt_context: str = "", project_path: str = "", proc: Optional[asyncio.subprocess.Process] = None) -> dict[str, Any]:
+        return await self.approval_coordinator.register_and_wait(approval_obj=approval_obj, unified_id=unified_id, agent_type=agent_type, raw_session_id=raw_session_id, tool_call_id=tool_call_id, tool_name=tool_name, args_summary=args_summary, diff_text=diff_text, risk_level=risk_level, prompt_context=prompt_context, project_path=project_path, proc=proc, on_cleanup_proc=lambda uid: self._cleanup_proc_for_approval(proc, uid), on_followup_prompt=lambda uid, fol, pp: self._dispatch_followup_for_approval(uid, fol, pp))
 
-    async def request_mobile_tool_approval(
-        self, approval_obj: Optional[PendingApproval] = None, *,
-        unified_id: str = "", agent_type: str = "", raw_session_id: str = "", tool_call_id: str = "",
-        tool_name: str = "", args_summary: str = "", diff_text: str = "", risk_level: str = "normal",
-        prompt_context: str = "", project_path: str = "", proc: Optional[asyncio.subprocess.Process] = None,
-    ) -> dict[str, Any]:
-        """挂起当前工具调用并阻塞等待手机端决策。"""
-        return await self.approval_coordinator.register_and_wait(
-            approval_obj=approval_obj, unified_id=unified_id, agent_type=agent_type,
-            raw_session_id=raw_session_id, tool_call_id=tool_call_id, tool_name=tool_name,
-            args_summary=args_summary, diff_text=diff_text, risk_level=risk_level,
-            prompt_context=prompt_context, project_path=project_path, proc=proc,
-            on_cleanup_proc=lambda uid: self._cleanup_proc_for_approval(proc, uid),
-            on_followup_prompt=lambda uid, fol, pp: self._dispatch_followup_for_approval(uid, fol, pp),
-        )
-
-    async def resolve_tool_approval(
-        self, unified_id: str, decision: str, feedback: str = ""
-    ) -> dict[str, Any]:
-        return await self.approval_coordinator.resolve(
-            unified_id=unified_id,
-            decision=decision,
-            feedback=feedback,
-        )
-
+    async def resolve_tool_approval(self, unified_id: str, decision: str, feedback: str = "") -> dict[str, Any]:
+        return await self.approval_coordinator.resolve(unified_id=unified_id, decision=decision, feedback=feedback)
 
 AgentProcessPool = AgentOrchestrator

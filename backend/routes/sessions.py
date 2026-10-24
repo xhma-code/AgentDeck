@@ -6,13 +6,11 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
-from backend.core.logger import PROJECT_ROOT
 from backend.routes.deps import (
     get_meta_db,
     get_orchestrator,
@@ -63,37 +61,16 @@ async def create_new_session(
     request: Request,
     _auth: bool = Depends(verify_request_auth),
 ) -> dict[str, Any]:
-    """在手机端新建一个 Agent 会话。"""
-    meta_db = get_meta_db(request)
+    """在手机端新建一个 Agent 会话（委托 Orchestrator 深模块一站式初始化）。"""
     orchestrator = get_orchestrator(request)
-
-    raw_id = str(uuid.uuid4())
-    agent_type = req.agent_type if req.agent_type != "agy_ide" else "agy_cli"
-    unified_id = f"{agent_type}:{raw_id}"
-    workdir = req.project_path.strip() or str(PROJECT_ROOT)
-    title = req.title.strip() or (req.initial_prompt.strip()[:50] if req.initial_prompt else f"新建 {agent_type} 会话")
-    normalized_mode = orchestrator.normalize_execution_mode(agent_type, req.execution_mode)
-
-    meta = meta_db.upsert_session_meta(
-        unified_id=unified_id,
-        agent_type=agent_type,
-        raw_session_id=raw_id,
-        project_path=workdir,
-        title=title,
-        execution_mode=normalized_mode,
-        model_name=req.model_name.strip() if req.model_name else None,
+    unified_id, meta = await orchestrator.create_session(
+        agent_type=req.agent_type,
+        project_path=req.project_path,
+        title=req.title,
+        initial_prompt=req.initial_prompt,
+        model_name=req.model_name,
+        execution_mode=req.execution_mode,
     )
-    orchestrator.bump_version()
-
-    if req.initial_prompt.strip():
-        await orchestrator.send_prompt_to_session(
-            unified_id=unified_id,
-            prompt=req.initial_prompt.strip(),
-            project_path=workdir,
-            execution_mode=normalized_mode,
-            model_name=req.model_name.strip() if req.model_name else None,
-        )
-
     return {"ok": True, "unified_id": unified_id, "meta": meta}
 
 
