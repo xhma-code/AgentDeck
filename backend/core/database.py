@@ -89,6 +89,8 @@ class MetaDatabase:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(t_unified_session_meta)").fetchall()]
             if "last_viewed_at" not in cols:
                 conn.execute("ALTER TABLE t_unified_session_meta ADD COLUMN last_viewed_at TEXT;")
+            if "is_deleted" not in cols:
+                conn.execute("ALTER TABLE t_unified_session_meta ADD COLUMN is_deleted INTEGER DEFAULT 0;")
             # 对存量未标记过的历史会话，统一兜底初始化为已读（避免跨端冷启动产生大量虚假待查看）
             conn.execute("UPDATE t_unified_session_meta SET last_viewed_at = updated_at WHERE last_viewed_at IS NULL;")
 
@@ -106,7 +108,7 @@ class MetaDatabase:
     def get_session_overrides(self) -> dict[str, dict[str, Any]]:
         """获取所有会话的用户自定义覆盖项（如置顶、执行策略、模型选择等）。"""
         with self.connect() as conn:
-            rows = conn.execute("SELECT * FROM t_unified_session_meta").fetchall()
+            rows = conn.execute("SELECT * FROM t_unified_session_meta WHERE is_deleted = 0 OR is_deleted IS NULL").fetchall()
             return {r["unified_id"]: dict(r) for r in rows}
 
     def upsert_session_meta(
@@ -240,14 +242,39 @@ class MetaDatabase:
                     updated += 1
         return updated
 
-    def delete_session_meta(self, unified_id: str) -> bool:
-        """从元数据库中彻底删除会话的自定义索引记录（用于被删除或过期的外部会话清理）。"""
+    def mark_session_deleted(self, unified_id: str) -> bool:
+        """将指定会话在元数据库中标记为已删除（墓碑状态，防止底层扫描器重新拾取展示）。"""
+        now = utc_now_iso()
         with self.connect() as conn:
-            cursor = conn.execute(
-                "DELETE FROM t_unified_session_meta WHERE unified_id = ?",
-                (unified_id,),
+            cur = conn.execute(
+                "UPDATE t_unified_session_meta SET is_deleted = 1, updated_at = ? WHERE unified_id = ?",
+                (now, unified_id),
             )
-            return cursor.rowcount > 0
+            if cur.rowcount == 0:
+                parts = unified_id.split(":", 1)
+                atype = parts[0] if len(parts) > 1 else "unknown"
+                raw_id = parts[1] if len(parts) > 1 else unified_id
+                conn.execute(
+                    """
+                    INSERT INTO t_unified_session_meta
+                    (unified_id, agent_type, raw_session_id, is_deleted, updated_at)
+                    VALUES (?, ?, ?, 1, ?)
+                    """,
+                    (unified_id, atype, raw_id, now),
+                )
+            return True
+
+    def get_deleted_session_ids(self) -> set[str]:
+        """获取所有已被软删除的会话 unified_id 集合。"""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT unified_id FROM t_unified_session_meta WHERE is_deleted = 1"
+            ).fetchall()
+            return {str(r["unified_id"]) for r in rows}
+
+    def delete_session_meta(self, unified_id: str) -> bool:
+        """将指定会话标记为已删除（兼容旧调用，写入墓碑防复现）。"""
+        return self.mark_session_deleted(unified_id)
 
     def record_approval_log(
         self,

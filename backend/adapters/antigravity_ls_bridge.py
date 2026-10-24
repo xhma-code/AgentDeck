@@ -388,3 +388,34 @@ class AntigravityLanguageServerBridge:
             self._cached_models = results
             self._cached_models_ts = now
         return results
+
+    def update_conversation_title(self, cascade_id: str, new_title: str) -> bool:
+        """通过 Connect-RPC UpdateConversationAnnotations 实时更新 Antigravity 运行中会话标题。"""
+        candidates = self._scan_ls_processes()
+        payload = {
+            "cascadeId": cascade_id,
+            "annotations": {
+                "title": new_title
+            },
+            "mergeAnnotations": True
+        }
+        for pid, token in candidates:
+            ports = self._find_listening_ports(pid)
+            for port in ports:
+                scheme = self._probe_connect_port(port, token)
+                if not scheme:
+                    continue
+                ok, _ = self._raw_post(
+                    scheme=scheme,
+                    port=port,
+                    csrf_token=token,
+                    method="UpdateConversationAnnotations",
+                    body=payload,
+                    timeout=2.0,
+                )
+                if ok:
+                    logger.info(
+                        f"已通过 Language Server (PID={pid}, Port={port}) Connect-RPC 更新会话名称: {cascade_id[:8]} -> {new_title}"
+                    )
+                    return True
+        return False

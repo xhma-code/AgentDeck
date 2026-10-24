@@ -353,8 +353,52 @@ class AntigravityAdapter(BaseAgentAdapter):
         except Exception:
             return raw_bytes
 
+    def delete_session(self, raw_session_id: str) -> bool:
+        """彻底物理删除 Antigravity 会话：标记 killed 并清理 brain 目录与会话数据库。"""
+        import sqlite3
+        success = False
+        if self.summary_db_path.exists():
+            try:
+                with sqlite3.connect(str(self.summary_db_path), timeout=3.0) as conn:
+                    conn.execute(
+                        "UPDATE conversation_summaries SET killed = 1 WHERE conversation_id = ?",
+                        (raw_session_id,),
+                    )
+                    conn.commit()
+                success = True
+            except Exception as exc:
+                logger.warning(f"更新 Antigravity 会话 {raw_session_id} killed 状态失败: {exc}")
+
+        session_brain = self.brain_dir / raw_session_id
+        if session_brain.exists() and session_brain.is_dir():
+            try:
+                shutil.rmtree(session_brain, ignore_errors=True)
+                success = True
+            except Exception as exc:
+                logger.warning(f"删除 Antigravity brain 目录 {session_brain} 失败: {exc}")
+
+        conv_db = self.conversations_dir / f"{raw_session_id}.db"
+        if conv_db.exists():
+            try:
+                conv_db.unlink(missing_ok=True)
+                success = True
+            except Exception as exc:
+                logger.warning(f"删除 Antigravity 会话数据库 {conv_db} 失败: {exc}")
+
+        self.invalidate_cache()
+        return success
+
     def rename_session(self, raw_session_id: str, new_title: str) -> bool:
-        """将新标题双向同步回写至 Antigravity 原生 conversation_summaries.db（文本与 Protobuf 二进制）。"""
+        """将新标题双向同步回写至 Antigravity 原生会话（Language Server RPC 内存实时同步 + 数据库与 Protobuf 二进制）。"""
+        # 1. 优先通过运行中的 Language Server Connect-RPC 同步更新内存状态与 IDE 界面显示
+        ls_updated = False
+        try:
+            if hasattr(self, "ls_bridge"):
+                ls_updated = self.ls_bridge.update_conversation_title(raw_session_id, new_title)
+        except Exception as ls_exc:
+            logger.debug(f"通过 Language Server 更新标题跳过: {ls_exc}")
+
+        # 2. 同步持久化写入底层的 conversation_summaries.db 物理存储与 Protobuf 字段
         import sqlite3
         candidate_dirs = [
             self.root_dir,
