@@ -88,44 +88,44 @@ export function renderCurrentSessionHeader() {
 
   const meta = AGENT_META[sess.agent_type] || AGENT_META.claude_code;
 
-  // 获取项目名称（非工程会话回退至会话 ID 短码）
+  // 判断是否为真正工程项目会话（非临时会话）
   const rawProjectName =
     sess.is_project && sess.project_name
       ? sess.project_name
-      : (sess.project_name || (sess.project_path ? getProjectInfo(sess.project_path).name : ""));
+      : (sess.is_project && sess.project_path ? getProjectInfo(sess.project_path)?.name : "");
   const projectName = String(rawProjectName || "").trim();
+  const isProjectSession = Boolean(sess.is_project && projectName && projectName !== "未分类");
 
-  // 桌面网页端项目展示（提升对比度与悬停反馈）
-  const desktopProjectHtml = projectName
+  // 桌面网页端项目展示（提升对比度与悬停反馈；如果是临时会话则不显示项目名称与连接符）
+  const desktopProjectHtml = isProjectSession
     ? `<span class="inline-flex items-center gap-1.5 text-xs text-zinc-300 hover:text-zinc-100 font-medium font-mono shrink-0 max-w-[200px] truncate transition-colors" title="${escapeHtml(projectName)}">
         <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
         <span class="truncate">${escapeHtml(projectName)}</span>
-      </span>`
-    : `<span class="inline-flex items-center text-xs text-zinc-400 font-mono shrink-0" title="${escapeHtml(sess.raw_session_id || "")}">#${escapeHtml((sess.raw_session_id || "").slice(0, 8))}</span>`;
+      </span>
+      <span class="text-zinc-500 text-xs shrink-0 select-none">·</span>`
+    : "";
 
-  // 手机移动端项目展示（会话名称 · 项目名称）
-  const mobileProjectHtml = projectName
+  // 手机移动端项目展示（会话名称 · 项目名称；如果是临时会话则不显示项目名称与连接符）
+  const mobileProjectHtml = isProjectSession
     ? `<span class="text-zinc-500 text-[11px] shrink-0 select-none">·</span>
        <span class="text-[11px] text-zinc-400 font-mono shrink-0 max-w-[100px] truncate" title="${escapeHtml(projectName)}">${escapeHtml(projectName)}</span>`
-    : (sess.raw_session_id
-        ? `<span class="text-zinc-500 text-[11px] shrink-0 select-none">·</span>
-           <span class="text-[11px] text-zinc-500 font-mono shrink-0">#${escapeHtml((sess.raw_session_id || "").slice(0, 8))}</span>`
-        : "");
+    : "";
 
-  // 网页端：项目名称 · 会话名称
-  // 手机端：只显示 会话名称 · 项目名称
+  const friendlyTitle = cleanFriendlyTitle(sess.title);
+
+  // 网页端：项目名称 · 会话名称（临时会话仅显示 会话名称）
+  // 手机端：会话名称 · 项目名称（临时会话仅显示 会话名称）
   if (titleEl) {
     titleEl.innerHTML = `
       <!-- 网页端（sm及以上显示）：项目名称 · 会话名称 -->
       <div class="hidden sm:flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
         ${desktopProjectHtml}
-        <span class="text-zinc-500 text-xs shrink-0 select-none">·</span>
-        <span class="truncate font-medium text-sm text-zinc-100 min-w-0" title="${escapeHtml(cleanFriendlyTitle(sess.title))}">${escapeHtml(cleanFriendlyTitle(sess.title))}</span>
+        <span class="truncate font-medium text-sm text-zinc-100 min-w-0" title="${escapeHtml(friendlyTitle)}">${escapeHtml(friendlyTitle)}</span>
       </div>
 
       <!-- 手机端（sm以下显示）：会话名称 · 项目名称 -->
       <div class="flex sm:hidden items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
-        <span class="truncate font-medium text-xs text-zinc-100 min-w-0 shrink" title="${escapeHtml(cleanFriendlyTitle(sess.title))}">${escapeHtml(cleanFriendlyTitle(sess.title))}</span>
+        <span class="truncate font-medium text-xs text-zinc-100 min-w-0 shrink" title="${escapeHtml(friendlyTitle)}">${escapeHtml(friendlyTitle)}</span>
         ${mobileProjectHtml}
       </div>
     `;
@@ -172,7 +172,7 @@ export function updatePromptActionBtnState() {
   if (isWorking && !hasText) {
     btn.dataset.action = "abort";
     btn.className =
-      "h-7 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow active:scale-95 transition flex items-center justify-center shrink-0 cursor-pointer";
+      "h-7 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow active:scale-95 transition flex items-center justify-center gap-1 shrink-0 cursor-pointer";
     if (btnText) {
       btnText.textContent = "中断";
     }
@@ -180,7 +180,7 @@ export function updatePromptActionBtnState() {
   } else {
     btn.dataset.action = "send";
     btn.className =
-      "h-7 px-3 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs shadow active:scale-95 transition flex items-center justify-center shrink-0 cursor-pointer";
+      "h-7 px-3 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs shadow active:scale-95 transition flex items-center justify-center gap-1 shrink-0 cursor-pointer";
     if (btnText) {
       btnText.textContent = "发送";
     }

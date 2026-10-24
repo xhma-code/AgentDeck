@@ -45,6 +45,20 @@
           <span class="font-bold text-base sm:text-[17px] tracking-tight text-white truncate">AgentDeck</span>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
+          <!-- 极简防休眠开关：单色微型矢量咖啡杯图标，高亮表示常驻开启 -->
+          <button id="sidebar-awake-btn" onclick="window.appActions.toggleAwakeLockFromSidebar()"
+            class="relative w-8 h-8 rounded-lg bg-transparent hover:bg-zinc-900/60 text-zinc-400 hover:text-zinc-200 flex items-center justify-center transition active:scale-95 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+            title="PC 防休眠已关闭（点击开启）" aria-label="切换PC防休眠锁">
+            <svg id="sidebar-awake-icon" class="w-4 h-4 text-zinc-500 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 8h1a4 4 0 0 1 0 8h-1"></path>
+              <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path>
+              <line x1="6" y1="1" x2="6" y2="4"></line>
+              <line x1="10" y1="1" x2="10" y2="4"></line>
+              <line x1="14" y1="1" x2="14" y2="4"></line>
+            </svg>
+            <span id="sidebar-awake-dot" class="hidden absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]"></span>
+          </button>
+
           <!-- 侧边栏状态指示与一键更新联动按钮：手机端保留圆圈图标以便更新和状态显示，电脑网页端隐藏（与右上角扫码前圆点去重） -->
           <button id="sidebar-status-btn" onclick="window.appActions.handleStatusBtnClick()"
             class="flex md:hidden h-8 w-8 rounded-lg bg-transparent hover:bg-zinc-900/60 text-zinc-300 items-center justify-center text-xs transition active:scale-95 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
@@ -69,38 +83,43 @@
         </div>
       </div>
 
-      <!-- Agent 类型筛选胶囊 -->
-      <div class="px-2.5 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar border-b border-zinc-900 shrink-0">
-        <button data-agent-tab="all" onclick="window.appActions.setFilter('all')"
-          class="px-2.5 py-1.5 sm:py-1 rounded-lg bg-sky-500 text-zinc-950 font-semibold text-[11px] shrink-0 transition active:scale-95">
-          全部
-        </button>
-        <button data-agent-tab="agy_ide" onclick="window.appActions.setFilter('agy_ide')"
-          class="px-2.5 py-1.5 sm:py-1 rounded-lg bg-zinc-900 text-zinc-300 hover:bg-zinc-800 text-[11px] shrink-0 transition active:scale-95">
-          Antigravity
-        </button>
-        <button data-agent-tab="agy_cli" onclick="window.appActions.setFilter('agy_cli')"
-          class="px-2.5 py-1.5 sm:py-1 rounded-lg bg-zinc-900 text-zinc-300 hover:bg-zinc-800 text-[11px] shrink-0 transition active:scale-95">
-          AGY
-        </button>
-        <button data-agent-tab="claude_code" onclick="window.appActions.setFilter('claude_code')"
-          class="px-2.5 py-1.5 sm:py-1 rounded-lg bg-zinc-900 text-zinc-300 hover:bg-zinc-800 text-[11px] shrink-0 transition active:scale-95">
-          Claude
-        </button>
-        <button data-agent-tab="opencode" onclick="window.appActions.setFilter('opencode')"
-          class="px-2.5 py-1.5 sm:py-1 rounded-lg bg-zinc-900 text-zinc-300 hover:bg-zinc-800 text-[11px] shrink-0 transition active:scale-95">
-          OpenCode
-        </button>
+      <!-- 紧凑单行：Agent 筛选下拉 + 搜索框 -->
+      <div class="px-2.5 py-2 flex items-center gap-1.5 shrink-0 relative">
+        <!-- Agent 紧凑下拉触发器 -->
+        <div class="relative shrink-0">
+          <button id="sidebar-agent-filter-btn" onclick="window.appActions.toggleAgentFilterMenu(event)"
+            type="button"
+            class="h-8 min-w-[84px] max-w-[104px] px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 text-zinc-200 flex items-center justify-between gap-1.5 text-xs transition active:scale-95 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+            aria-haspopup="true" aria-expanded="false" title="按 Agent 引擎筛选">
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span id="sidebar-agent-filter-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+              <span id="sidebar-agent-filter-label" class="text-[11px] font-medium text-zinc-200 truncate">全部</span>
+            </div>
+            <svg class="w-3 h-3 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
+
+          <!-- 动态 Agent 浮层选择面板 (z-50 浮于会话列表上方) -->
+          <div id="sidebar-agent-filter-menu"
+            class="hidden absolute left-0 top-full mt-1.5 w-52 rounded-xl bg-zinc-950 border border-zinc-800 shadow-2xl p-1 z-50 space-y-0.5">
+            <!-- 动态渲染菜单项 -->
+          </div>
+        </div>
+
+        <!-- 搜索框 -->
+        <div class="relative flex-1 min-w-0">
+          <input id="session-search-input" type="search" placeholder="搜索项目或对话..."
+            class="w-full h-8 pl-7 pr-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500/60" />
+          <svg class="w-3.5 h-3.5 text-zinc-500 absolute left-2 top-2.5 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+        </div>
       </div>
 
-      <!-- 搜索框 -->
-      <div class="px-2.5 py-1.5 shrink-0">
-        <input id="session-search-input" type="search" placeholder="搜索项目或对话..."
-          class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500/60" />
-      </div>
-
-      <!-- 分类滚动区（置顶 / 项目 Projects / 最近对话 Recent Conversations） -->
-      <div id="session-list-container" class="flex-1 overflow-y-auto subtle-scrollbar px-2 py-1 space-y-3">
+      <!-- 分类滚动区（置顶 / 项目 Projects / 最近对话 Recent Conversations，直通底部安全区） -->
+      <div id="session-list-container" class="flex-1 overflow-y-auto subtle-scrollbar px-2 py-1 space-y-3 pb-4 safe-bottom">
         <div class="space-y-3 p-1 animate-pulse" id="sidebar-skeleton-loader">
           <div class="space-y-2">
             <div class="h-3 w-16 bg-zinc-800/80 rounded px-1 mb-2"></div>
@@ -127,23 +146,6 @@
             </div>
           </div>
         </div>
-      </div>
-
-      <!-- 侧边栏底部常驻控制与健康体检入口 -->
-      <div class="p-2 border-t border-white/[0.06] bg-zinc-950/80 flex items-center justify-between gap-1.5 shrink-0 text-xs">
-        <button id="sidebar-awake-btn" onclick="window.appActions.toggleAwakeLockFromSidebar()"
-          class="flex-1 py-1 px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800/80 text-zinc-300 text-[11px] font-medium flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer"
-          title="点击切换 PC 防休眠锁状态">
-          <span id="sidebar-awake-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-          <span id="sidebar-awake-text">防休眠: 开</span>
-        </button>
-        <button id="sidebar-health-btn" onclick="window.appActions.openAgentsHealthModal()"
-          class="py-1 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800/80 text-zinc-400 hover:text-zinc-200 text-[11px] font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer shrink-0"
-          title="查看 4 大 Agent 运行体检状态">
-          <span id="sidebar-health-dot" class="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0"></span>
-          <svg id="sidebar-health-icon" class="w-3.5 h-3.5 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
-          <span id="sidebar-health-text">体检</span>
-        </button>
       </div>
     </aside>
 
@@ -311,12 +313,12 @@
           <div id="slash-popover" class="hidden mb-2 rounded-xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-1 max-h-72 sm:max-h-80 overflow-y-auto subtle-scrollbar"></div>
 
           <!-- 一体化 Agent 复合输入大框 -->
-          <div id="agent-input-card" class="relative w-full rounded-2xl bg-zinc-900/90 border border-zinc-800/80 transition-all duration-200 flex flex-col focus-within:border-sky-500/60">
+          <div id="agent-input-card" class="relative w-full rounded-2xl bg-zinc-900/90 border border-zinc-800/80 shadow-lg shadow-black/60 focus-within:border-sky-500/60 focus-within:ring-1 focus-within:ring-sky-500/40 transition-all duration-200 flex flex-col">
             <!-- 上半部分：多行文本输入区 -->
             <div class="relative w-full px-3.5 pt-2.5 pb-1">
               <textarea id="prompt-input" rows="1"
                 placeholder=" "
-                class="peer w-full min-h-[42px] max-h-48 py-1 bg-transparent border-0 text-xs sm:text-sm text-zinc-100 placeholder-transparent focus:outline-none focus:ring-0 resize-none block m-0 subtle-scrollbar leading-relaxed"></textarea>
+                class="peer w-full min-h-[40px] max-h-48 py-1 bg-transparent border-0 text-xs sm:text-sm text-zinc-100 placeholder-transparent focus:outline-none focus:ring-0 resize-none block m-0 subtle-scrollbar leading-relaxed"></textarea>
 
               <div id="prompt-input-placeholder"
                 class="pointer-events-none absolute left-3.5 top-3.5 flex items-center text-xs sm:text-sm text-zinc-500 peer-placeholder-shown:flex hidden select-none leading-normal">
@@ -340,8 +342,7 @@
                   </button>
 
                   <!-- 向上弹出的 Model Picker 浮层 -->
-                  <div id="model-picker-popover" class="hidden fixed rounded-xl border border-zinc-700 p-1 z-[60] max-h-80 overflow-y-auto subtle-scrollbar"
-                    style="background-color: #09090b !important; box-shadow: 0 20px 45px rgba(0,0,0,0.95), 0 0 0 1px rgba(255,255,255,0.1) !important;"></div>
+                  <div id="model-picker-popover" class="hidden fixed rounded-xl border border-zinc-700 p-1 z-[60] max-h-80 overflow-y-auto subtle-scrollbar bg-zinc-950 shadow-2xl"></div>
                 </div>
 
                 <!-- 执行策略选择器 -->
@@ -397,28 +398,6 @@
     </div>
   </div>
 
-  <!-- 模态框：4 大 Agent 运行体检 -->
-  <div id="agents-health-modal" role="dialog" aria-modal="true"
-    onclick="if(event.target===this)window.appActions.closeAgentsHealthModal()"
-    class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-    <div class="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-4 shadow-2xl space-y-3">
-      <div class="flex items-center justify-between pb-2 border-b border-zinc-800">
-        <div class="font-bold text-sm text-zinc-100 flex items-center gap-2">
-          <svg class="w-4 h-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
-          <span>Agent 体检</span>
-        </div>
-        <div class="flex items-center gap-1">
-          <button id="agents-health-refresh-btn" onclick="window.appActions.refreshAgentsHealth()" class="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition cursor-pointer" aria-label="重新体检" title="重新体检">
-            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
-          </button>
-          <button onclick="window.appActions.closeAgentsHealthModal()" class="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition cursor-pointer" aria-label="关闭">
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-          </button>
-        </div>
-      </div>
-      <div id="agents-health-modal-body" class="space-y-1.5"></div>
-    </div>
-  </div>
 
   <!-- 模态框 2：新建对话 -->
   <!-- 模态框：未配对引导 / 手动输入配对码 -->

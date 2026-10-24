@@ -35,7 +35,7 @@ export async function handleSendPrompt(customPrompt = null) {
   requestNotificationPermission();
   if (customPrompt === null && inputEl) {
     inputEl.value = "";
-    inputEl.style.height = "auto";
+    inputEl.style.height = "40px";
   }
   updatePromptActionBtnState();
 
@@ -341,8 +341,9 @@ export function handlePromptInput() {
   if (!inputEl) return;
 
   // 1. 动态自适应调整多行文本高度（基础 42px，上限 180px 随后滚动）
-  inputEl.style.height = "auto";
-  const newHeight = Math.min(Math.max(inputEl.scrollHeight, 42), 180);
+  inputEl.style.height = "40px";
+  const MAX_PROMPT_HEIGHT = 192; // 对齐 Tailwind max-h-48 (12rem)
+  const newHeight = Math.min(Math.max(inputEl.scrollHeight, 42), MAX_PROMPT_HEIGHT);
   inputEl.style.height = `${newHeight}px`;
 
   // 2. 斜杠指令检查与浮层渲染
