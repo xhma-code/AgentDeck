@@ -294,12 +294,19 @@ export function renderMessagesList() {
   const turns = groupMessagesIntoTurns(state.messages);
   const lastTurn = turns[turns.length - 1];
   const thinkingStart = state.pendingTurnThinking ? state.pendingTurnThinking[state.selectedSessionId] : null;
-  if (thinkingStart && lastTurn && (lastTurn.type === "agent" || lastTurn.type === "assistant")) {
-    const turnTime = new Date(lastTurn.createdAt || 0).getTime();
-    const lastStep = lastTurn.primarySteps ? lastTurn.primarySteps[lastTurn.primarySteps.length - 1] : null;
-    const isLastStepRunning = lastStep && lastStep.status === "RUNNING";
-    if (turnTime >= thinkingStart - 1000 && !isLastStepRunning && !isSessionWorking(state.selectedSessionId)) {
-      delete state.pendingTurnThinking[state.selectedSessionId];
+  if (thinkingStart && lastTurn && (lastTurn.type === "assistant_turn" || lastTurn.type === "agent" || lastTurn.type === "assistant")) {
+    const lastStep = (lastTurn.primarySteps && lastTurn.primarySteps.length > 0)
+      ? lastTurn.primarySteps[lastTurn.primarySteps.length - 1]
+      : (lastTurn.processRecords && lastTurn.processRecords.length > 0 ? lastTurn.processRecords[lastTurn.processRecords.length - 1] : null);
+    const isLastStepRunning = lastStep && (lastStep.status === "RUNNING" || lastStep.status === "PENDING");
+    const hasRunningTools = lastStep && Array.isArray(lastStep.tool_calls) && lastStep.tool_calls.some(
+      (tc) => tc && (tc.status === "RUNNING" || tc.status === "PENDING")
+    );
+    if (!isLastStepRunning && !hasRunningTools) {
+      const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+      if (!curSess || curSess.status !== "running") {
+        delete state.pendingTurnThinking[state.selectedSessionId];
+      }
     }
   }
   state.turnsMap = {};

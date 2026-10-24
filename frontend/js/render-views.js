@@ -1,3 +1,4 @@
+import { apiFetch } from "./api.js";
 /**
  * AgentDeck 控制面板、Git 审查模态框、二维码与状态胶囊渲染器
  */
@@ -11,6 +12,7 @@ import {
   escapeHtml,
   escapeJsSingleQuote,
   icons,
+  formatTokenCount,
 } from "./utils.js";
 import {
   isSessionWorking,
@@ -349,7 +351,14 @@ export function _doRenderLiveStreamOverlay() {
     return;
   }
 
-  // Agent 工作中，在对话区域显示 Working... 与实时生成流（RAF 帧对齐渲染）
+  // Agent 工作中，在对话区域显示 Working... 与实时耗时及生成流（RAF 帧对齐渲染）
+  const startMs = state.pendingTurnThinking ? state.pendingTurnThinking[state.selectedSessionId] : null;
+  let elapsedStr = "";
+  if (startMs) {
+    const elapsedSec = Math.max(1, Math.round((Date.now() - startMs) / 1000));
+    elapsedStr = elapsedSec < 60 ? `${elapsedSec}s` : `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`;
+  }
+
   const streamHtml = liveText
     ? `<div class="mt-2 text-xs text-zinc-200 border-t border-zinc-800/60 pt-2">${renderMarkdownHtml(
         liveText.slice(-3000),
@@ -365,6 +374,7 @@ export function _doRenderLiveStreamOverlay() {
           <span class="relative inline-flex rounded-full h-2 w-2 bg-sky-400"></span>
         </span>
         <span class="tracking-wider font-semibold">Working...</span>
+        ${elapsedStr ? `<span class="text-zinc-600 font-normal">·</span><span class="text-sky-300/80 font-normal font-mono text-[11px]">${elapsedStr}</span>` : ""}
       </div>
       ${streamHtml}
     </div>

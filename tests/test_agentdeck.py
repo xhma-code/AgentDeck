@@ -2581,11 +2581,21 @@ def test_inspect_transcript_tail_status_and_smooth_activity(tmp_path: Path):
     assert active is False
     assert status == "idle"
 
-    # 4. 明确 DONE 处于 5 秒以内，保持活跃缓冲
+    # 4. 终态即时判定：PLANNER_RESPONSE 明确 DONE 且回答完毕，无论多近期（如 1 秒前）均应瞬时为 idle，严禁虚假卡在 working
+    past_1s = time.time() - 1.0
+    os.utime(tp, (past_1s, past_1s))
+    active, status = inspect_transcript_tail_status(tp)
+    assert active is False
+    assert status == "idle"
+
+    # 5. 工具刚执行完毕（GENERIC 步骤 DONE），等待模型接续思考生成回复，在极短窗口（5 秒内）平滑保持活跃
+    step3 = json.dumps({"step_index": 3, "type": "GENERIC", "status": "DONE", "content": "命令执行成功"}) + "\n"
+    tp.write_text(step3, encoding="utf-8")
     past_5s = time.time() - 5.0
     os.utime(tp, (past_5s, past_5s))
     active, status = inspect_transcript_tail_status(tp)
     assert active is True
+    assert status == "running" 
 
 
 
@@ -2734,3 +2744,75 @@ def test_session_aggregator_subagent_handling(tmp_path: Path):
     assert res_map["agy_ide:main-1"]["is_subagent"] is False
     assert res_map["agy_ide:sub-2"]["is_subagent"] is True
     assert res_map["agy_ide:sub-2"]["parent_unified_id"] == "agy_ide:main-1"
+
+
+def test_antigravity_session_instant_finish_and_sqlite_override(tmp_path: Path):
+    """
+    验证：当 transcript.jsonl 已经回答完毕（DONE），即使 SQLite 表滞后记录 not_fully_idle=1，
+    适配器也能以 transcript.jsonl 为准瞬时判定为 idle，绝不产生滞后假死 working。
+    """
+    import sqlite3
+    import time
+    from backend.adapters.antigravity_adapter import AntigravityAdapter
+
+    brain_dir = tmp_path / "brain"
+    cid = "test-session-instant-done-1234"
+    logs_dir = brain_dir / cid / ".system_generated" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    tp = logs_dir / "transcript.jsonl"
+
+    # transcript.jsonl 写入回答完毕的最终 step (PLANNER_RESPONSE DONE)
+    step_final = json.dumps({
+        "step_index": 5,
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "content": "回答完毕，请查看成果。",
+        "tool_calls": []
+    }) + "\n"
+    tp.write_text(step_final, encoding="utf-8")
+
+    # 在 SQLite conversation_summaries.db 中模拟滞后的 not_fully_idle = 1 与 RUNNING
+    db_path = tmp_path / "conversation_summaries.db"
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE conversation_summaries (
+            conversation_id TEXT PRIMARY KEY,
+            title TEXT,
+            preview TEXT,
+            step_count INTEGER,
+            last_modified_time INTEGER,
+            workspace_uris TEXT,
+            status TEXT,
+            not_fully_idle INTEGER,
+            killed INTEGER DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        INSERT INTO conversation_summaries
+        VALUES (?, '测试会话', '最新预览', 5, ?, 'file:///test', 'CASCADE_RUN_STATUS_RUNNING', 1, 0)
+    """, (cid, int(time.time() * 1000)))
+    conn.commit()
+    conn.close()
+
+    adapter = AntigravityAdapter(
+        agent_type="agy_ide",
+        agent_label="Antigravity IDE",
+        root_dir=tmp_path
+    )
+
+    # 1. 验证 is_external_session_active 瞬时识别为 False（闲置），不被 SQLite 滞后记录绑架
+    is_active = adapter.is_external_session_active(cid)
+    assert is_active is False
+
+    # 2. 验证 list_sessions / query_antigravity_sessions 状态校准为 idle
+    sessions = adapter.list_sessions(limit=10)
+    target = next((s for s in sessions if s.raw_session_id == cid), None)
+    assert target is not None
+    assert target.status == "idle"
+
+    # 3. 验证 query_antigravity_single_session 状态校准为 idle
+    single = adapter.get_session(cid)
+    assert single is not None
+    assert single.status == "idle"

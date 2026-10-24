@@ -111,6 +111,19 @@ def query_antigravity_sessions(
             else:
                 status = "idle"
 
+            # 状态权威性校准：若会话 transcript 明确已结束，绝不被滞后的 SQLite 表误判为活跃
+            if status in ("desktop_active", "running"):
+                tp = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+                if tp.is_file():
+                    try:
+                        is_active, s_status = inspect_transcript_tail_status(tp)
+                        if not is_active:
+                            status = "idle"
+                        elif agent_type != "agy_ide":
+                            status = s_status
+                    except OSError:
+                        pass
+
             title = (r.get("title") or "").strip()
             preview = (r.get("preview") or "").strip()
             raw_paths = r.get("workspace_uris") or r.get("workspace_paths") or ""
@@ -449,6 +462,19 @@ def query_antigravity_single_session(
                 status = "running"
             else:
                 status = "idle"
+
+            # 状态权威性校准：若会话 transcript 明确已结束，绝不被滞后的 SQLite 表误判为活跃
+            if status in ("desktop_active", "running"):
+                tp = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+                if tp.is_file():
+                    try:
+                        is_active, s_status = inspect_transcript_tail_status(tp)
+                        if not is_active:
+                            status = "idle"
+                        elif agent_type != "agy_ide":
+                            status = s_status
+                    except OSError:
+                        pass
 
             title = (r.get("title") or "").strip()
             preview = (r.get("preview") or "").strip()

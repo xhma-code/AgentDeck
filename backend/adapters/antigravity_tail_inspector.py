@@ -75,11 +75,20 @@ def inspect_transcript_tail_status(tp: Path) -> tuple[bool, str]:
         return True, "running"
 
     if status == "DONE" and not is_running_step:
+        # 当最后一步是 PLANNER_RESPONSE 或 MODEL 输出且已完成且无未完工具时，表示本轮规划与回答彻底结束，瞬时返回 idle，消除滞后虚假 working
+        if step_type == "PLANNER_RESPONSE" or source == "MODEL":
+            has_pending_tools = any(
+                isinstance(tc, dict) and str(tc.get("status") or "").upper() not in ("DONE", "ERROR", "CANCELLED")
+                for tc in tool_calls
+            )
+            if not has_pending_tools:
+                return False, "idle"
+        # 若是工具输出刚结束（GENERIC）等待模型接续，在极短窗口内保持 running
         if age > SHORT_IDLE_GRACE_SECONDS:
             return False, "idle"
         return True, "running"
 
-    return age < RECENT_ACTIVE_WINDOW_SECONDS, "running" if age < RECENT_ACTIVE_WINDOW_SECONDS else "idle"
+    return age < 10.0, "running" if age < 10.0 else "idle"
 
 
 def is_temporary_probe_session(title: str, preview: str, project_path: str = "") -> bool:

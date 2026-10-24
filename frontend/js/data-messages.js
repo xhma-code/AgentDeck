@@ -70,6 +70,24 @@ export async function loadSessionMessages(unifiedId, options = false) {
       const optList = state.optimisticMessages[unifiedId] || [];
       if (optList.length === 0) {
         delete state.pendingTurnThinking[unifiedId];
+        delete state.streamingBuffer[unifiedId];
+      }
+      let statusChanged = false;
+      const targetSessions = [
+        ...(state.allSessions || []),
+        ...(state.sessions || []),
+      ];
+      for (const s of targetSessions) {
+        if (s && s.unified_id === unifiedId && (s.status === "running" || s.status === "desktop_active")) {
+          s.status = "idle";
+          statusChanged = true;
+        }
+      }
+      if (statusChanged) {
+        renderSessionList();
+      }
+      if (unifiedId === state.selectedSessionId) {
+        renderLiveStreamOverlay();
       }
     }
 

@@ -113,7 +113,16 @@ class AntigravityAdapter(BaseAgentAdapter):
         self._brain_scan_cache = (0.0, {})
 
     def is_external_session_active(self, raw_session_id: str) -> bool:
-        """单行极速探测 Antigravity 会话是否处于外部运行/活跃态。"""
+        """单行极速探测 Antigravity 会话是否处于外部运行/活跃态（优先以 transcript.jsonl 权威日志为准）。"""
+        tp = self.get_session_transcript_path(raw_session_id)
+        if tp and tp.exists():
+            try:
+                is_active, _ = inspect_transcript_tail_status(tp)
+                return is_active
+            except Exception as exc:
+                logger.debug(f"探测 transcript 状态异常 ({raw_session_id[:8]}): {exc}")
+
+        # 若 transcript 尚不存在（如新会话初始化尚未生成日志），回退至 SQLite 摘要表探测
         if self.summary_db_path.exists():
             sql = "SELECT status, not_fully_idle FROM conversation_summaries WHERE conversation_id = ? AND killed = 0 LIMIT 1"
             rows = safe_query_external_sqlite(self.summary_db_path, sql, (raw_session_id,))
@@ -125,15 +134,6 @@ class AntigravityAdapter(BaseAgentAdapter):
                     return True
                 if not_idle or "RUNNING" in raw_status.upper():
                     return True
-
-        tp = self.get_session_transcript_path(raw_session_id)
-        if tp and tp.exists():
-            try:
-                is_active, _ = inspect_transcript_tail_status(tp)
-                if is_active:
-                    return True
-            except Exception as exc:
-                logger.debug(f"探测 transcript 状态异常 ({raw_session_id[:8]}): {exc}")
         return False
 
     def get_active_session_ids(self) -> list[str]:

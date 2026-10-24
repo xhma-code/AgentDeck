@@ -93,10 +93,18 @@ async function initApp() {
     }
   });
 
+  let workingPollCounter = 0;
   setInterval(() => {
     if (state.selectedSessionId) {
       if (isSessionWorking(state.selectedSessionId)) {
         renderLiveStreamOverlay();
+        // 活跃执行态自愈收敛巡检：每 2 秒静默核实一次当前会话的最新完成态，消除外部会话完成后的同步滞后
+        workingPollCounter++;
+        if (workingPollCounter % 2 === 0) {
+          loadSessionMessages(state.selectedSessionId, { silent: true });
+        }
+      } else {
+        workingPollCounter = 0;
       }
     }
   }, 1000);
