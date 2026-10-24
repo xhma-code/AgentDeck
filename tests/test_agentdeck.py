@@ -498,15 +498,15 @@ def test_model_selection_and_cli_args(tmp_path: Path):
         models_by_agent = models_resp.json()["models_by_agent"]
         assert "agy_cli" in models_by_agent
         assert "claude_code" in models_by_agent
-        assert any(m["id"] == "gemini-4-argon-high" for m in models_by_agent["agy_cli"])
+        assert any("gemini-3.8-flash" in m["id"] for m in models_by_agent["agy_cli"])
 
         # 更新会话模型
         patch_resp = client.patch(
             "/api/v1/sessions/agy_cli:conv_model_1/meta",
-            json={"model_name": "gemini-4-argon-high", "execution_mode": "plan"},
+            json={"model_name": "gemini-3.8-flash-high", "execution_mode": "plan"},
         )
         assert patch_resp.status_code == 200
-        assert patch_resp.json()["meta"]["model_name"] == "gemini-4-argon-high"
+        assert patch_resp.json()["meta"]["model_name"] == "gemini-3.8-flash-high"
 
     # 验证 CLI 参数构建包含 --model
     cmd_agy = orchestrator._build_cli_command(
@@ -1254,6 +1254,20 @@ def test_healthz_and_doctor_endpoints(tmp_path: Path):
         r2 = client.get("/api/v1/health")
         assert r2.status_code == 200
         assert r2.json()["status"] == "healthy"
+
+        # 验证 /api/v1/system/status 返回完整的 4 大 Agent 健康体检表 (agents_health)
+        r3 = client.get("/api/v1/system/status")
+        assert r3.status_code == 200
+        d3 = r3.json()
+        assert d3["ok"] is True
+        assert "agents_health" in d3, "agents_health 字段缺失"
+        assert isinstance(d3["agents_health"], list)
+        assert len(d3["agents_health"]) >= 3
+        for item in d3["agents_health"]:
+            assert "agent_type" in item
+            assert "agent_label" in item
+            assert "ready" in item
+            assert "description" in item
 
     # 测试 run.py --doctor 逻辑函数返回 0
     from run import run_doctor
@@ -2593,6 +2607,21 @@ def test_inspect_transcript_tail_status_and_smooth_activity(tmp_path: Path):
     tp.write_text(step3, encoding="utf-8")
     past_5s = time.time() - 5.0
     os.utime(tp, (past_5s, past_5s))
+    active, status = inspect_transcript_tail_status(tp)
+    assert active is True
+    assert status == "running"
+
+    # 6. 中间工具调用步骤（PLANNER_RESPONSE 带有 tool_calls），在极短窗口（3 秒内）稳定保持活跃，严禁在工具间隙跳变
+    step4 = json.dumps({
+        "step_index": 4,
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "content": "",
+        "tool_calls": [{"name": "run_command", "status": "DONE"}]
+    }) + "\n"
+    tp.write_text(step4, encoding="utf-8")
+    past_3s = time.time() - 3.0
+    os.utime(tp, (past_3s, past_3s))
     active, status = inspect_transcript_tail_status(tp)
     assert active is True
     assert status == "running" 

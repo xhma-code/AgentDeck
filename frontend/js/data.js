@@ -28,12 +28,14 @@ import {
   renderHeaderStatus,
   renderSidebarStatus,
   renderSidebarAwakeLock,
+  renderSidebarHealthStatus,
   renderQrModalContent,
   renderTokenUsage,
   renderMessagesList,
   renderLiveStreamOverlay,
   renderModelOptionsForAgent,
   updateGitStatusBadge,
+  renderAgentsHealthModal,
 } from "./render.js";
 import { updateDrawerVisibility } from "./modals.js";
 import { scheduleDeferredSessionListRender } from "./network.js";
@@ -102,10 +104,12 @@ export async function loadSystemStatus() {
     }
     renderHeaderStatus();
     renderSidebarAwakeLock();
+    renderSidebarHealthStatus();
     renderApprovalBanners();
     renderQrModalContent();
     renderCurrentSessionHeader();
     updateGitStatusBadge();
+    renderAgentsHealthModal();
   } catch (e) {
     console.error("获取系统状态失败:", e);
   }

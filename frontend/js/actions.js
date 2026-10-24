@@ -45,6 +45,10 @@ import {
   refreshPairCodeAndQr,
   switchQrChannel,
   toggleAwakeLockFromSidebar,
+  setFilter,
+  toggleProjectCollapse,
+  toggleProjectHide,
+  deleteSession,
 } from "./actions-session.js";
 
 import {
@@ -90,6 +94,7 @@ import {
   closeTokenUsageModal,
   openAgentsHealthModal,
   closeAgentsHealthModal,
+  refreshAgentsHealth,
   openGitStatusModal,
   toggleGitFileDiff,
   viewFullGitDiff,
@@ -148,6 +153,7 @@ window.appActions = {
   closeTokenUsageModal,
   openAgentsHealthModal,
   closeAgentsHealthModal,
+  refreshAgentsHealth,
   openGitStatusModal,
   toggleGitFileDiff,
   viewFullGitDiff,
@@ -161,65 +167,10 @@ window.appActions = {
   // 基础会话交互
   handleStatusBtnClick,
   selectSession,
-  setFilter(filter) {
-    state.activeFilter = filter;
-    document.querySelectorAll("[data-agent-tab]").forEach((btn) => {
-      const tab = btn.getAttribute("data-agent-tab");
-      if (tab === filter) {
-        btn.className = "px-2.5 py-1.5 sm:py-1 rounded-lg bg-sky-500 text-zinc-950 font-semibold text-[11px] shrink-0 transition active:scale-95";
-      } else {
-        btn.className = "px-2.5 py-1.5 sm:py-1 rounded-lg bg-zinc-900 text-zinc-300 hover:bg-zinc-800 text-[11px] shrink-0 transition active:scale-95";
-      }
-    });
-    renderSessionList();
-  },
-  toggleProjectCollapse(projectKey) {
-    state.expandedProjects[projectKey] = !state.expandedProjects[projectKey];
-    renderSessionList();
-  },
-  async toggleProjectHide(projectPath, currentHidden, ev) {
-    if (ev) ev.stopPropagation();
-    try {
-      await apiFetch("/api/v1/workspaces/hide", {
-        method: "POST",
-        body: JSON.stringify({
-          workspace_path: projectPath,
-          is_hidden: currentHidden ? 0 : 1,
-        }),
-      });
-      await loadSessions();
-      renderSessionList();
-    } catch (err) {
-      showToast(`操作失败: ${err.message}`, "error");
-    }
-  },
-  async deleteSession(unifiedId, ev) {
-    if (ev) ev.stopPropagation();
-    const curSess = state.sessions.find((s) => s.unified_id === unifiedId);
-    if (!curSess) return;
-    if (!window.confirm(`确定从列表中移除「${curSess.title}」？\n（仅隐藏记录，不删除磁盘文件）`)) {
-      return;
-    }
-    try {
-      await apiFetch(`/api/v1/sessions/${encodeURIComponent(unifiedId)}`, { method: "DELETE" });
-      showToast("已移除", "success");
-      state.sessions = state.sessions.filter((s) => s.unified_id !== curSess.unified_id);
-      state.allSessions = state.allSessions.filter((s) => s.unified_id !== curSess.unified_id);
-      const nextSess = pickDefaultSession(state.sessions);
-      state.selectedSessionId = nextSess?.unified_id || null;
-      renderSessionList();
-      renderCurrentSessionHeader();
-      if (state.selectedSessionId) {
-        selectSession(state.selectedSessionId);
-      } else {
-        history.replaceState(null, "", window.location.pathname + window.location.search);
-        state.messages = [];
-        renderMessagesList();
-      }
-    } catch (err) {
-      showToast(`删除失败: ${err.message}`, "error");
-    }
-  },
+  setFilter,
+  toggleProjectCollapse,
+  toggleProjectHide,
+  deleteSession,
   loadOlderMessages,
   onDetailToggle(detailsEl, detailId, turnKey) {
     if (!detailsEl || !detailId) return;
@@ -318,12 +269,37 @@ window.appActions = {
       btn.textContent = state.wordWrapDiff ? "横向滚动" : "自动换行";
     });
   },
+  toggleTurnEditsOnly(turnKey, ev) {
+    if (ev) ev.stopPropagation();
+    const isCurrentlyExpanded = !!state.expandedTurns[turnKey] || !!state.turnThinkingExpanded[turnKey];
+    const isFilter = Boolean(state.turnFilterEdits[turnKey]);
+    if (!isCurrentlyExpanded) {
+      state.expandedTurns[turnKey] = true;
+      state.turnFilterEdits[turnKey] = true;
+    } else if (isFilter) {
+      state.turnFilterEdits[turnKey] = false;
+    } else {
+      state.turnFilterEdits[turnKey] = true;
+    }
+    state.autoScrollLocked = true;
+    const turn = state.turnsMap[turnKey];
+    const wrapEl = document.getElementById(`turn-process-wrap-${turnKey}`);
+    if (turn && wrapEl) {
+      wrapEl.outerHTML = renderTurnProcessBar(turn);
+      return;
+    }
+    const container = document.getElementById("messages-container");
+    const prevTop = container ? container.scrollTop : 0;
+    renderMessagesList();
+    if (container) container.scrollTop = prevTop;
+  },
   toggleTurnSteps(turnKey) {
     const isCurrentlyExpanded = !!state.expandedTurns[turnKey] || !!state.turnThinkingExpanded[turnKey];
     const nextVal = !isCurrentlyExpanded;
     state.expandedTurns[turnKey] = nextVal;
     if (!nextVal) {
       state.turnThinkingExpanded[turnKey] = false;
+      state.turnFilterEdits[turnKey] = false;
     }
     state.autoScrollLocked = true;
     const turn = state.turnsMap[turnKey];

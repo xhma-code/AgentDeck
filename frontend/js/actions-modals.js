@@ -166,7 +166,7 @@ export async function copyCurrentDocContent(btnEl) {
   }
   const ok = await copyTextToClipboard(state.currentDocRawContent);
   if (ok) {
-    applyButtonCheckmark(btnEl, { label: "已复制全篇" });
+    if (btnEl) applyButtonCheckmark(btnEl, { iconSize: "w-3.5 h-3.5" });
     showToast("文档内容已复制", "success");
   } else {
     showToast("复制失败，请手动选择复制", "error");
@@ -185,16 +185,36 @@ export function closeTokenUsageModal() {
   if (modal) modal.classList.add("hidden");
 }
 
-export function openAgentsHealthModal() {
+export async function openAgentsHealthModal() {
   const modal = document.getElementById("agents-health-modal");
   if (!modal) return;
   renderAgentsHealthModal();
   modal.classList.remove("hidden");
+  if (!state.systemStatus?.agents_health || state.systemStatus.agents_health.length === 0) {
+    try {
+      await loadSystemStatus();
+      renderAgentsHealthModal();
+    } catch (_) {}
+  }
 }
 
 export function closeAgentsHealthModal() {
   const modal = document.getElementById("agents-health-modal");
   if (modal) modal.classList.add("hidden");
+}
+
+export async function refreshAgentsHealth() {
+  const refreshBtn = document.getElementById("agents-health-refresh-btn");
+  if (refreshBtn) refreshBtn.classList.add("animate-spin");
+  try {
+    await loadSystemStatus();
+    renderAgentsHealthModal();
+    showToast("体检状态已刷新", "success");
+  } catch (err) {
+    showToast("刷新体检失败", "error");
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove("animate-spin");
+  }
 }
 
 export async function openGitStatusModal() {
@@ -319,6 +339,7 @@ export const modalActions = {
   closeTokenUsageModal,
   openAgentsHealthModal,
   closeAgentsHealthModal,
+  refreshAgentsHealth,
   openGitStatusModal,
   toggleGitFileDiff,
   viewFullGitDiff,

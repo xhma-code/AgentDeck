@@ -115,11 +115,13 @@ export function renderSidebarStatus() {
 export {
   renderHeaderStatus,
   renderSidebarAwakeLock,
+  renderSidebarHealthStatus,
   renderAgentsHealthModal,
 } from "./render-status-badges.js";
 import {
   renderHeaderStatus,
   renderSidebarAwakeLock,
+  renderSidebarHealthStatus,
   renderAgentsHealthModal,
 } from "./render-status-badges.js";
 import { isSessionAttentionNeeded, isSubagentSession } from "./data.js";
