@@ -137,11 +137,24 @@ export async function loadSessions(silent = false) {
       state.sessionsETag = data._etag;
     }
     const incomingSessions = data.sessions || [];
+    let hasNewerRemoteViewed = false;
     for (const s of incomingSessions) {
       if (s) {
         s.title = cleanFriendlyTitle(s.title);
         s.preview = cleanFriendlyText(s.preview);
+        // 双向同步回写：若服务端记录的已读时间比本地新，更新本地内存并同步持久化
+        if (s.unified_id && s.last_viewed_at) {
+          const remoteTime = new Date(s.last_viewed_at).getTime();
+          const localTime = state.sessionLastViewedTimes[s.unified_id] || 0;
+          if (!isNaN(remoteTime) && remoteTime > localTime) {
+            state.sessionLastViewedTimes[s.unified_id] = remoteTime;
+            hasNewerRemoteViewed = true;
+          }
+        }
       }
+    }
+    if (hasNewerRemoteViewed) {
+      saveLastViewedTimes();
     }
     const incomingApprovals = data.pending_approvals || state.pendingApprovals || [];
     const newSig = computeSessionsSig(incomingSessions, incomingApprovals);
@@ -204,6 +217,16 @@ export async function loadSessions(silent = false) {
       }
 
       state.isAppInitialized = true;
+
+      // 冷启动增量同步：若本端本地存有已读时间记录，静默同步给服务端数据库（实现电脑端历史查看时间跨端共享）
+      if (state.sessionLastViewedTimes && Object.keys(state.sessionLastViewedTimes).length > 0) {
+        apiFetch("/api/v1/sessions/sync-viewed", {
+          method: "POST",
+          body: JSON.stringify({ viewed_sessions: state.sessionLastViewedTimes }),
+        }).catch((err) => {
+          console.warn("后台同步已读时间到服务端失败:", err);
+        });
+      }
     }
 
     const initialSessionId = targetSession ? targetSession.unified_id : null;

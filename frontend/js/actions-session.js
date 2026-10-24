@@ -2,7 +2,7 @@
  * AgentDeck 会话管理、项目管理、三点操作菜单与设备配对动作控制器
  */
 
-import { state } from "./state.js";
+import { state, clearAllUnreadCompletedSessions } from "./state.js";
 import { DEFAULT_PROJECT_SESSION_LIMIT } from "./config.js";
 import { apiFetch, showToast } from "./api.js";
 import {
@@ -19,6 +19,7 @@ import {
   renderMessagesList,
   renderQrModalContent,
   startQrExpireCountdown,
+  renderOtherRunningPill,
 } from "./render.js";
 import { openNewSessionModal } from "./modals.js";
 import {
@@ -114,6 +115,25 @@ export function jumpToRunningSession() {
   const target = list[nextIdx] || list[0];
   if (target && target.unified_id) {
     selectSession(target.unified_id);
+  }
+}
+
+export async function markAllSessionsViewed(ev) {
+  if (ev) ev.stopPropagation();
+  const allList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  const allIds = allList.map((s) => s.unified_id).filter(Boolean);
+  clearAllUnreadCompletedSessions(new Date().toISOString());
+  renderSessionList();
+  renderOtherRunningPill();
+  showToast("已将全部会话标为已读", "info");
+
+  try {
+    await apiFetch("/api/v1/sessions/mark-all-viewed", {
+      method: "POST",
+      body: JSON.stringify({ session_ids: allIds.length > 0 ? allIds : undefined }),
+    });
+  } catch (err) {
+    console.warn("上报全部已读失败:", err);
   }
 }
 

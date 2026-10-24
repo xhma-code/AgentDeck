@@ -5,7 +5,7 @@ AgentDeck API 请求/响应 Pydantic 模型与 ETag 校验工具。
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional, Union
 from pydantic import BaseModel, Field
 
 
@@ -66,3 +66,11 @@ def check_etag_matches(if_none_match: Optional[str], current_etag: str) -> bool:
     inm = if_none_match.strip()
     etag = current_etag.strip()
     return inm == etag or inm == etag.strip('"') or inm.strip('"') == etag.strip('"')
+
+
+class MarkAllViewedRequest(BaseModel):
+    session_ids: Optional[list[str]] = Field(default=None, description="可选指定批量标记的会话列表，留空表示全量")
+
+
+class SyncViewedRequest(BaseModel):
+    viewed_sessions: dict[str, Union[str, int, float]] = Field(default_factory=dict, description="会话ID到时间戳的字典")

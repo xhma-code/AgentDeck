@@ -2989,3 +2989,50 @@ async def test_antigravity_subagent_active_propagation(tmp_path: Path):
     assert single_parent.status == "desktop_active"
     assert single_parent.has_active_subagent is True
     assert single_parent.desktop_locked is True
+
+
+def test_mark_all_viewed_and_sync_viewed_endpoints(tmp_path: Path):
+    """测试批量标为已读与客户端已读时间同步端点（含容错与全量更新验证）。"""
+    from fastapi.testclient import TestClient
+    from backend.app import create_app
+    from backend.core.database import MetaDatabase
+
+    db = MetaDatabase(db_path=tmp_path / "test_viewed.db")
+    app = create_app(meta_db=db)
+
+    with TestClient(app) as client:
+        # 1. 测试 sync-viewed（包含毫秒时间戳与 ISO 字符串）
+        sync_resp = client.post(
+            "/api/v1/sessions/sync-viewed",
+            json={
+                "viewed_sessions": {
+                    "agy_cli:sess_001": 1700000000000,
+                    "claude_code:sess_002": "2026-10-24T12:00:00Z"
+                }
+            }
+        )
+        assert sync_resp.status_code == 200
+        assert sync_resp.json()["ok"] is True
+        assert sync_resp.json()["updated_count"] == 2
+
+        # 验证数据库中已写入
+        overrides = db.get_session_overrides()
+        assert "agy_cli:sess_001" in overrides
+        assert overrides["agy_cli:sess_001"]["last_viewed_at"] is not None
+        assert "claude_code:sess_002" in overrides
+        assert overrides["claude_code:sess_002"]["last_viewed_at"] == "2026-10-24T12:00:00Z"
+
+        # 2. 测试 mark-all-viewed（同时支持传入新会话并全量更新已有会话）
+        mark_resp = client.post(
+            "/api/v1/sessions/mark-all-viewed",
+            json={"session_ids": ["opencode:sess_003"]}
+        )
+        assert mark_resp.status_code == 200
+        assert mark_resp.json()["ok"] is True
+        assert mark_resp.json()["last_viewed_at"] is not None
+
+        new_overrides = db.get_session_overrides()
+        assert "opencode:sess_003" in new_overrides
+        # 确认所有已存在会话统一更新为最新时间
+        assert new_overrides["agy_cli:sess_001"]["last_viewed_at"] == mark_resp.json()["last_viewed_at"]
+        assert new_overrides["claude_code:sess_002"]["last_viewed_at"] == mark_resp.json()["last_viewed_at"]

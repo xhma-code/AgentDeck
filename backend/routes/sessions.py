@@ -21,6 +21,8 @@ from backend.routes.schemas import (
     SendPromptRequest,
     SessionMetaUpdateRequest,
     ToolApprovalDecisionRequest,
+    MarkAllViewedRequest,
+    SyncViewedRequest,
     check_etag_matches,
 )
 
@@ -146,6 +148,39 @@ async def update_session_meta(
     )
     orchestrator.bump_version()
     return {"ok": True, "meta": updated}
+
+
+@router.post("/mark-all-viewed")
+async def mark_all_sessions_viewed_endpoint(
+    request: Request,
+    req: Optional[MarkAllViewedRequest] = None,
+    _auth: bool = Depends(verify_request_auth),
+) -> dict[str, Any]:
+    """批量将所有会话或指定会话标记为已读，并通过 WebSocket 广播给所有终端。"""
+    meta_db = get_meta_db(request)
+    orchestrator = get_orchestrator(request)
+    viewed_at = meta_db.mark_all_sessions_viewed(session_ids=req.session_ids if req else None)
+    orchestrator.bump_version()
+    await orchestrator.broadcast_event(
+        event_type="ALL_SESSIONS_VIEWED",
+        payload={
+            "last_viewed_at": viewed_at,
+            "session_ids": req.session_ids if req else None,
+        },
+    )
+    return {"ok": True, "last_viewed_at": viewed_at}
+
+
+@router.post("/sync-viewed")
+async def sync_viewed_sessions_endpoint(
+    req: SyncViewedRequest,
+    request: Request,
+    _auth: bool = Depends(verify_request_auth),
+) -> dict[str, Any]:
+    """客户端后台静默上报本地查看时间字典，服务端增量合并落库。"""
+    meta_db = get_meta_db(request)
+    count = meta_db.batch_update_session_viewed_times(req.viewed_sessions)
+    return {"ok": True, "updated_count": count}
 
 
 @router.post("/{unified_id:path}/viewed")

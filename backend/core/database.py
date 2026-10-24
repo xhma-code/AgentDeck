@@ -89,6 +89,8 @@ class MetaDatabase:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(t_unified_session_meta)").fetchall()]
             if "last_viewed_at" not in cols:
                 conn.execute("ALTER TABLE t_unified_session_meta ADD COLUMN last_viewed_at TEXT;")
+            # 对存量未标记过的历史会话，统一兜底初始化为已读（避免跨端冷启动产生大量虚假待查看）
+            conn.execute("UPDATE t_unified_session_meta SET last_viewed_at = updated_at WHERE last_viewed_at IS NULL;")
 
             # 首次初始化默认置入 AgentDeck 自身作为工作区
             agentdeck_root = str(PROJECT_ROOT.resolve()).replace("\\", "/")
@@ -165,31 +167,78 @@ class MetaDatabase:
             ).fetchone()
             return dict(row) if row else {}
 
+    def _upsert_session_viewed_time(
+        self, conn: sqlite3.Connection, unified_id: str, viewed_at_iso: str, only_if_newer: bool = False
+    ) -> bool:
+        """内部方法：统一执行单会话已读时间的插入或更新。"""
+        row = conn.execute(
+            "SELECT unified_id, last_viewed_at FROM t_unified_session_meta WHERE unified_id = ?",
+            (unified_id,),
+        ).fetchone()
+        if row:
+            prev = row["last_viewed_at"]
+            if only_if_newer and prev and viewed_at_iso <= prev:
+                return False
+            conn.execute(
+                "UPDATE t_unified_session_meta SET last_viewed_at = ? WHERE unified_id = ?",
+                (viewed_at_iso, unified_id),
+            )
+            return True
+        else:
+            agent_type = unified_id.split(":", 1)[0] if ":" in unified_id else "claude_code"
+            raw_id = unified_id.split(":", 1)[1] if ":" in unified_id else unified_id
+            conn.execute(
+                """
+                INSERT INTO t_unified_session_meta (
+                    unified_id, agent_type, raw_session_id, last_viewed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (unified_id, agent_type, raw_id, viewed_at_iso, viewed_at_iso),
+            )
+            return True
+
     def mark_session_viewed(self, unified_id: str, viewed_at: Optional[str] = None) -> str:
         """记录会话在任意客户端被查看的时间戳，实现多端同步已读。"""
         now = viewed_at or utc_now_iso()
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT unified_id FROM t_unified_session_meta WHERE unified_id = ?",
-                (unified_id,),
-            ).fetchone()
-            if row:
-                conn.execute(
-                    "UPDATE t_unified_session_meta SET last_viewed_at = ? WHERE unified_id = ?",
-                    (now, unified_id),
-                )
-            else:
-                agent_type = unified_id.split(":", 1)[0] if ":" in unified_id else "claude_code"
-                raw_id = unified_id.split(":", 1)[1] if ":" in unified_id else unified_id
-                conn.execute(
-                    """
-                    INSERT INTO t_unified_session_meta (
-                        unified_id, agent_type, raw_session_id, last_viewed_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (unified_id, agent_type, raw_id, now, now),
-                )
+            self._upsert_session_viewed_time(conn, unified_id, now)
         return now
+
+    def mark_all_sessions_viewed(
+        self, viewed_at: Optional[str] = None, session_ids: Optional[list[str]] = None
+    ) -> str:
+        """批量将全部或指定会话标记为已读。"""
+        now = viewed_at or utc_now_iso()
+        with self.connect() as conn:
+            if session_ids:
+                for uid in session_ids:
+                    self._upsert_session_viewed_time(conn, uid, now)
+            conn.execute("UPDATE t_unified_session_meta SET last_viewed_at = ?", (now,))
+        return now
+
+    def batch_update_session_viewed_times(self, viewed_dict: dict[str, Any]) -> int:
+        """接收客户端批量上报的已读时间字典，增量更新落库。"""
+        if not viewed_dict:
+            return 0
+        updated = 0
+        with self.connect() as conn:
+            for uid, val in viewed_dict.items():
+                if not uid or val is None:
+                    continue
+                iso_time = str(val).strip()
+                if not iso_time:
+                    continue
+                # 支持数字毫秒时间戳转换
+                if isinstance(val, (int, float)) or (isinstance(val, str) and val.isdigit()):
+                    try:
+                        ms = int(val)
+                        iso_time = datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).isoformat()
+                    except (ValueError, OverflowError, OSError) as exc:
+                        logger.warning(f"会话 {uid} 查看时间戳 ({val}) 解析失败，已跳过: {exc}")
+                        continue
+                if self._upsert_session_viewed_time(conn, uid, iso_time, only_if_newer=True):
+                    updated += 1
+        return updated
 
     def delete_session_meta(self, unified_id: str) -> bool:
         """从元数据库中彻底删除会话的自定义索引记录（用于被删除或过期的外部会话清理）。"""

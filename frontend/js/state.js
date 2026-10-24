@@ -150,13 +150,33 @@ export function syncUnreadSessions(sessionList) {
     const lastViewed = Math.max(localViewed, isNaN(remoteViewed) ? 0 : remoteViewed);
     const updatedAt = s.updated_at ? new Date(s.updated_at).getTime() : 0;
 
-    if (lastViewed > 0 && updatedAt > 0 && lastViewed >= updatedAt) {
-      state.unreadCompletedSessionIds.delete(s.unified_id);
-    } else if (updatedAt > 0 && (lastViewed === 0 || updatedAt > lastViewed) && (now - updatedAt < 24 * 3600 * 1000)) {
-      state.unreadCompletedSessionIds.add(s.unified_id);
-    } else {
-      state.unreadCompletedSessionIds.delete(s.unified_id);
+    // 严密判定：
+    // 1. 若存在有效查看记录 (lastViewed > 0)，且最新完成时间晚于查看时间（在24小时内），判定为有新内容未查看；若已查看则移除
+    // 2. 若从未记录过查看时间 (lastViewed === 0)：保留运行时动态完成事件登记的待查看状态，不主动将历史存量会话误判为未读
+    if (lastViewed > 0 && updatedAt > 0) {
+      if (lastViewed >= updatedAt) {
+        state.unreadCompletedSessionIds.delete(s.unified_id);
+      } else if (updatedAt > lastViewed && (now - updatedAt < 24 * 3600 * 1000)) {
+        state.unreadCompletedSessionIds.add(s.unified_id);
+      } else {
+        state.unreadCompletedSessionIds.delete(s.unified_id);
+      }
     }
   }
+}
+
+export function clearAllUnreadCompletedSessions(viewedAtIso) {
+  const viewedTs = viewedAtIso ? new Date(viewedAtIso).getTime() : Date.now();
+  state.unreadCompletedSessionIds.clear();
+  const allList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  for (const s of allList) {
+    if (s && s.unified_id) {
+      state.sessionLastViewedTimes[s.unified_id] = viewedTs;
+      if (viewedAtIso) {
+        s.last_viewed_at = viewedAtIso;
+      }
+    }
+  }
+  saveLastViewedTimes();
 }
 

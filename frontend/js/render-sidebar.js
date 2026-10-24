@@ -242,6 +242,7 @@ export function renderSessionList() {
   // --- 区块 1：置顶与动态活动 ---
   if (totalTopCount > 0) {
     const sectionTitle = activeUnreadList.length > 0 ? "★ 置顶与活动" : "★ 置顶";
+    const unreadCount = activeUnreadList.filter((s) => isSessionCompletedUnread(s)).length;
     html += `
       <div>
         <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 flex items-center justify-between">
@@ -253,7 +254,18 @@ export function renderSessionList() {
                 : ""
             }
           </div>
-          <span class="text-[10px] text-zinc-500 font-mono tabular-nums">${totalTopCount}</span>
+          <div class="flex items-center gap-2">
+            ${
+              unreadCount > 0
+                ? `<button onclick="window.appActions.markAllSessionsViewed(event)"
+                     class="px-1.5 py-0.5 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 hover:text-sky-300 border border-sky-500/20 text-[10px] font-normal transition-colors flex items-center gap-0.5 active:scale-95"
+                     title="将所有待查看会话一键标为已读">
+                     ✓ 全部已读
+                   </button>`
+                : ""
+            }
+            <span class="text-[10px] text-zinc-500 font-mono tabular-nums">${totalTopCount}</span>
+          </div>
         </div>
         <div class="space-y-0.5">
           ${activeUnreadList.map((s) => renderCompactSessionItem(s, true)).join("")}
