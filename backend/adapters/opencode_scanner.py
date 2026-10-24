@@ -28,6 +28,35 @@ from backend.core.database import safe_query_external_sqlite
 from backend.core.logger import log_structured_error, logger
 
 
+def parse_opencode_model_field(raw_model: Any) -> str:
+    """安全解析 OpenCode SQLite 会话表中 model 字段（支持 JSON 字典字符串与普通字符串）。"""
+    if not raw_model:
+        return ""
+    if isinstance(raw_model, dict):
+        pid = str(raw_model.get("providerID") or "opencode").strip()
+        mid = str(raw_model.get("id") or "").strip()
+        if not mid:
+            return ""
+        return f"{pid}/{mid}" if pid and not mid.startswith(f"{pid}/") else mid
+
+    raw_str = str(raw_model).strip()
+    if not raw_str:
+        return ""
+
+    if raw_str.startswith("{") and raw_str.endswith("}"):
+        try:
+            doc = json.loads(raw_str)
+            if isinstance(doc, dict):
+                pid = str(doc.get("providerID") or "opencode").strip()
+                mid = str(doc.get("id") or "").strip()
+                if mid:
+                    return f"{pid}/{mid}" if pid and not mid.startswith(f"{pid}/") else mid
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return raw_str
+
+
 def query_all_messages_meta(
     db_path: Path,
     raw_session_id: str,
@@ -251,6 +280,7 @@ def query_opencode_sessions(
         is_sub = bool(parent_id) or ("subagent)" in raw_title.lower())
         parent_uid = f"{agent_type}:{parent_id}" if parent_id else None
 
+        sess_model = parse_opencode_model_field(r.get("model"))
         sessions.append(
             UnifiedSession(
                 unified_id=f"{agent_type}:{sid}",
@@ -265,6 +295,7 @@ def query_opencode_sessions(
                 updated_at=updated_at,
                 parent_unified_id=parent_uid,
                 is_subagent=is_sub,
+                model_name=sess_model,
             )
         )
 

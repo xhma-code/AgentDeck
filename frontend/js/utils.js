@@ -92,47 +92,63 @@ export function isLocalPreviewableLink(href) {
 
 
 
+function execCommandCopy(text) {
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.setAttribute("readonly", "");
+  textArea.style.position = "fixed";
+  textArea.style.top = "0";
+  textArea.style.left = "0";
+  textArea.style.width = "2em";
+  textArea.style.height = "2em";
+  textArea.style.padding = "0";
+  textArea.style.border = "none";
+  textArea.style.outline = "none";
+  textArea.style.boxShadow = "none";
+  textArea.style.background = "transparent";
+  textArea.style.color = "transparent";
+  textArea.style.opacity = "0.01";
+  textArea.style.fontSize = "16px";
+  textArea.style.zIndex = "-9999";
+  textArea.style.pointerEvents = "none";
+
+  document.body.appendChild(textArea);
+
+  textArea.focus({ preventScroll: true });
+  textArea.select();
+  textArea.setSelectionRange(0, textArea.value.length);
+
+  let success = false;
+  try {
+    success = document.execCommand("copy");
+  } catch (_) {
+    success = false;
+  }
+  document.body.removeChild(textArea);
+  return success;
+}
+
 export async function copyTextToClipboard(text) {
   if (!text) return false;
-  // 1. 优先尝试现代异步剪贴板 API
+
+  // 1. 若处于非安全上下文（如手机局域网 HTTP 访问），浏览器必定封锁异步 Clipboard API，
+  // 必须直接同步使用 execCommand，确保在同一用户手势激活周期内完成复制
+  if (!window.isSecureContext) {
+    if (execCommandCopy(text)) return true;
+  }
+
+  // 2. 在安全上下文（HTTPS / localhost）下，优先使用标准异步 Clipboard API
   if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
     try {
       await navigator.clipboard.writeText(text);
       return true;
-    } catch (_) {}
-  }
-  // 2. 降级方案：创建临时文本域执行 execCommand("copy")
-  try {
-    const textArea = document.createElement("textarea");
-    textArea.value = text;
-    textArea.setAttribute("readonly", "");
-    textArea.style.position = "fixed";
-    textArea.style.left = "-9999px";
-    textArea.style.top = "-9999px";
-    textArea.style.opacity = "0.01";
-    textArea.style.fontSize = "16px";
-    document.body.appendChild(textArea);
-
-    if (navigator.userAgent && /ipad|ipod|iphone/i.test(navigator.userAgent)) {
-      textArea.removeAttribute("readonly");
-      const range = document.createRange();
-      range.selectNodeContents(textArea);
-      const sel = window.getSelection();
-      if (sel) {
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-      textArea.setSelectionRange(0, text.length);
-    } else {
-      textArea.focus();
-      textArea.select();
+    } catch (_) {
+      // 若异步写入被浏览器权限限制，则降级回退
     }
+  }
 
-    const successful = document.execCommand("copy");
-    document.body.removeChild(textArea);
-    if (successful) return true;
-  } catch (_) {}
-  return false;
+  // 3. 通用 DOM 降级
+  return execCommandCopy(text);
 }
 
 export function saveToBoundedStore(storeName, key, value, maxItems = 150) {

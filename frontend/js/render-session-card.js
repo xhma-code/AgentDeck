@@ -11,6 +11,7 @@ import { AGENT_META } from "./config.js";
 import { state, isSessionCompletedUnread } from "./state.js";
 import {
   escapeHtml,
+  escapeJsSingleQuote,
   cleanFriendlyText,
   formatRelativeTime,
   highlightText,
@@ -87,10 +88,13 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
   return `
     <div data-session-item="${escapeHtml(s.unified_id)}"
       onclick="window.appActions.selectSession('${escapeHtml(s.unified_id)}')"
-      oncontextmenu="event.preventDefault()"
+      oncontextmenu="event.preventDefault(); event.stopPropagation();"
       ontouchstart="window.appActions.handleSessionTouchStart(event, '${escapeJsSingleQuote(s.unified_id)}')"
       ontouchmove="window.appActions.handleSessionTouchMove(event)"
       ontouchend="window.appActions.handleSessionTouchEnd(event)"
+      ontouchcancel="window.appActions.handleSessionTouchCancel(event)"
+      onselectstart="event.preventDefault(); return false;"
+      style="touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;"
       class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-colors duration-150 flex items-center justify-between gap-2 ${
         isSelected
           ? "bg-zinc-800/95 border-sky-500/50 text-zinc-100"

@@ -181,11 +181,14 @@ export function handleSessionTouchStart(ev, unifiedId) {
       closeSessionContextMenu();
       return;
     }
+    try {
+      ev.preventDefault();
+    } catch (e) {}
     openSessionContextMenu(unifiedId, sessionLongPressStartX, sessionLongPressStartY, ev);
     if (navigator.vibrate) {
       try { navigator.vibrate(10); } catch (e) {}
     }
-  }, 450);
+  }, 500);
 }
 
 export function handleSessionTouchMove(ev) {
@@ -193,7 +196,7 @@ export function handleSessionTouchMove(ev) {
   const touch = ev.touches[0];
   const dx = Math.abs(touch.clientX - sessionLongPressStartX);
   const dy = Math.abs(touch.clientY - sessionLongPressStartY);
-  if (dx > 6 || dy > 6) {
+  if (dx > 10 || dy > 10) {
     sessionLongPressMoved = true;
     if (sessionLongPressTimer) {
       clearTimeout(sessionLongPressTimer);
@@ -202,7 +205,15 @@ export function handleSessionTouchMove(ev) {
   }
 }
 
-export function handleSessionTouchEnd() {
+export function handleSessionTouchEnd(ev) {
+  if (sessionLongPressTimer) {
+    clearTimeout(sessionLongPressTimer);
+    sessionLongPressTimer = null;
+  }
+  sessionLongPressMoved = false;
+}
+
+export function handleSessionTouchCancel() {
   if (sessionLongPressTimer) {
     clearTimeout(sessionLongPressTimer);
     sessionLongPressTimer = null;

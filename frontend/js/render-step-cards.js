@@ -303,7 +303,7 @@ export function renderTurnProcessBar(turn) {
                                 tc.is_truncated
                                   ? `<button onclick="window.appActions.loadFullOutput('${escapeHtml(
                                       state.selectedSessionId
-                                    )}', ${rec.step_index}, this, event)" class="min-h-[36px] sm:min-h-0 px-2.5 sm:px-1.5 py-1 sm:py-0.5 rounded bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 border border-sky-500/30 text-[10px] sm:text-[9px] shrink-0 transition active:scale-95 flex items-center justify-center cursor-pointer touch-manipulation">加载完整输出</button>`
+                                    )}', ${rec.step_index}, this, event)" class="h-5 px-1.5 rounded leading-none bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 border border-sky-500/30 text-[10px] sm:text-[9px] shrink-0 transition active:scale-95 flex items-center justify-center cursor-pointer touch-manipulation">加载完整输出</button>`
                                   : ""
                               }
                             </summary>

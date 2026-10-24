@@ -161,6 +161,16 @@ MODEL_CONTEXT_LIMITS: dict[str, int] = {
     "gpt-4o-mini": 128_000,
     "o1": 200_000,
     "o3-mini": 200_000,
+    # OpenCode 免费模型族 (含 1M / 256k / 200k)
+    "beam-free": 1_048_576,
+    "nemotron-3.5-super-vl-free": 1_048_576,
+    "nemotron-3-ultra-free": 1_000_000,
+    "flint-40b-free": 262_144,
+    "nemotron-3.5-lightning-free": 262_144,
+    "big-pickle": 200_000,
+    "deepseek-v4.1-flash-free": 200_000,
+    "glm-5.3-flash-free": 200_000,
+    "mimo-v2.6-flash-free": 200_000,
 }
 DEFAULT_MODEL_CONTEXT_LIMIT = 200_000
 

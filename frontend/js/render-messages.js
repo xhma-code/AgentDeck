@@ -250,10 +250,21 @@ export function renderMessagesList() {
   updateStickyPromptVisibility();
 }
 
-export function scrollToBottom() {
+export function scrollToBottom(smooth = false) {
   const container = document.getElementById("messages-container");
   if (!container) return;
-  container.scrollTop = container.scrollHeight;
+  const doScroll = () => {
+    const bottomAnchor = document.getElementById("messages-bottom-anchor");
+    if (bottomAnchor && typeof bottomAnchor.scrollIntoView === "function") {
+      bottomAnchor.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
+    } else {
+      container.scrollTop = container.scrollHeight;
+    }
+  };
+  doScroll();
+  requestAnimationFrame(() => {
+    doScroll();
+  });
   const jumpBtn = document.getElementById("scroll-bottom-pill");
   if (jumpBtn) jumpBtn.classList.add("hidden");
 }
@@ -265,6 +276,13 @@ export function updateStickyPromptVisibility() {
   const stickyText = document.getElementById("sticky-prompt-text");
   const headerEl = document.querySelector("header");
   if (!container || !stickyBar || !stickyText) return;
+
+  // 若处于最底部最新消息区域且未锁定滚动（非向上翻看历史模式），不显示置顶指令栏
+  const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+  if (distFromBottom <= 120 && !state.autoScrollLocked) {
+    stickyBar.classList.add("hidden");
+    return;
+  }
 
   const userEls = container.querySelectorAll("[data-user-msg-id]");
   if (userEls.length === 0) {

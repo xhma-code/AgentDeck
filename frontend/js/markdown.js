@@ -138,7 +138,7 @@ export function renderMarkdownHtml(rawMd, scopeKey = "md") {
           <button type="button" onclick="window.appActions.copyCodeBlock('${escapeJsSingleQuote(
             codeId
           )}', this)"
-            class="min-h-[36px] sm:min-h-0 sm:h-6 px-2.5 sm:px-2 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-zinc-100 text-[11px] transition-colors shrink-0 flex items-center justify-center gap-1 select-none min-w-[50px] cursor-pointer touch-manipulation" title="复制代码">
+            class="h-6 px-2 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-zinc-100 text-[11px] transition-colors shrink-0 flex items-center justify-center gap-1 select-none cursor-pointer touch-manipulation" title="复制代码">
             <svg class="w-3 h-3 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             <span class="leading-none">复制</span>
           </button>

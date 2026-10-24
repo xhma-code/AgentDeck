@@ -322,6 +322,12 @@ window.appActions = {
     if (!nextVal) {
       state.turnThinkingExpanded[turnKey] = false;
       state.turnFilterEdits[turnKey] = false;
+      state.autoScrollLocked = false;
+      const stickyBar = document.getElementById("sticky-user-prompt-bar");
+      if (stickyBar) stickyBar.classList.add("hidden");
+      renderMessagesList();
+      scrollToBottom(true);
+      return;
     }
     state.autoScrollLocked = true;
     const turn = state.turnsMap[turnKey];
@@ -387,13 +393,19 @@ window.appActions = {
   collapseCurrentExpandedSteps() {
     state.expandedTurns = {};
     state.turnThinkingExpanded = {};
+    state.expandedDetails = {};
+    state.expandedCodeBlocks = {};
+    state.turnFilterEdits = {};
+    state.autoScrollLocked = false;
     const pill = document.getElementById("collapse-steps-pill");
     if (pill) pill.classList.add("hidden");
-    const container = document.getElementById("messages-container");
-    const prevTop = container ? container.scrollTop : 0;
+    const jumpBtn = document.getElementById("scroll-bottom-pill");
+    if (jumpBtn) jumpBtn.classList.add("hidden");
+    const stickyBar = document.getElementById("sticky-user-prompt-bar");
+    if (stickyBar) stickyBar.classList.add("hidden");
     renderMessagesList();
-    if (container) container.scrollTop = prevTop;
-    showToast("已收起执行步骤", "info");
+    scrollToBottom(true);
+    showToast("已收起并跳转至最新", "info");
   },
   async toggleAwakeLock(enable) {
     await apiFetch(`/api/v1/system/awake-lock?enable=${enable}`, { method: "POST" });

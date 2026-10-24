@@ -20,6 +20,25 @@ from typing import Any, Optional
 from backend.core.logger import log_structured_error, logger
 from backend.core.network import is_local_port_listening
 
+def parse_opencode_model_ref(model_str: str) -> dict[str, str]:
+    """将 provider/model#variant 或 provider/model 或 model 格式规范化为 OpenCode Model.Ref 对象。"""
+    raw = (model_str or "").strip()
+    if not raw or raw == "default":
+        return {}
+    variant = ""
+    target = raw
+    if "#" in target:
+        target, variant = target.split("#", 1)
+    if "/" in target:
+        provider_id, model_id = target.split("/", 1)
+    else:
+        provider_id, model_id = "opencode", target
+    ref: dict[str, str] = {"providerID": provider_id, "id": model_id}
+    if variant and variant.lower() != "default":
+        ref["variant"] = variant
+    return ref
+
+
 class OpenCodeHttpBridge:
     """
     对接 `opencode serve` 的本地 HTTP/SSE 桥接客户端（遵循 Spec 与 OpenCode 1.x/2.x 规范）。
@@ -183,10 +202,12 @@ class OpenCodeHttpBridge:
             clean_model = (model_name or "").strip()
             if clean_model and clean_model != "default":
                 try:
-                    model_data = json.dumps({"model": clean_model}).encode("utf-8")
-                    req_m = self._make_request(f"/api/session/{session_id}/model", data=model_data, method="POST")
-                    with urllib.request.urlopen(req_m, timeout=3.0) as resp:
-                        pass
+                    ref = parse_opencode_model_ref(clean_model)
+                    if ref:
+                        model_data = json.dumps({"model": ref}).encode("utf-8")
+                        req_m = self._make_request(f"/api/session/{session_id}/model", data=model_data, method="POST")
+                        with urllib.request.urlopen(req_m, timeout=3.0) as resp:
+                            pass
                 except Exception as exc:
                     logger.debug(f"OpenCode 2 切换模型跳过/失败 ({session_id[:8]} -> {clean_model}): {exc}")
 
@@ -350,3 +371,85 @@ class OpenCodeHttpBridge:
             except Exception as exc:
                 logger.debug(f"OpenCode rename 异常 ({path}): {exc}")
         return False
+
+    def get_default_model_id(self) -> str:
+        """调用 OpenCode 官方 HTTP 接口获取当前默认推荐模型 ID（如 opencode/big-pickle）。"""
+        try:
+            req = self._make_request("/api/model/default", method="GET")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    doc = json.loads(raw) if raw else {}
+                    data = doc.get("data") if isinstance(doc, dict) else None
+                    if isinstance(data, dict):
+                        pid = str(data.get("providerID") or "opencode").strip()
+                        mid = str(data.get("id") or "").strip()
+                        if mid:
+                            return f"{pid}/{mid}" if pid and not mid.startswith(f"{pid}/") else mid
+        except Exception as exc:
+            logger.debug(f"OpenCode 获取默认模型接口调用跳过/失败: {exc}")
+        return ""
+
+    def get_available_models(self) -> list[dict[str, Any]]:
+        """调用 OpenCode 官方 HTTP 接口动态获取可用模型列表（包含免费模型判定与标签）。"""
+        def_id = self.get_default_model_id()
+        try:
+            req = self._make_request("/api/model", method="GET")
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                if resp.status != 200:
+                    return []
+                raw = resp.read().decode("utf-8", errors="replace")
+                doc = json.loads(raw) if raw else {}
+                data = doc.get("data") if isinstance(doc, dict) else []
+                if not isinstance(data, list):
+                    return []
+
+                results: list[dict[str, Any]] = []
+                for m in data:
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("enabled") is False or str(m.get("status") or "").lower() == "disabled":
+                        continue
+                    pid = str(m.get("providerID") or "opencode").strip()
+                    mid = str(m.get("id") or "").strip()
+                    if not mid:
+                        continue
+                    unified_model_id = f"{pid}/{mid}" if pid and not mid.startswith(f"{pid}/") else mid
+                    name = str(m.get("name") or mid).strip()
+
+                    # 免费模型精准判定：
+                    # 1. cost 费率为 0
+                    # 2. 模型 ID 含有 -free 后缀
+                    # 3. providerID 为 opencode（官方免费算力平台）
+                    cost_list = m.get("cost") or []
+                    first_cost = cost_list[0] if (isinstance(cost_list, list) and cost_list) else {}
+                    is_zero_cost = isinstance(first_cost, dict) and first_cost.get("input", 0) == 0 and first_cost.get("output", 0) == 0
+                    is_free = is_zero_cost or ("-free" in mid.lower()) or (pid == "opencode")
+
+                    is_default = (unified_model_id == def_id)
+                    if is_default:
+                        tag = "默认"
+                    elif is_free:
+                        tag = "免费"
+                    else:
+                        tag = ""
+
+                    limit_obj = m.get("limit") if isinstance(m.get("limit"), dict) else {}
+                    ctx_limit = int(limit_obj.get("context") or 200_000)
+
+                    results.append({
+                        "id": unified_model_id,
+                        "label": name,
+                        "tag": tag,
+                        "is_recommended": is_default,
+                        "quota": 1.0,
+                        "context_limit": ctx_limit,
+                    })
+
+                # 若默认模型存在，优先置顶默认模型
+                if def_id:
+                    results.sort(key=lambda item: 0 if item["id"] == def_id else 1)
+                return results
+        except Exception as exc:
+            logger.debug(f"OpenCode HTTP 接口拉取模型列表失败: {exc}")
+            return []

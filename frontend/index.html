@@ -23,6 +23,25 @@
   <!-- 本地化无公网依赖资源，杜绝小火箭全局代理时因外网 CDN 阻塞导致白屏加载卡死 -->
   <script src="/static/tailwind.min.js?v=20261024_nowarn"></script>
   <link rel="stylesheet" href="/static/styles.css?v=20261024_cursor_spacing_v5" />
+  <style>
+    [data-session-item] {
+      -webkit-touch-callout: none !important;
+      -webkit-user-select: none !important;
+      user-select: none !important;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: pan-y;
+    }
+    [data-session-item] * {
+      -webkit-touch-callout: none !important;
+      -webkit-user-select: none !important;
+      user-select: none !important;
+    }
+    #session-context-menu {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+  </style>
   </head>
 <body class="bg-black text-zinc-100 antialiased">
   <!-- Toast 容器（下移避开顶部导航栏，杜绝遮挡） -->
@@ -327,7 +346,7 @@
       <div id="floating-actions-container" class="absolute right-3 z-20 flex flex-col items-end gap-1.5 pointer-events-none transition-[bottom] duration-150">
         <button id="collapse-steps-pill" onclick="window.appActions.collapseCurrentExpandedSteps()"
           class="hidden pointer-events-auto px-2.5 py-1 rounded-full bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-[11px] shadow-lg flex items-center gap-1 active:scale-95 transition"
-          title="收起执行步骤">
+          title="收起并跳转至最新">
           <svg class="w-3.5 h-3.5 text-zinc-950" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>
           <span>收起</span>
         </button>

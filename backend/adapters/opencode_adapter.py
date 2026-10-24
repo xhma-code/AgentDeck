@@ -36,6 +36,7 @@ from backend.adapters.opencode_parser import (
 from backend.adapters.opencode_scanner import (
     extract_opencode_token_usage,
     fetch_opencode_messages_page,
+    parse_opencode_model_field,
     query_all_messages_meta,
     query_opencode_sessions,
 )
@@ -95,6 +96,8 @@ class OpenCodeAdapter(BaseAgentAdapter):
         self._messages_cache: BoundedLRUCache = BoundedLRUCache(maxsize=40)
         self._token_usage_cache: BoundedLRUCache = BoundedLRUCache(maxsize=100)
         self._has_session_v2: Optional[bool] = None
+        self._models_cache: Optional[list[dict[str, Any]]] = None
+        self._models_cache_ts: float = 0.0
 
     def _get_db_sig(self) -> tuple[int, int, int, int]:
         """获取 opencode.db 及其 WAL 日志文件的修改时间与大小签名，用于 0ms 缓存校验。"""
@@ -590,3 +593,106 @@ class OpenCodeAdapter(BaseAgentAdapter):
 
         return results
 
+
+    def get_default_model_id(self) -> str:
+        """获取 OpenCode 当前生效的默认推荐模型 ID。"""
+        # 1. 尝试从在线 HTTP Bridge 获取
+        if self.http_bridge.is_server_running():
+            mid = self.http_bridge.get_default_model_id()
+            if mid:
+                return mid
+
+        # 2. 从可用模型中探测首选推荐
+        models = self.get_available_models()
+        for m in models:
+            if m.get("is_recommended"):
+                return str(m.get("id"))
+        return models[0]["id"] if models else "opencode/big-pickle"
+
+    def get_session_model(self, raw_session_id: str) -> Optional[str]:
+        """从 SQLite 存储中读取特定会话当前绑定的真实模型。"""
+        if not self.db_path.exists():
+            return None
+        table = "session_v2" if self._check_has_session_v2() else "session"
+        try:
+            rows = safe_query_external_sqlite(
+                self.db_path,
+                f"SELECT model FROM {table} WHERE id = ? LIMIT 1",
+                (raw_session_id,),
+            )
+            if rows and rows[0].get("model") is not None:
+                parsed = parse_opencode_model_field(rows[0]["model"])
+                if parsed:
+                    return parsed
+        except Exception as exc:
+            logger.debug(f"读取 OpenCode 会话模型失败 ({raw_session_id[:8]}): {exc}")
+        return self.get_default_model_id()
+
+    def get_available_models(self) -> list[dict[str, Any]]:
+        """获取 OpenCode 可用模型清单（优先 HTTP 桥接实时探测，回退 CLI 探测，最终静态兜底）。"""
+        import subprocess
+        import time
+
+        now = time.monotonic()
+        if self._models_cache is not None and (now - self._models_cache_ts < 15.0):
+            return [dict(m) for m in self._models_cache]
+
+        # 1. 优先调用 HTTP Bridge 动态获取（支持最全的元数据、配额与上下文上限）
+        if self.http_bridge.is_server_running():
+            bridge_models = self.http_bridge.get_available_models()
+            if bridge_models:
+                self._models_cache = bridge_models
+                self._models_cache_ts = now
+                return [dict(m) for m in bridge_models]
+
+        # 2. 若 HTTP 服务离线，尝试使用本地 CLI `opencode models` 探测
+        if self.cli_bin:
+            try:
+                proc = subprocess.run(
+                    [self.cli_bin, "models"],
+                    capture_output=True,
+                    text=True,
+                    timeout=4.0,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    cli_models: list[dict[str, Any]] = []
+                    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+                    for ln in lines:
+                        # 格式通常为 opencode/deepseek-v4.1-flash-free 或 opencode/big-pickle
+                        mid = ln
+                        is_free = "-free" in mid.lower() or mid.startswith("opencode/")
+                        is_def = "big-pickle" in mid.lower()
+                        # 生成可读的 label
+                        clean_name = mid.split("/", 1)[-1] if "/" in mid else mid
+                        label_parts = [p.capitalize() for p in clean_name.replace("-", " ").replace(".", ".").split(" ")]
+                        label = " ".join(label_parts)
+                        tag = "默认" if is_def else ("免费" if is_free else "")
+                        ctx_limit = resolve_model_context_limit(mid)
+                        cli_models.append({
+                            "id": mid,
+                            "label": label,
+                            "tag": tag,
+                            "is_recommended": is_def,
+                            "quota": 1.0,
+                            "context_limit": ctx_limit,
+                        })
+                    if cli_models:
+                        cli_models.sort(key=lambda item: 0 if item.get("is_recommended") else 1)
+                        self._models_cache = cli_models
+                        self._models_cache_ts = now
+                        return [dict(m) for m in cli_models]
+            except Exception as exc:
+                logger.debug(f"CLI 探测 opencode models 跳过/失败: {exc}")
+
+        # 3. 静态目录配置兜底
+        from backend.engines.model_catalog import AGENT_MODELS
+        fallback = [dict(m) for m in AGENT_MODELS.get("opencode", [])]
+        self._models_cache = fallback
+        self._models_cache_ts = now
+        return fallback
+
+    def get_available_models_with_quota(self) -> list[dict[str, Any]]:
+        """获取带配额的可用模型列表（免费模型标称 100% 配额）。"""
+        return self.get_available_models()
