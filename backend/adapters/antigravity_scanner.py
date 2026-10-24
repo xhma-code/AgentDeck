@@ -74,10 +74,24 @@ def query_antigravity_sessions(
     now_iso = utc_now_iso()
 
     # 1. 扫描 conversation_summaries.db
+    known_parent_map: dict[str, str] = {}
     if summary_db_path.exists():
-        sql = """
+        cols_info = safe_query_external_sqlite(summary_db_path, "PRAGMA table_info(conversation_summaries)", ())
+        existing_cols = {str(c.get("name") or "") for c in cols_info}
+        has_parent_col = "parent_conversation_id" in existing_cols
+        has_depth_col = "nesting_depth" in existing_cols
+
+        extra_cols = []
+        if has_parent_col:
+            extra_cols.append("parent_conversation_id")
+        if has_depth_col:
+            extra_cols.append("nesting_depth")
+        extra_select = (", " + ", ".join(extra_cols)) if extra_cols else ""
+
+        sql = f"""
             SELECT conversation_id, title, preview, step_count,
                    last_modified_time, workspace_uris, status, not_fully_idle
+                   {extra_select}
             FROM conversation_summaries
             WHERE killed = 0
             ORDER BY last_modified_time DESC
@@ -113,6 +127,13 @@ def query_antigravity_sessions(
             if is_temporary_probe_session(title=title, preview=preview, project_path=p_path):
                 continue
 
+            parent_cid = str(r.get("parent_conversation_id") or "").strip()
+            nesting_depth = int(r.get("nesting_depth") or 0)
+            is_sub = bool(parent_cid) or nesting_depth > 0
+            parent_uid = f"{agent_type}:{parent_cid}" if parent_cid else None
+            if parent_cid:
+                known_parent_map[cid] = parent_cid
+
             is_proj, norm_p, p_name = evaluate_project_dir(p_path)
             sessions_map[cid] = UnifiedSession(
                 unified_id=f"{agent_type}:{cid}",
@@ -128,7 +149,28 @@ def query_antigravity_sessions(
                 is_project=is_proj,
                 project_name=p_name,
                 desktop_locked=(agent_type == "agy_ide" and not_idle),
+                parent_unified_id=parent_uid,
+                is_subagent=is_sub,
             )
+
+        # 预查所有已记录的子进程归属，以供 brain 目录补漏判断
+        if has_parent_col:
+            try:
+                where_clause = "WHERE (parent_conversation_id IS NOT NULL AND parent_conversation_id != '')"
+                if has_depth_col:
+                    where_clause += " OR nesting_depth > 0"
+                sub_rows = safe_query_external_sqlite(
+                    summary_db_path,
+                    f"SELECT conversation_id, parent_conversation_id FROM conversation_summaries {where_clause}",
+                    (),
+                )
+                for sr in sub_rows:
+                    s_cid = str(sr.get("conversation_id") or "")
+                    p_cid = str(sr.get("parent_conversation_id") or "")
+                    if s_cid:
+                        known_parent_map[s_cid] = p_cid
+            except Exception:
+                pass
 
     # 2. 补漏 brain 目录
     if brain_dir.is_dir():
@@ -149,6 +191,9 @@ def query_antigravity_sessions(
                     status = "idle"
 
                 cid = b_item.name
+                p_cid = known_parent_map.get(cid)
+                is_sub = cid in known_parent_map
+                parent_uid = f"{agent_type}:{p_cid}" if p_cid else None
                 sessions_map[cid] = UnifiedSession(
                     unified_id=f"{agent_type}:{cid}",
                     agent_type=agent_type,
@@ -160,6 +205,8 @@ def query_antigravity_sessions(
                     status=status,
                     step_count=1,
                     updated_at=up_iso,
+                    parent_unified_id=parent_uid,
+                    is_subagent=is_sub,
                 )
         except OSError:
             pass
@@ -355,3 +402,114 @@ def read_antigravity_messages(
 
     messages_cache[raw_session_id] = (mtime_ns, fsize, items, consumed_bytes)
     return items[-limit:] if limit > 0 else items
+
+
+def query_antigravity_single_session(
+    summary_db_path: Path,
+    brain_dir: Path,
+    agent_type: str,
+    agent_label: str,
+    raw_session_id: str,
+) -> Optional[UnifiedSession]:
+    """按会话 ID 单独查询单个 Antigravity 会话元数据。"""
+    cid = str(raw_session_id).strip()
+    if not cid:
+        return None
+
+    now_iso = utc_now_iso()
+    if summary_db_path.exists():
+        cols_info = safe_query_external_sqlite(summary_db_path, "PRAGMA table_info(conversation_summaries)", ())
+        existing_cols = {str(c.get("name") or "") for c in cols_info}
+        has_parent_col = "parent_conversation_id" in existing_cols
+        has_depth_col = "nesting_depth" in existing_cols
+
+        extra_cols = []
+        if has_parent_col:
+            extra_cols.append("parent_conversation_id")
+        if has_depth_col:
+            extra_cols.append("nesting_depth")
+        extra_select = (", " + ", ".join(extra_cols)) if extra_cols else ""
+
+        sql = f"""
+            SELECT conversation_id, title, preview, step_count,
+                   last_modified_time, workspace_uris, status, not_fully_idle
+                   {extra_select}
+            FROM conversation_summaries
+            WHERE conversation_id = ?
+            LIMIT 1
+        """
+        rows = safe_query_external_sqlite(summary_db_path, sql, (cid,))
+        if rows:
+            r = rows[0]
+            not_idle = bool(r.get("not_fully_idle"))
+            raw_status = str(r.get("status") or "")
+            if agent_type == "agy_ide" and not_idle:
+                status = "desktop_active"
+            elif not_idle or "RUNNING" in raw_status.upper():
+                status = "running"
+            else:
+                status = "idle"
+
+            title = (r.get("title") or "").strip()
+            preview = (r.get("preview") or "").strip()
+            raw_paths = r.get("workspace_uris") or r.get("workspace_paths") or ""
+            p_path = decode_workspace_uri(str(raw_paths))
+            raw_up = r.get("last_modified_time") or r.get("updated_at")
+            if isinstance(raw_up, (int, float)):
+                val = float(raw_up)
+                if val > 1e11:
+                    val /= 1000.0
+                up_iso = datetime.fromtimestamp(val, tz=timezone.utc).isoformat()
+            else:
+                up_iso = str(raw_up or now_iso).replace(" ", "T")
+
+            parent_cid = str(r.get("parent_conversation_id") or "").strip() if has_parent_col else ""
+            nesting_depth = int(r.get("nesting_depth") or 0) if has_depth_col else 0
+            is_sub = bool(parent_cid) or nesting_depth > 0
+            parent_uid = f"{agent_type}:{parent_cid}" if parent_cid else None
+
+            is_proj, norm_p, p_name = evaluate_project_dir(p_path)
+            return UnifiedSession(
+                unified_id=f"{agent_type}:{cid}",
+                agent_type=agent_type,
+                agent_label=agent_label,
+                raw_session_id=cid,
+                title=title or f"会话 {cid[:8]}",
+                preview=preview or title or "暂无内容",
+                project_path=p_path,
+                status=status,
+                step_count=int(r.get("step_count") or 1),
+                updated_at=up_iso,
+                is_project=is_proj,
+                project_name=p_name,
+                desktop_locked=(agent_type == "agy_ide" and not_idle),
+                parent_unified_id=parent_uid,
+                is_subagent=is_sub,
+            )
+
+    # 查 brain 目录
+    tp = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+    if tp.is_file():
+        try:
+            st = tp.stat()
+            up_iso = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+            is_active, s_status = inspect_transcript_tail_status(tp)
+            status = s_status if is_active else "idle"
+        except OSError:
+            up_iso = now_iso
+            status = "idle"
+
+        return UnifiedSession(
+            unified_id=f"{agent_type}:{cid}",
+            agent_type=agent_type,
+            agent_label=agent_label,
+            raw_session_id=cid,
+            title=f"会话 {cid[:8]}",
+            preview="来自本地日志",
+            project_path="",
+            status=status,
+            step_count=1,
+            updated_at=up_iso,
+        )
+
+    return None

@@ -39,9 +39,18 @@ export function isSessionAttentionNeeded(s) {
   return Boolean(s) && getSessionPriorityWeight(s) > SESSION_PRIORITY.DEFAULT;
 }
 
+export function isSubagentSession(s) {
+  if (!s) return false;
+  if (s.is_subagent) return true;
+  if (s.parent_unified_id) return true;
+  const title = String(s.title || "").toLowerCase();
+  if (title.includes("(subagent)") || title.includes("subagent)")) return true;
+  return false;
+}
+
 export function getAllAttentionSessions() {
   const all = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
-  const list = all.filter((s) => isSessionAttentionNeeded(s));
+  const list = all.filter((s) => isSessionAttentionNeeded(s) && !isSubagentSession(s));
 
   return list.sort((a, b) => {
     const wa = getSessionPriorityWeight(a);
@@ -71,21 +80,24 @@ export function pickDefaultSession(sessionList) {
   if (!Array.isArray(sessionList) || sessionList.length === 0) {
     return null;
   }
-  const runningSessions = sessionList.filter((s) => isSessionStatusActive(s));
+  const mainSessions = sessionList.filter((s) => !isSubagentSession(s));
+  const pool = mainSessions.length > 0 ? mainSessions : sessionList;
+
+  const runningSessions = pool.filter((s) => isSessionStatusActive(s));
   if (runningSessions.length > 0) {
     return getLatestSession(runningSessions);
   }
-  const waitingSessions = sessionList.filter(
+  const waitingSessions = pool.filter(
     (s) => String(s.status || "").toLowerCase() === "waiting_approval"
   );
   if (waitingSessions.length > 0) {
     return getLatestSession(waitingSessions);
   }
-  const pinnedSessions = sessionList.filter((s) => Boolean(s.is_pinned));
+  const pinnedSessions = pool.filter((s) => Boolean(s.is_pinned));
   if (pinnedSessions.length > 0) {
     return getLatestSession(pinnedSessions);
   }
-  return sessionList[0];
+  return pool[0];
 }
 
 export function getProjectInfo(rawPath) {

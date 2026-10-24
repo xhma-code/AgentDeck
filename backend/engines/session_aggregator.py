@@ -103,6 +103,8 @@ def aggregate_all_sessions(
             if ov.get("project_path") and not sess.project_path:
                 sess.project_path = str(ov["project_path"])
             sess.parent_unified_id = ov.get("parent_unified_id")
+            if sess.parent_unified_id:
+                sess.is_subagent = True
 
         if not sess.model_name:
             sess.model_name = resolve_default_model_fn(sess.agent_type)
@@ -126,6 +128,42 @@ def aggregate_all_sessions(
                 continue
             adapter_obj = adapters.get(atype)
             label = adapter_obj.agent_label if adapter_obj else atype
+            raw_id = str(ov.get("raw_session_id") or "")
+
+            sess_obj: Optional[UnifiedSession] = None
+            if adapter_obj and raw_id:
+                try:
+                    sess_obj = adapter_obj.get_session(raw_id)
+                except Exception as exc:
+                    logger.debug(f"尝试按 ID 检索会话 {uid} 异常: {exc}")
+
+            if sess_obj:
+                sess = sess_obj
+                sess.is_pinned = int(ov.get("is_pinned") or 0)
+                sess.execution_mode = str(ov.get("execution_mode") or ExecutionMode.ASK.value)
+                if ov.get("model_name"):
+                    sess.model_name = str(ov["model_name"])
+                if ov.get("title") and str(ov["title"]).strip():
+                    sess.title = str(ov["title"]).strip()
+                if ov.get("project_path") and not sess.project_path:
+                    sess.project_path = str(ov["project_path"])
+                if ov.get("parent_unified_id"):
+                    sess.parent_unified_id = ov.get("parent_unified_id")
+                    sess.is_subagent = True
+
+                is_proj, norm_path, proj_name = resolve_proj(sess.project_path)
+                sess.project_path = norm_path
+                sess.is_project = is_proj
+                sess.project_name = proj_name
+
+                if sess.unified_id in pending_approvals:
+                    sess.status = "waiting_approval"
+                elif is_session_active_fn(sess.unified_id):
+                    sess.status = "running"
+
+                merged.append(sess.to_dict())
+                continue
+
             status = (
                 "waiting_approval"
                 if uid in pending_approvals
@@ -140,7 +178,7 @@ def aggregate_all_sessions(
                     unified_id=uid,
                     agent_type=atype,
                     agent_label=label,
-                    raw_session_id=str(ov.get("raw_session_id") or ""),
+                    raw_session_id=raw_id,
                     title=str(ov.get("title") or "新建会话"),
                     preview="等待发送首条指令...",
                     project_path=norm_path,
@@ -153,6 +191,7 @@ def aggregate_all_sessions(
                     is_project=is_proj,
                     project_name=proj_name,
                     parent_unified_id=ov.get("parent_unified_id"),
+                    is_subagent=bool(ov.get("parent_unified_id")),
                 ).to_dict()
             )
 

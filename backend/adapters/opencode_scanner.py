@@ -247,6 +247,10 @@ def query_opencode_sessions(
         else:
             status = "idle"
 
+        parent_id = str(r.get("parent_id") or "").strip()
+        is_sub = bool(parent_id) or ("subagent)" in raw_title.lower())
+        parent_uid = f"{agent_type}:{parent_id}" if parent_id else None
+
         sessions.append(
             UnifiedSession(
                 unified_id=f"{agent_type}:{sid}",
@@ -259,6 +263,8 @@ def query_opencode_sessions(
                 status=status,
                 step_count=msg_count,
                 updated_at=updated_at,
+                parent_unified_id=parent_uid,
+                is_subagent=is_sub,
             )
         )
 

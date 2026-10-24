@@ -139,7 +139,7 @@ async def update_session_meta(
         unified_id=unified_id,
         agent_type=agent_type,
         raw_session_id=raw_id,
-        title=req.title or "",
+        title=req.title,
         is_pinned=req.is_pinned,
         execution_mode=normalized_mode,
         model_name=req.model_name,

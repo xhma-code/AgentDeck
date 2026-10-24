@@ -191,6 +191,56 @@ class OpenCodeAdapter(BaseAgentAdapter):
             return False
         return n.endswith((".json", ".jsonl", ".sqlite", ".db"))
 
+    def get_session(self, raw_session_id: str) -> Optional[UnifiedSession]:
+        """按 ID 精确定位单个 OpenCode 会话摘要。"""
+        if not self.db_path.exists() or not raw_session_id:
+            return None
+        active_map: dict[str, str] = {}
+        if self.http_bridge.is_server_running():
+            active_map = self.http_bridge.get_active_sessions()
+        
+        has_v2 = self._check_has_table("session_v2")
+        table_name = "session_v2" if has_v2 else "session"
+        count_sub = (
+            "(SELECT COUNT(1) FROM session_message m WHERE m.session_id = s.id)"
+            if (has_v2 and self._check_has_table("session_message"))
+            else ("(SELECT COUNT(1) FROM message m WHERE m.session_id = s.id)" if not has_v2 else "0")
+        )
+        sql = f"""
+            SELECT s.*, {count_sub} AS msg_count
+            FROM {table_name} s
+            WHERE s.id = ?
+            LIMIT 1
+        """
+        rows = safe_query_external_sqlite(self.db_path, sql, (raw_session_id,))
+        if not rows:
+            return None
+        r = rows[0]
+        raw_title = re.sub(r"\s+", " ", str(r.get("title") or "").strip())
+        parent_id = str(r.get("parent_id") or "").strip()
+        is_sub = bool(parent_id) or ("subagent)" in raw_title.lower())
+        parent_uid = f"{self.agent_type}:{parent_id}" if parent_id else None
+
+        directory = str(r.get("directory") or "")
+        updated_at = ms_to_iso(r.get("time_updated"))
+        msg_count = int(r.get("msg_count") or 0)
+        status = "running" if raw_session_id in active_map else "idle"
+
+        return UnifiedSession(
+            unified_id=f"{self.agent_type}:{raw_session_id}",
+            agent_type=self.agent_type,
+            agent_label=self.agent_label,
+            raw_session_id=raw_session_id,
+            title=raw_title or f"OpenCode {raw_session_id[:8]}",
+            preview=raw_title or "暂无内容",
+            project_path=directory,
+            status=status,
+            step_count=msg_count,
+            updated_at=updated_at,
+            parent_unified_id=parent_uid,
+            is_subagent=is_sub,
+        )
+
     def list_sessions(self, limit: int = 50) -> list[UnifiedSession]:
         """从 opencode.db 读取会话列表（自适应 session_v2 与旧版 session，实时感知活跃状态）。"""
         if not self.db_path.exists():

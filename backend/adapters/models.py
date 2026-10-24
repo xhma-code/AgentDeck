@@ -111,6 +111,7 @@ class UnifiedSession:
     project_name: str = ""
     desktop_locked: bool = False
     parent_unified_id: Optional[str] = None
+    is_subagent: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

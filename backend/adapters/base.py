@@ -123,6 +123,10 @@ class BaseAgentAdapter(ABC):
     def list_sessions(self, limit: int = 50) -> list[UnifiedSession]:
         """列出该 Agent 的历史与活跃会话。"""
 
+    def get_session(self, raw_session_id: str) -> Optional[UnifiedSession]:
+        """按会话 ID 单独检索单个会话元数据（用于被置顶或有元数据覆盖但超出批量扫描上限的外部会话）。"""
+        return None
+
     @abstractmethod
     def get_session_messages(
         self, raw_session_id: str, limit: int = 100

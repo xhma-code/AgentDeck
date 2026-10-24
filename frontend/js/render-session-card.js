@@ -1,4 +1,5 @@
 import {
+  getAllAttentionSessions,
   getPendingAttentionSessions,
   isSessionStatusActive,
 } from "./session-helper.js";
@@ -124,66 +125,86 @@ export function renderOtherRunningPill() {
   const dotEl = document.getElementById("other-running-dot");
   const textEl = document.getElementById("other-running-text");
   const countEl = document.getElementById("other-running-count");
+  const mobileMenuBtn = document.getElementById("mobile-menu-btn");
   const mobileBadge = document.getElementById("mobile-menu-badge");
-  if (!pill) return;
-
-  const attentionList = getPendingAttentionSessions();
-  const count = attentionList.length;
-
-  if (count === 0) {
-    pill.classList.add("hidden");
-    pill.classList.remove("flex");
-    if (mobileBadge) {
-      mobileBadge.classList.add("hidden");
-    }
-    return;
-  }
-
-  pill.classList.remove("hidden");
-  pill.classList.add("flex");
-
-  const approvalCount = attentionList.filter((s) => s.status === "waiting_approval").length;
-  const unreadCount = attentionList.filter((s) => isSessionCompletedUnread(s)).length;
-  const runningCount = attentionList.filter(
-    (s) => isSessionStatusActive(s) || (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id))
-  ).length;
-
-  let dotColorClass = "bg-emerald-400 animate-pulse";
-  let pillColorClass = "border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300";
-  let textDesc = `${count} 个后台运行中`;
-
-  if (approvalCount > 0) {
-    dotColorClass = "bg-amber-400 animate-ping";
-    pillColorClass = "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300";
-    if (runningCount === 0 && unreadCount === 0) {
-      textDesc = `${approvalCount} 个待审批任务`;
-    } else {
-      textDesc = `${approvalCount} 待审批 · ${runningCount + unreadCount} 活跃`;
-    }
-  } else if (unreadCount > 0) {
-    dotColorClass = "bg-sky-400 glow-sky";
-    pillColorClass = "border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300";
-    if (runningCount === 0) {
-      textDesc = `${unreadCount} 个完成待查看`;
-    } else {
-      textDesc = `${unreadCount} 待查看 · ${runningCount} 运行中`;
-    }
-  }
-
-  pill.className = `h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg border text-xs flex items-center gap-1.5 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none ${pillColorClass}`;
-  if (dotEl) {
-    dotEl.className = `w-2 h-2 rounded-full shrink-0 ${dotColorClass}`;
-  }
-  if (textEl) {
-    textEl.textContent = textDesc;
-  }
-  if (countEl) {
-    countEl.textContent = String(count);
-  }
-
   if (mobileBadge) {
-    mobileBadge.classList.remove("hidden");
-    mobileBadge.className = `absolute top-1.5 right-1.5 w-2 h-2 rounded-full pointer-events-none ${dotColorClass}`;
+    mobileBadge.classList.add("hidden");
+    mobileBadge.textContent = "";
+  }
+
+  // 1. 获取全量需关注的会话（包括当前选中的正在运行会话）
+  const allAttentionList = typeof getAllAttentionSessions === "function" ? getAllAttentionSessions() : [];
+  // 2. 获取未选中的后台会话（供桌面端快捷跳板）
+  const pendingAttentionList = typeof getPendingAttentionSessions === "function" ? getPendingAttentionSessions() : [];
+  const otherCount = pendingAttentionList.length;
+
+  // 桌面端顶栏活跃跳板胶囊
+  if (pill) {
+    if (otherCount === 0) {
+      pill.classList.add("hidden");
+      pill.classList.remove("md:flex");
+    } else {
+      pill.classList.remove("hidden");
+      pill.classList.add("md:flex");
+
+      const otherApproval = pendingAttentionList.filter((s) => s.status === "waiting_approval").length;
+      const otherUnread = pendingAttentionList.filter((s) => isSessionCompletedUnread(s)).length;
+      const otherRunning = pendingAttentionList.filter(
+        (s) => isSessionStatusActive(s) || (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id))
+      ).length;
+
+      let dotColorClass = "bg-emerald-400 animate-pulse";
+      let pillColorClass = "border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300";
+
+      if (otherApproval > 0) {
+        dotColorClass = "bg-amber-400 animate-ping";
+        pillColorClass = "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300";
+      } else if (otherUnread > 0 && otherRunning === 0) {
+        dotColorClass = "bg-sky-400 glow-sky";
+        pillColorClass = "border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300";
+      }
+
+      const descParts = [];
+      if (otherApproval > 0) descParts.push(`${otherApproval} 待审批`);
+      if (otherUnread > 0) descParts.push(`${otherUnread} 待查看`);
+      if (otherRunning > 0) descParts.push(`${otherRunning} 运行中`);
+      const textDesc = descParts.join(" · ") || `${otherCount} 运行中`;
+
+      pill.className = `h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg border text-xs hidden md:flex items-center gap-1.5 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none ${pillColorClass}`;
+      if (dotEl) dotEl.className = `w-2 h-2 rounded-full shrink-0 ${dotColorClass}`;
+      if (textEl) textEl.textContent = textDesc;
+      if (countEl) countEl.textContent = String(otherCount);
+    }
+  }
+
+  // 手机端汉堡按键线条流光变色控制（全量活跃检测）
+  if (mobileMenuBtn) {
+    const totalCount = allAttentionList.length;
+    const approvalCount = allAttentionList.filter((s) => s.status === "waiting_approval").length;
+    const unreadCount = allAttentionList.filter((s) => isSessionCompletedUnread(s)).length;
+    const runningCount = allAttentionList.filter(
+      (s) => isSessionStatusActive(s) || (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id))
+    ).length;
+
+    mobileMenuBtn.classList.remove(
+      "hamburger-btn-normal",
+      "hamburger-btn-running",
+      "hamburger-btn-approval",
+      "hamburger-btn-unread"
+    );
+
+    if (totalCount === 0) {
+      mobileMenuBtn.classList.add("hamburger-btn-normal");
+      mobileMenuBtn.title = "打开菜单";
+    } else if (approvalCount > 0) {
+      mobileMenuBtn.classList.add("hamburger-btn-approval");
+      mobileMenuBtn.title = `有 ${approvalCount} 个任务待审批，点击查看菜单`;
+    } else if (unreadCount > 0 && runningCount === 0) {
+      mobileMenuBtn.classList.add("hamburger-btn-unread");
+      mobileMenuBtn.title = `有 ${unreadCount} 个完成任务待查看，点击查看菜单`;
+    } else {
+      mobileMenuBtn.classList.add("hamburger-btn-running");
+      mobileMenuBtn.title = `有 ${runningCount || totalCount} 个任务运行中，点击查看菜单`;
+    }
   }
 }
-

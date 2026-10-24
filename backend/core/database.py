@@ -125,7 +125,7 @@ class MetaDatabase:
             if existing:
                 upd_parent = parent_unified_id if parent_unified_id is not None else existing["parent_unified_id"]
                 upd_path = project_path if project_path is not None else existing["project_path"]
-                upd_title = title if title is not None else existing["title"]
+                upd_title = title.strip() if (title is not None and title.strip()) else existing["title"]
                 upd_pin = is_pinned if is_pinned is not None else existing["is_pinned"]
                 upd_mode = execution_mode if execution_mode is not None else existing["execution_mode"]
                 upd_model = model_name if model_name is not None else existing["model_name"]

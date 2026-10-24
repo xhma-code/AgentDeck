@@ -159,6 +159,24 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         """返回底层 JSONL 日志文件的绝对路径。"""
         return self._find_session_file(raw_session_id)
 
+    def get_session(self, raw_session_id: str) -> Optional[UnifiedSession]:
+        """按 ID 精确定位单个 Claude Code 会话摘要。"""
+        fpath = self._find_session_file(raw_session_id)
+        if not fpath or not fpath.exists():
+            return None
+        active_map = self.get_active_sessions_map()
+        try:
+            mtime = fpath.stat().st_mtime
+            return parse_claude_session_file(
+                fpath=fpath,
+                mtime=mtime,
+                active_map=active_map,
+                agent_type=self.agent_type,
+                agent_label=self.agent_label,
+            )
+        except OSError:
+            return None
+
     def list_sessions(self, limit: int = 50) -> list[UnifiedSession]:
         """扫描 ~/.claude/projects 下所有 .jsonl 文件并提取会话元数据（带 mtime 内存缓存与短效扫描缓存）。"""
         if not self.projects_dir.exists():

@@ -44,6 +44,7 @@ from backend.adapters.antigravity_parser import (
     parse_state_selected_model,
 )
 from backend.adapters.antigravity_scanner import (
+    query_antigravity_single_session,
     merge_agy_models_catalog,
     query_antigravity_sessions,
     query_session_model,
@@ -222,6 +223,16 @@ class AntigravityAdapter(BaseAgentAdapter):
             agent_type=self.agent_type,
             agent_label=self.agent_label,
             limit=limit,
+        )
+
+    def get_session(self, raw_session_id: str) -> Optional[UnifiedSession]:
+        """按 ID 精确定位单个 Antigravity 会话摘要。"""
+        return query_antigravity_single_session(
+            summary_db_path=self.summary_db_path,
+            brain_dir=self.brain_dir,
+            agent_type=self.agent_type,
+            agent_label=self.agent_label,
+            raw_session_id=raw_session_id,
         )
 
     def get_session_messages(

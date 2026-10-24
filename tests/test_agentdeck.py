@@ -2607,3 +2607,130 @@ def test_inspect_transcript_tail_status_and_smooth_activity(tmp_path: Path):
 
 
 
+
+
+def test_antigravity_subagent_detection(tmp_path: Path):
+    """测试 Antigravity 扫描器正确识别主进程与子进程，并打标 is_subagent。"""
+    import sqlite3
+    from backend.adapters.antigravity_scanner import query_antigravity_sessions
+
+    summary_db = tmp_path / "conversation_summaries.db"
+    conn = sqlite3.connect(summary_db)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE conversation_summaries (
+            conversation_id text PRIMARY KEY,
+            title text NOT NULL DEFAULT '',
+            preview text NOT NULL DEFAULT '',
+            step_count integer NOT NULL DEFAULT 0,
+            last_modified_time datetime NOT NULL,
+            workspace_uris text NOT NULL,
+            status text NOT NULL DEFAULT '',
+            parent_conversation_id text NOT NULL DEFAULT '',
+            nesting_depth integer NOT NULL DEFAULT 0,
+            not_fully_idle numeric NOT NULL DEFAULT false,
+            killed numeric NOT NULL DEFAULT false
+        )
+        """
+    )
+    # 插入主进程 (Main Process)
+    cur.execute(
+        """
+        INSERT INTO conversation_summaries (
+            conversation_id, title, preview, step_count, last_modified_time,
+            workspace_uris, status, parent_conversation_id, nesting_depth, not_fully_idle, killed
+        ) VALUES ('main-sess-001', '主任务分析', '分析中', 5, '2026-10-24T12:00:00Z', 'd:/repo', 'CASCADE_RUN_STATUS_RUNNING', '', 0, 1, 0)
+        """
+    )
+    # 插入子进程 (Subagent Process)
+    cur.execute(
+        """
+        INSERT INTO conversation_summaries (
+            conversation_id, title, preview, step_count, last_modified_time,
+            workspace_uris, status, parent_conversation_id, nesting_depth, not_fully_idle, killed
+        ) VALUES ('sub-sess-002', '代码检索子任务', '正在搜索', 2, '2026-10-24T12:01:00Z', 'd:/repo', 'CASCADE_RUN_STATUS_RUNNING', 'main-sess-001', 1, 1, 0)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    brain_dir = tmp_path / "brain"
+    brain_dir.mkdir(parents=True, exist_ok=True)
+
+    sessions = query_antigravity_sessions(
+        summary_db_path=summary_db,
+        brain_dir=brain_dir,
+        agent_type="agy_ide",
+        agent_label="Antigravity IDE",
+    )
+
+    sess_map = {s.raw_session_id: s for s in sessions}
+    assert "main-sess-001" in sess_map
+    assert "sub-sess-002" in sess_map
+
+    main_sess = sess_map["main-sess-001"]
+    sub_sess = sess_map["sub-sess-002"]
+
+    # 验证主进程标志
+    assert main_sess.is_subagent is False
+    assert main_sess.parent_unified_id is None
+
+    # 验证子进程标志
+    assert sub_sess.is_subagent is True
+    assert sub_sess.parent_unified_id == "agy_ide:main-sess-001"
+
+
+def test_session_aggregator_subagent_handling(tmp_path: Path):
+    """测试聚合器在合并覆盖项与多 Agent 数据时保持子进程标识。"""
+    from backend.core.database import MetaDatabase
+    from backend.adapters.models import UnifiedSession
+    from backend.engines.session_aggregator import aggregate_all_sessions
+    from unittest.mock import MagicMock
+
+    db = MetaDatabase(db_path=tmp_path / "meta_test.db")
+    mock_adapter = MagicMock()
+    mock_adapter.agent_label = "Antigravity IDE"
+    mock_adapter.list_sessions.return_value = [
+        UnifiedSession(
+            unified_id="agy_ide:main-1",
+            agent_type="agy_ide",
+            agent_label="Antigravity IDE",
+            raw_session_id="main-1",
+            title="主进程任务",
+            preview="预览",
+            project_path="d:/repo",
+            status="running",
+            step_count=3,
+            updated_at="2026-10-24T12:00:00Z",
+            is_subagent=False,
+        ),
+        UnifiedSession(
+            unified_id="agy_ide:sub-2",
+            agent_type="agy_ide",
+            agent_label="Antigravity IDE",
+            raw_session_id="sub-2",
+            title="子进程任务",
+            preview="预览",
+            project_path="d:/repo",
+            status="running",
+            step_count=1,
+            updated_at="2026-10-24T12:01:00Z",
+            parent_unified_id="agy_ide:main-1",
+            is_subagent=True,
+        ),
+    ]
+
+    adapters = {"agy_ide": mock_adapter}
+    results = aggregate_all_sessions(
+        adapters=adapters,
+        meta_db=db,
+        pending_approvals={},
+        is_session_active_fn=lambda uid: False,
+        resolve_default_model_fn=lambda atype: "gemini-2.5-pro",
+    )
+
+    res_map = {r["unified_id"]: r for r in results}
+    assert res_map["agy_ide:main-1"]["is_subagent"] is False
+    assert res_map["agy_ide:sub-2"]["is_subagent"] is True
+    assert res_map["agy_ide:sub-2"]["parent_unified_id"] == "agy_ide:main-1"
