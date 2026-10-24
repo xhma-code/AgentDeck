@@ -1,5 +1,5 @@
 // AgentDeck PWA Service Worker — 离线 App Shell 缓存与跨网络自愈支持
-const CACHE_NAME = "agentdeck-shell-20261024_dom_guardian_v1";
+const CACHE_NAME = "agentdeck-shell-20261024_copy_fix_v1";
 
 const APP_SHELL = [
   "/",

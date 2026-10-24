@@ -164,9 +164,20 @@ export async function handleModelChange(newModel) {
 }
 
 export async function copyCodeBlock(codeId, btnEl) {
-  const pre = document.getElementById(`code-pre-${codeId}`);
-  if (!pre) return;
-  const text = pre.innerText || pre.textContent || "";
+  let text = (state.codeBlockStore && state.codeBlockStore[codeId]) || "";
+  if (!text) {
+    const el = document.getElementById(`code-body-${codeId}`) || document.getElementById(`code-pre-${codeId}`);
+    if (el) {
+      const clone = el.cloneNode(true);
+      const fade = clone.querySelector(".md-code-fade");
+      if (fade) fade.remove();
+      text = clone.innerText || clone.textContent || "";
+    }
+  }
+  if (!text) {
+    showToast("无可复制内容", "info");
+    return;
+  }
   const ok = await copyTextToClipboard(text);
   if (ok) {
     if (btnEl) applyButtonCheckmark(btnEl, { iconSize: "w-3 h-3" });

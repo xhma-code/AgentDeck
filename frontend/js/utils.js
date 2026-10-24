@@ -94,24 +94,40 @@ export function isLocalPreviewableLink(href) {
 
 export async function copyTextToClipboard(text) {
   if (!text) return false;
-  if (navigator.clipboard && window.isSecureContext) {
+  // 1. 优先尝试现代异步剪贴板 API
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
     try {
       await navigator.clipboard.writeText(text);
       return true;
     } catch (_) {}
   }
+  // 2. 降级方案：创建临时文本域执行 execCommand("copy")
   try {
     const textArea = document.createElement("textarea");
     textArea.value = text;
+    textArea.setAttribute("readonly", "");
     textArea.style.position = "fixed";
     textArea.style.left = "-9999px";
     textArea.style.top = "-9999px";
-    textArea.style.opacity = "0";
-    textArea.setAttribute("readonly", "");
+    textArea.style.opacity = "0.01";
+    textArea.style.fontSize = "16px";
     document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
-    textArea.setSelectionRange(0, text.length);
+
+    if (navigator.userAgent && /ipad|ipod|iphone/i.test(navigator.userAgent)) {
+      textArea.removeAttribute("readonly");
+      const range = document.createRange();
+      range.selectNodeContents(textArea);
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      textArea.setSelectionRange(0, text.length);
+    } else {
+      textArea.focus();
+      textArea.select();
+    }
+
     const successful = document.execCommand("copy");
     document.body.removeChild(textArea);
     if (successful) return true;
@@ -136,24 +152,35 @@ export function saveToBoundedStore(storeName, key, value, maxItems = 150) {
 
 export function applyButtonCheckmark(btnEl, options = {}) {
   if (!btnEl) return;
-  const iconSize = options.iconSize || "w-3 h-3";
   const duration = options.duration || 1500;
 
   if (btnEl._copyResetTimer) {
     clearTimeout(btnEl._copyResetTimer);
   } else {
     btnEl._oldCopyHtml = btnEl.innerHTML;
+    btnEl._oldWidth = btnEl.style.width;
+    const computedW = btnEl.getBoundingClientRect().width;
+    if (computedW > 0) {
+      btnEl.style.width = `${Math.ceil(computedW)}px`;
+    }
+  }
+
+  const existingSvg = btnEl.querySelector("svg");
+  let iconSize = options.iconSize || "w-3 h-3";
+  if (existingSvg) {
+    const cls = existingSvg.getAttribute("class") || "";
+    const sizeMatch = cls.match(/\b(w-[\d.]+\s+h-[\d.]+)\b/);
+    if (sizeMatch) {
+      iconSize = sizeMatch[1];
+    }
   }
 
   const checkSvg = `<svg class="${iconSize} text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
 
-  const existingSvg = btnEl.querySelector("svg");
   if (existingSvg) {
     existingSvg.outerHTML = checkSvg;
-    const textSpan = btnEl.querySelector("span");
-    if (textSpan) {
-      textSpan.classList.add("text-emerald-300");
-    }
+    const textSpans = btnEl.querySelectorAll("span");
+    textSpans.forEach((span) => span.classList.add("text-emerald-300"));
   } else {
     const label = options.label || btnEl.textContent.trim() || "复制";
     btnEl.innerHTML = `${checkSvg}<span class="text-emerald-300 font-medium">${escapeHtml(label)}</span>`;
@@ -165,6 +192,12 @@ export function applyButtonCheckmark(btnEl, options = {}) {
     if (btnEl._oldCopyHtml !== undefined) {
       btnEl.innerHTML = btnEl._oldCopyHtml;
       delete btnEl._oldCopyHtml;
+    }
+    if (btnEl._oldWidth !== undefined) {
+      btnEl.style.width = btnEl._oldWidth;
+      delete btnEl._oldWidth;
+    } else {
+      btnEl.style.width = "";
     }
     btnEl.classList.remove("text-emerald-300");
     delete btnEl._copyResetTimer;

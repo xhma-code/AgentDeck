@@ -472,7 +472,7 @@
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
         <button id="doc-preview-copy-btn" onclick="window.appActions.copyCurrentDocContent(this)"
-          class="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 flex items-center gap-1 active:scale-95 transition">
+          class="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 flex items-center justify-center gap-1 active:scale-95 transition min-w-[58px] sm:min-w-[80px]">
           <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
           <span class="hidden sm:inline">复制全文</span>
           <span class="sm:hidden">复制</span>
@@ -562,6 +562,6 @@
       });
     }
   </script>
-  <script type="module" src="/static/app.js?v=20261024_fix_buttons_v3"></script>
+  <script type="module" src="/static/app.js?v=20261024_copy_fix_v1"></script>
 </body>
 </html>

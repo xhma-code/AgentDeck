@@ -3,11 +3,8 @@
 多 Agent 会话聚合器与消息流详情装配器。
 负责跨 Agent 会话发现、状态覆盖、优先级排序、分页消息拼接与 Token 水位关联。
 """
-
 from __future__ import annotations
-
 from typing import Any, Callable, Optional
-
 from backend.adapters.base import (
     BaseAgentAdapter,
     ExecutionMode,
@@ -18,8 +15,6 @@ from backend.core.database import PROJECT_ROOT, MetaDatabase, utc_now_iso
 from backend.core.logger import log_structured_error, logger
 from backend.core.workspace import evaluate_project_dir
 from backend.engines.approval import PendingApproval
-
-
 def aggregate_all_sessions(
     adapters: dict[str, BaseAgentAdapter],
     meta_db: MetaDatabase,
@@ -46,9 +41,7 @@ def aggregate_all_sessions(
             bookmarked_keys.add(w_key)
             if w.get("workspace_name"):
                 ws_custom_names[w_key] = str(w["workspace_name"])
-
     proj_eval_cache: dict[str, tuple[bool, str, str]] = {}
-
     def resolve_proj(raw_p: str) -> tuple[bool, str, str]:
         if raw_p not in proj_eval_cache:
             is_p, norm_p, p_name = evaluate_project_dir(raw_p, bookmarked_keys, hidden_keys)
@@ -56,15 +49,12 @@ def aggregate_all_sessions(
                 p_name = ws_custom_names[norm_p.lower()]
             proj_eval_cache[raw_p] = (is_p, norm_p, p_name)
         return proj_eval_cache[raw_p]
-
     all_sessions: list[UnifiedSession] = []
-
     target_adapters = [
         (key, adapter)
         for key, adapter in adapters.items()
         if not (agent_filter and agent_filter != "all" and agent_filter != key)
     ]
-
     def _fetch_adapter_sessions(item: tuple[str, BaseAgentAdapter]) -> list[UnifiedSession]:
         _, adp = item
         try:
@@ -77,10 +67,8 @@ def aggregate_all_sessions(
                 exc=exc,
             )
             return []
-
     if len(target_adapters) > 1:
         from concurrent.futures import ThreadPoolExecutor
-
         with ThreadPoolExecutor(max_workers=min(len(target_adapters), 4)) as executor:
             for results in executor.map(_fetch_adapter_sessions, target_adapters):
                 all_sessions.extend(results)
@@ -108,6 +96,17 @@ def aggregate_all_sessions(
 
         if not sess.model_name:
             sess.model_name = resolve_default_model_fn(sess.agent_type)
+
+        # 校验模型是否在当前 Agent 的可用模型中有效，若失效自动校准为当前电脑端生效的默认模型
+        adapter_obj = adapters.get(sess.agent_type)
+        if adapter_obj and hasattr(adapter_obj, "get_available_models_with_quota"):
+            try:
+                avail = adapter_obj.get_available_models_with_quota()
+                valid_ids = {m["id"].lower() for m in avail}
+                if valid_ids and sess.model_name.lower() not in valid_ids:
+                    sess.model_name = resolve_default_model_fn(sess.agent_type)
+            except Exception:
+                pass
 
         is_proj, norm_path, proj_name = resolve_proj(sess.project_path)
         sess.project_path = norm_path
@@ -151,6 +150,19 @@ def aggregate_all_sessions(
                     sess.parent_unified_id = ov.get("parent_unified_id")
                     sess.is_subagent = True
 
+                if not sess.model_name:
+                    sess.model_name = resolve_default_model_fn(atype)
+
+                # 校验模型有效性：若旧记录中的模型已不可用，纠偏为当前电脑端生效的默认模型
+                if adapter_obj and hasattr(adapter_obj, "get_available_models_with_quota"):
+                    try:
+                        avail = adapter_obj.get_available_models_with_quota()
+                        valid_ids = {m["id"].lower() for m in avail}
+                        if valid_ids and sess.model_name.lower() not in valid_ids:
+                            sess.model_name = resolve_default_model_fn(atype)
+                    except Exception:
+                        pass
+
                 is_proj, norm_path, proj_name = resolve_proj(sess.project_path)
                 sess.project_path = norm_path
                 sess.is_project = is_proj
@@ -171,6 +183,18 @@ def aggregate_all_sessions(
             )
 
             default_mid = resolve_default_model_fn(atype)
+            chosen_mid = str(ov.get("model_name") or "")
+            if adapter_obj and hasattr(adapter_obj, "get_available_models_with_quota"):
+                try:
+                    avail = adapter_obj.get_available_models_with_quota()
+                    valid_ids = {m["id"].lower() for m in avail}
+                    if not chosen_mid or (valid_ids and chosen_mid.lower() not in valid_ids):
+                        chosen_mid = default_mid
+                except Exception:
+                    chosen_mid = default_mid or chosen_mid
+            else:
+                chosen_mid = chosen_mid or default_mid
+
             raw_p = str(ov.get("project_path") or str(PROJECT_ROOT))
             is_proj, norm_path, proj_name = resolve_proj(raw_p)
             merged.append(
@@ -187,7 +211,7 @@ def aggregate_all_sessions(
                     updated_at=str(ov.get("updated_at") or utc_now_iso()),
                     is_pinned=int(ov.get("is_pinned") or 0),
                     execution_mode=str(ov.get("execution_mode") or ExecutionMode.ASK.value),
-                    model_name=str(ov.get("model_name") or default_mid),
+                    model_name=chosen_mid,
                     is_project=is_proj,
                     project_name=proj_name,
                     parent_unified_id=ov.get("parent_unified_id"),
@@ -204,7 +228,6 @@ def aggregate_all_sessions(
 
     merged.sort(key=_session_sort_key, reverse=True)
     return merged
-
 
 def fetch_session_detail(
     unified_id: str,
@@ -252,6 +275,16 @@ def fetch_session_detail(
             logger.debug(f"获取会话 {raw_id[:8]} 真实模型异常: {exc}")
     default_mid = resolve_default_model_fn(agent_type)
     chosen_model = overrides.get("model_name") or session_actual_model or default_mid
+
+    # 校验模型有效性：若旧记录中的模型已不可用，纠偏为当前电脑端生效的默认模型
+    if adapter and hasattr(adapter, "get_available_models_with_quota"):
+        try:
+            avail = adapter.get_available_models_with_quota()
+            valid_ids = {m["id"].lower() for m in avail}
+            if valid_ids and chosen_model.lower() not in valid_ids:
+                chosen_model = default_mid
+        except Exception:
+            pass
     token_usage = (
         adapter.get_session_token_usage(raw_id, model_name=chosen_model)
         if adapter
@@ -298,7 +331,6 @@ def fetch_session_detail(
         "messages": messages,
     }
 
-
 def fetch_full_step_output(
     unified_id: str,
     step_index: int,
@@ -313,7 +345,6 @@ def fetch_full_step_output(
         return adapter.get_full_step_output(raw_id, step_index)
     return ""
 
-
 def build_startup_health_report(adapters: dict[str, BaseAgentAdapter]) -> list[dict[str, Any]]:
     """生成所有已注册 Agent 适配器的启动连通性与健康状态报告列表。"""
     report: list[dict[str, Any]] = []
@@ -326,7 +357,6 @@ def build_startup_health_report(adapters: dict[str, BaseAgentAdapter]) -> list[d
             "description": msg,
         })
     return report
-
 
 def build_system_overview(
     adapters: dict[str, BaseAgentAdapter],
@@ -354,8 +384,8 @@ def build_system_overview(
                 pass
     return {
         "agents": agents_dict,
+        "agents_health": health,
         "running_sessions_count": len(all_active),
         "pending_approvals_count": len(pending_approvals),
     }
-
 

@@ -245,120 +245,14 @@ export async function loadSessions(silent = false) {
   }
 }
 
-export function updateSelectedSessionHighlight(prevId, nextId) {
-  if (prevId) {
-    document
-      .querySelectorAll(`[data-session-item="${CSS.escape(prevId)}"]`)
-      .forEach((el) => {
-        el.className =
-          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 bg-zinc-900/45 border-transparent hover:bg-zinc-900 hover:border-zinc-800 text-zinc-300";
-      });
-  }
-  if (nextId) {
-    document
-      .querySelectorAll(`[data-session-item="${CSS.escape(nextId)}"]`)
-      .forEach((el) => {
-        el.className =
-          "group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 bg-zinc-800/95 border-sky-500/50 text-zinc-100";
-      });
-  }
-}
-
-export async function selectSession(unifiedId) {
-  const prevId = state.selectedSessionId;
-  const wasMobileDrawerOpen = state.drawerOpen && window.innerWidth < 768;
-  const wasUnread = state.unreadCompletedSessionIds.has(unifiedId);
-  markSessionViewed(unifiedId);
-
-  state.selectedSessionId = unifiedId;
-  if (prevId !== unifiedId) {
-    state.codeBlockStore = {};
-    state.expandedCodeBlocks = {};
-  }
-  updateSessionHash(unifiedId);
-  state.drawerOpen = false;
-  state.autoScrollLocked = false;
-
-  // 自动展开当前选中会话所在的项目分组
-  const sess = state.allSessions.find((s) => s.unified_id === unifiedId);
-  let needFullSidebarRender = wasUnread;
-  if (sess && sess.project_path) {
-    const pKey = getProjectInfo(sess.project_path).key;
-    if (pKey && !state.expandedProjects[pKey]) {
-      state.expandedProjects[pKey] = true;
-      needFullSidebarRender = true;
-    }
-  }
-
-  // 1. 立即触发抽屉关闭动画与轻量高亮切换，避免同步重排卡住移动端滑出动画
-  updateDrawerVisibility();
-  const sessionListContainer = document.getElementById("session-list-container");
-  const isListEmpty = !sessionListContainer || sessionListContainer.children.length === 0;
-  if (needFullSidebarRender || isListEmpty) {
-    renderSessionList();
-  } else {
-    updateSelectedSessionHighlight(prevId, unifiedId);
-  }
-  renderCurrentSessionHeader();
-  renderApprovalBanners();
-  renderOtherRunningPill();
-  updateGitStatusBadge();
-  renderLiveStreamOverlay();
-
-  // 若会话所属项目发生变化，在后台异步获取该工作区专属的 Skills 与 Workflows
-  if (sess && sess.project_path) {
-    apiFetch(`/api/v1/workflows?project_path=${encodeURIComponent(sess.project_path)}`)
-      .then((res) => {
-        if (res && res.ok && Array.isArray(res.workflows)) {
-          state.workflows = res.workflows;
-        }
-      })
-      .catch(() => {});
-  }
-
-  // 2. 检查前端内存缓存（Stale-While-Revalidate 秒开）
-  const cached = state.sessionMessagesCache[unifiedId];
-  const mountCachedOrLoad = async () => {
-    if (state.selectedSessionId !== unifiedId) return;
-
-    // 若当前会话存在待确认的乐观用户消息（如刚新建并提交首条指令），优先直出避免骨架屏闪烁
-    const optList = state.optimisticMessages[unifiedId] || [];
-    if (optList.length > 0 && (!cached || !cached.messages || cached.messages.length === 0)) {
-      state.messages = [...optList];
-      state.loadingMessages = false;
-      renderMessagesList();
-      renderLiveStreamOverlay();
-      loadSessionMessages(unifiedId, { silent: true });
-      return;
-    }
-
-    if (cached && Array.isArray(cached.messages) && cached.messages.length > 0) {
-      state.messages = cached.messages;
-      state.hasMoreMessages = Boolean(cached.hasMore);
-      state.totalMessagesCount = cached.totalCount || cached.messages.length;
-      state.currentTokenUsage = cached.tokenUsage || null;
-      const modelSelect = document.getElementById("model-select");
-      if (modelSelect && sess) {
-        renderModelOptionsForAgent(modelSelect, sess.agent_type, sess.model_name || cached.modelName);
-      }
-      state.loadingMessages = false;
-      renderMessagesList();
-      // 后台静默同步最新消息
-      loadSessionMessages(unifiedId, { silent: true });
-    } else {
-      state.currentTokenUsage = null;
-      renderTokenUsage();
-      await loadSessionMessages(unifiedId, { silent: false });
-    }
-  };
-
-  if (wasMobileDrawerOpen) {
-    // 移动端抽屉正在收起：让出 210ms 动画时长后再挂载大 DOM，保证 200ms 滑出动画 60fps 丝滑
-    setTimeout(mountCachedOrLoad, 210);
-  } else {
-    await mountCachedOrLoad();
-  }
-}
+export {
+  updateSelectedSessionHighlight,
+  selectSession,
+} from "./data-session-selection.js";
+import {
+  updateSelectedSessionHighlight,
+  selectSession,
+} from "./data-session-selection.js";
 
 export { loadSessionMessages, loadOlderMessages } from "./data-messages.js";
 
