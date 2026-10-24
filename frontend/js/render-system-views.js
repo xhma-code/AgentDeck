@@ -78,13 +78,26 @@ export function renderQrModalContent() {
   const channelList = (channels || []).slice().sort((a, b) => (orderWeight[a.type] || 9) - (orderWeight[b.type] || 9));
 
   if (!state.selectedQrNet) {
-    // 默认绝对优先展示 Tailscale（支持随时随地全网随身漫游），其次 ZeroTier，严禁在有 VPN 时优先展示 Wi-Fi 直连
-    const hasTs = channelList.some((c) => c.type === "tailscale");
-    const hasZt = channelList.some((c) => c.type === "zerotier");
-    if (hasTs) {
+    // 默认自适应策略：
+    // 若当前访问端是局域网物理连线（或本机环回），近场扫码优先展示 Wi-Fi 直连（即扫即连零门槛）；
+    // 仅当用户正在通过 Tailscale/ZeroTier 远程访问控制台时，才默认选对应 VPN 通道。
+    const curHost = window.location.hostname;
+    const tsChannel = channelList.find((c) => c.type === "tailscale");
+    const ztChannel = channelList.find((c) => c.type === "zerotier");
+    const wifiChannel = channelList.find((c) => c.type === "wifi");
+
+    // 精确匹配当前 Origin IP，严禁使用 10. 前缀粗暴误判物理局域网！
+    const isTsHost = Boolean(tsChannel && tsChannel.ip && tsChannel.ip === curHost);
+    const isZtHost = Boolean(ztChannel && ztChannel.ip && ztChannel.ip === curHost);
+
+    if (isTsHost) {
       state.selectedQrNet = "tailscale";
-    } else if (hasZt) {
+    } else if (isZtHost) {
       state.selectedQrNet = "zerotier";
+    } else if (wifiChannel) {
+      state.selectedQrNet = "wifi";
+    } else if (tsChannel) {
+      state.selectedQrNet = "tailscale";
     } else {
       state.selectedQrNet = channelList[0]?.type || "wifi";
     }
@@ -96,9 +109,9 @@ export function renderQrModalContent() {
   const qrImgUrl = `/api/v1/auth/qr.svg?net=${encodeURIComponent(state.selectedQrNet)}&token=${tokenParam}&_t=${state.qrGeneratedAt || 0}`;
 
   const channelTips = {
-    tailscale: "全网随身漫游 · 手机开启 Tailscale 随时秒连",
-    zerotier: "虚拟隧道直连 · 手机开启 ZeroTier 隧道直连",
-    wifi: "局域网免密直连 · 仅限当前同一 Wi-Fi 连接",
+    tailscale: "全网随身漫游 · 手机需已开启 Tailscale VPN 客户端",
+    zerotier: "虚拟隧道直连 · 手机需已开启 ZeroTier 隧道客户端",
+    wifi: "局域网即连 · 手机与电脑需连在同一个 Wi-Fi",
   };
 
   const channelIcons = {

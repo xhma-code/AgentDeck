@@ -90,7 +90,8 @@ async def get_system_status(
     ts_ip = ts_status.tailscale_ip if (ts_status.is_online and ts_status.tailscale_ip) else ""
     lan_ip = getattr(ts_status, "lan_ip", "") or ""
     zt_ip = getattr(ts_status, "zerotier_ip", "") or ""
-    host_for_qr = ts_ip or zt_ip or lan_ip or "127.0.0.1"
+    # 近场扫码默认推荐策略：优先物理局域网 Wi-Fi 直连，防止手机未配置 VPN 时扫码卡死
+    host_for_qr = lan_ip or ts_ip or zt_ip or "127.0.0.1"
     pair_url = f"http://{host_for_qr}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}"
     lan_pair_url = f"http://{lan_ip}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}" if lan_ip else ""
     zt_pair_url = f"http://{zt_ip}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}" if zt_ip else ""

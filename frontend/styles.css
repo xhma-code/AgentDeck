@@ -824,3 +824,65 @@ details:not([open]) > summary .toggle-arrow-closed {
 }
 
 
+
+/* ==========================================================================
+   移动端汉堡菜单图标线条流光变色（极致一体化）
+   ========================================================================== */
+@keyframes hamburgerGlowPulse {
+  0%, 100% {
+    opacity: 1;
+    filter: drop-shadow(0 0 6px currentColor);
+  }
+  50% {
+    opacity: 0.72;
+    filter: drop-shadow(0 0 1.5px currentColor);
+  }
+}
+
+.hamburger-btn-normal {
+  background-color: var(--bg-elevated);
+  border-color: #27272a;
+  color: var(--text-primary);
+}
+.hamburger-btn-normal svg line {
+  stroke: currentColor;
+}
+
+.hamburger-btn-running {
+  background-color: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.45);
+  color: #34d399;
+  box-shadow: 0 0 14px rgba(52, 211, 153, 0.28);
+}
+.hamburger-btn-running svg {
+  animation: hamburgerGlowPulse 2s ease-in-out infinite;
+}
+.hamburger-btn-running svg line {
+  stroke: #34d399;
+}
+
+.hamburger-btn-approval {
+  background-color: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.6);
+  color: var(--accent-amber);
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.38);
+}
+.hamburger-btn-approval svg {
+  animation: hamburgerGlowPulse 1.2s ease-in-out infinite;
+}
+.hamburger-btn-approval svg line {
+  stroke: var(--accent-amber);
+}
+
+.hamburger-btn-unread {
+  background-color: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: var(--accent-sky);
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.28);
+}
+.hamburger-btn-unread svg {
+  filter: drop-shadow(0 0 5px var(--accent-sky));
+}
+.hamburger-btn-unread svg line {
+  stroke: var(--accent-sky);
+}

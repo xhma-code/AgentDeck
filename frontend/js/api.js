@@ -53,7 +53,35 @@ export async function apiFetch(path, options = {}) {
     headers["X-AgentDeck-Token"] = state.token;
   }
   const fullUrl = (state.activeBaseUrl && !path.startsWith("http")) ? `${state.activeBaseUrl}${path}` : path;
-  const resp = await fetch(fullUrl, { ...options, headers });
+
+  // 请求超时控制（默认 8000ms，防移动端不可达通道无限挂死）
+  let timer = null;
+  let isTimedOut = false;
+  let signal = options.signal;
+  if (!signal) {
+    const ctrl = new AbortController();
+    signal = ctrl.signal;
+    const timeoutMs = options.timeout || 8000;
+    timer = setTimeout(() => {
+      isTimedOut = true;
+      // 移动端 WebKit 兼容：无参调用 abort()，避免老版本浏览器抛出非法参数 TypeError
+      try { ctrl.abort(); } catch (_) {}
+    }, timeoutMs);
+  }
+
+  let resp;
+  try {
+    resp = await fetch(fullUrl, { ...options, headers, signal });
+  } catch (netErr) {
+    if (timer) clearTimeout(timer);
+    const isTimeout = isTimedOut || netErr?.name === "AbortError" || String(netErr).includes("超时");
+    const tipMsg = isTimeout ? "网络连接超时，正在探测备用通道..." : "网络连接失败，请检查通道网络";
+    console.warn(`[AgentDeck] API 网络请求失败: ${fullUrl}`, netErr);
+    throw new Error(tipMsg);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
   if (resp.status === 304) {
     return { not_modified: true, _etag: resp.headers.get("etag") };
   }

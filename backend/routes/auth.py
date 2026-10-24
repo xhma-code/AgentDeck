@@ -83,14 +83,15 @@ async def get_local_qr_svg(
     zt_ip = getattr(ts_status, "zerotier_ip", "") or ""
     ts_ip = ts_status.tailscale_ip if (ts_status.is_online and ts_status.tailscale_ip) else ""
 
-    if net == "lan" and lan_ip:
+    if net in ("lan", "wifi") and lan_ip:
         host_for_qr = lan_ip
     elif net == "zerotier" and zt_ip:
         host_for_qr = zt_ip
     elif net == "tailscale" and ts_ip:
         host_for_qr = ts_ip
     else:
-        host_for_qr = ts_ip or zt_ip or lan_ip or "127.0.0.1"
+        # 近场扫码默认策略：若物理局域网 Wi-Fi IP 可用，优先使用局域网直连，避免手机未配置虚拟专网时扫码卡死
+        host_for_qr = lan_ip or ts_ip or zt_ip or "127.0.0.1"
 
     pair_url = f"http://{host_for_qr}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}"
     if pair_url in _qr_svg_cache:

@@ -229,9 +229,19 @@ export async function loadSessions(silent = false) {
 
     if (needsInitialSelect && initialSessionId) {
       selectSession(initialSessionId);
+    } else if (!state.selectedSessionId) {
+      // 空会话或未选中任何对话时，必须立即脱离顶栏骨架态并呈现空状态主卡片
+      renderCurrentSessionHeader();
+      renderMessagesList();
     }
   } catch (e) {
     console.error("加载会话失败:", e);
+    // 失败兜底：确保顶栏与主视口脱离“加载中...”骨架态，展示友好空状态
+    if (!state.selectedSessionId) {
+      renderCurrentSessionHeader();
+      renderSessionList();
+      renderMessagesList();
+    }
   }
 }
 

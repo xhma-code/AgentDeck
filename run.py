@@ -67,7 +67,8 @@ def print_startup_banner(app, port: int) -> str:
     print("─" * 72)
 
     ts_pair = pair_url if ts.is_online else ""
-    primary_pair_url = ts_pair or zt_pair_url or lan_pair_url or pair_url
+    # 终端近场手机扫码：优先局域网 Wi-Fi 直连，杜绝手机未配置虚拟私网时扫码无法连接
+    primary_pair_url = lan_pair_url or ts_pair or zt_pair_url or pair_url
     print("─" * 72)
     print("  【手机扫码直连 (已集成 Wi-Fi / Tailscale / ZeroTier 多链路自动漫游)】:")
     print(render_terminal_qr_box(primary_pair_url, title="AgentDeck 手机智能直连"))

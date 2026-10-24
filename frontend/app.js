@@ -21,6 +21,8 @@ import {
 import {
   renderSidebarStatus,
   renderSessionList,
+  renderCurrentSessionHeader,
+  renderMessagesList,
   renderLiveStreamOverlay,
   highlightSlashItem,
   updateCollapseStepsPillVisibility,
@@ -36,7 +38,7 @@ import { getSessionIdFromHash } from "./js/utils.js";
 import "./js/actions.js";
 
 // --- 初始化入口 ---
-window.addEventListener("DOMContentLoaded", async () => {
+async function initApp() {
   // 读取服务端注入的前端基准版本指纹
   const metaBuild = document.querySelector('meta[name="agentdeck-build"]')?.content;
   if (metaBuild) state.frontendBuild = metaBuild;
@@ -54,6 +56,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   }
   connectWebSocket();
   checkFrontendVersion();
+
+  // 确保冷启动即使未选择任何会话或首次加载无数据，也能脱离 HTML 初始的静态骨架态
+  if (!state.selectedSessionId) {
+    renderCurrentSessionHeader();
+    renderSessionList();
+    renderMessagesList();
+  }
 
   // 手机锁屏唤醒或切回主屏幕应用时立即检测一次版本与通道连通性
   document.addEventListener("visibilitychange", () => {
@@ -254,5 +263,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     window.visualViewport.addEventListener("scroll", () => updateBottomControlHeight());
   }
   updateBottomControlHeight();
-});
+}
+
+// 采用规范的 DOM 状态守护：确保 module 脚本异步解析就绪后无论 DOMContentLoaded 是否已触发均可秒级启动
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initApp);
+} else {
+  initApp();
+}
 

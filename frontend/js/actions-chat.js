@@ -19,6 +19,7 @@ import {
   renderSlashMenu,
 } from "./render.js";
 import { openNewSessionModal } from "./modals.js";
+import { renderModelPicker } from "./render-views.js";
 
 export async function handleSendPrompt(customPrompt = null) {
   const inputEl = document.getElementById("prompt-input");
@@ -234,3 +235,83 @@ export function executeSlashDirectly(cmd) {
   handleSendPrompt(cmd);
 }
 
+
+export function handlePromptAction() {
+  const btn = document.getElementById("prompt-action-btn");
+  const action = btn?.dataset?.action || "send";
+  if (action === "abort") {
+    handleAbortCurrentSession();
+  } else {
+    handleSendPrompt(null);
+  }
+}
+
+export function fillPromptAndSend(text) {
+  const input = document.getElementById("prompt-input");
+  if (input) input.value = text;
+  handleSendPrompt(text);
+}
+
+export function selectSlashCommand(cmd) {
+  const input = document.getElementById("prompt-input");
+  if (!input) return;
+  state.slashMenuOpen = false;
+  const popover = document.getElementById("slash-popover");
+  if (popover) popover.classList.add("hidden");
+
+  if (cmd.startsWith("/")) {
+    input.value = `${cmd} `;
+    input.focus();
+  } else {
+    input.value = cmd;
+    handleSendPrompt(cmd);
+  }
+}
+
+export function toggleModelPicker(e, forceOpen) {
+  if (e) {
+    if (typeof e.stopPropagation === "function") e.stopPropagation();
+    if (typeof e.preventDefault === "function") e.preventDefault();
+  }
+  const popover = document.getElementById("model-picker-popover");
+  const btn = document.getElementById("model-picker-btn");
+  const arrow = document.getElementById("model-picker-arrow");
+  if (!popover || !btn) return;
+  const isHidden = popover.classList.contains("hidden");
+  const open = forceOpen !== undefined ? Boolean(forceOpen) : isHidden;
+  if (open) {
+    renderModelPicker();
+    const rect = btn.getBoundingClientRect();
+    const popoverWidth = Math.min(340, window.innerWidth - 16);
+    popover.style.width = `${popoverWidth}px`;
+    popover.style.backgroundColor = "#09090b";
+    popover.style.bottom = `${Math.max(10, window.innerHeight - rect.top + 6)}px`;
+    const maxLeft = window.innerWidth - popoverWidth - 8;
+    const left = Math.max(8, Math.min(rect.left, maxLeft));
+    popover.style.left = `${left}px`;
+
+    popover.classList.remove("hidden");
+    btn.classList.add("border-sky-500/50", "bg-zinc-800");
+    if (arrow) arrow.classList.add("rotate-180");
+  } else {
+    popover.classList.add("hidden");
+    btn.classList.remove("border-sky-500/50", "bg-zinc-800");
+    if (arrow) arrow.classList.remove("rotate-180");
+  }
+}
+
+export async function selectModel(modelId, e) {
+  if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+  const popover = document.getElementById("model-picker-popover");
+  if (popover) popover.classList.add("hidden");
+  const btn = document.getElementById("model-picker-btn");
+  const arrow = document.getElementById("model-picker-arrow");
+  if (btn) btn.classList.remove("border-sky-500/50", "bg-zinc-800");
+  if (arrow) arrow.classList.remove("rotate-180");
+
+  const hiddenSelect = document.getElementById("model-select");
+  if (hiddenSelect) {
+    hiddenSelect.value = modelId;
+  }
+  await handleModelChange(modelId);
+}

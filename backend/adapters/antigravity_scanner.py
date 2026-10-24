@@ -169,8 +169,8 @@ def query_antigravity_sessions(
                     p_cid = str(sr.get("parent_conversation_id") or "")
                     if s_cid:
                         known_parent_map[s_cid] = p_cid
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"读取 Antigravity 子会话映射关系忽略容错: {e}")
 
     # 2. 补漏 brain 目录
     if brain_dir.is_dir():
