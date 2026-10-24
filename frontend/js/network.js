@@ -513,7 +513,6 @@ export function scheduleSilentMessagesRefresh(unifiedId, delayMs = 250) {
   }, delayMs);
 }
 
-let deferredListRenderTimer = null;
 export function scheduleDeferredSessionListRender(delayMs = 1200) {
   if (deferredListRenderTimer) clearTimeout(deferredListRenderTimer);
   deferredListRenderTimer = setTimeout(() => {

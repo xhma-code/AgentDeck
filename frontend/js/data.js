@@ -150,6 +150,8 @@ export function getModelContextLimit(modelId) {
   if (m.includes("claude")) return 200000;
   return 200000;
 
+}
+
 
 export function getAgentDisplayName(agentType) {
   const nameMap = {
@@ -159,6 +161,8 @@ export function getAgentDisplayName(agentType) {
     opencode: "OpenCode",
   };
   return nameMap[agentType] || AGENT_META[agentType]?.short || AGENT_META[agentType]?.label || "Agent";
+
+}
 
 
 export function isSessionWorking(unifiedId) {
@@ -199,6 +203,8 @@ export function isSessionWorking(unifiedId) {
     }
   }
   return false;
+
+}
 
 
 export async function loadSystemStatus() {

@@ -41,6 +41,8 @@ import {
   renderQrModalContent,
   scrollToBottom,
   updateGitStatusBadge,
+  handlePromptAction,
+  stopQrExpireCountdown,
 } from "./render.js";
 import {
   openNewSessionModal,
@@ -590,10 +592,7 @@ window.appActions = {
   },
   closeQrModal() {
     state.pairedSuccessNotice = null;
-    if (qrExpireTimer) {
-      clearTimeout(qrExpireTimer);
-      qrExpireTimer = null;
-    }
+    stopQrExpireCountdown();
     const m = document.getElementById("qr-modal");
     if (m) m.classList.add("hidden");
   },

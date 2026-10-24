@@ -170,7 +170,10 @@ class ApprovalCoordinator:
 
                     if feedback_msg and on_followup_prompt:
                         followup = f"[已拒绝工具 {tool_name}] 请勿执行刚才的操作，按以下要求调整方案：{feedback_msg}"
-                        await on_followup_prompt(unified_id, followup, project_path)
+                        res = on_followup_prompt(unified_id, followup, project_path)
+                        if asyncio.iscoroutine(res):
+                            await res
+
 
             elif decision == "approved" and proc and proc.stdin:
                 try:

@@ -143,6 +143,8 @@ export function applyButtonCheckmark(btnEl, options = {}) {
     }
     delete btnEl._copyResetTimer;
   }, duration);
+}
+
 
 
 export function triggerAlertNotification(title, body) {
@@ -219,6 +221,8 @@ export function formatElapsedSec(sec) {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${m}:${s < 10 ? "0" : ""}${s}`;
+}
+
 
 
 export function formatTokenCount(n) {
@@ -229,6 +233,8 @@ export function formatTokenCount(n) {
   if (num >= 1000) {
     return (num / 1000).toFixed(1).replace(/\.0$/, "") + "k";
   }
+  return String(num);
+}
 
 
 export function gitPathToSlotId(relPath) {
@@ -239,6 +245,8 @@ export function gitPathToSlotId(relPath) {
     hash |= 0;
   }
   return "git_diff_slot_" + (hash >>> 0).toString(16);
+}
+
 
 
 // 统一标准矢量图标库

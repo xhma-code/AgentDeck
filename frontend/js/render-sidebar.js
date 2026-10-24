@@ -211,6 +211,22 @@ export function renderCompactSessionItem(s, showProjectTag = true) {
     `;
   }
 
+  // 前缀微标呈现规则：
+  // 1. 若为工程项目会话且处于置顶等显示区域：开头只显示项目名称微标，不显示 agent 类型，节省手机窄屏单行宽度；
+  // 2. 临时会话：保持不变，显示 agent 类型微标；
+  // 3. 项目内部展开会话：因外层已有项目大标题，内部仅显示 agent 类型微标。
+  const projectName = s.project_name || (s.project_path ? getProjectInfo(s.project_path)?.name : "");
+  const isProjectSession = Boolean(s.is_project && projectName && projectName !== "未分类");
+  const showProjectBadge = showProjectTag && isProjectSession;
+
+  const leadingBadgeHtml = showProjectBadge
+    ? `<span class="px-1.5 py-0.5 text-[9px] font-mono font-medium text-sky-300 bg-sky-950/40 rounded border border-sky-500/30 shrink-0 max-w-[84px] truncate" title="${escapeHtml(
+        projectName
+      )}">${escapeHtml(projectName)}</span>`
+    : `<span class="px-1 py-0.5 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
+        ${meta.short}
+      </span>`;
+
   return `
     <div data-session-item="${escapeHtml(s.unified_id)}" onclick="window.appActions.selectSession('${escapeHtml(s.unified_id)}')"
       class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-all flex items-center justify-between gap-2 ${
@@ -221,16 +237,7 @@ export function renderCompactSessionItem(s, showProjectTag = true) {
           : "bg-zinc-900/45 border-transparent hover:bg-zinc-900 hover:border-zinc-800 text-zinc-300"
       }">
       <div class="flex items-center gap-1.5 min-w-0 flex-1">
-        <span class="px-1 py-0.5 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
-          ${meta.short}
-        </span>
-        ${
-          showProjectTag && s.is_project && s.project_name
-            ? `<span class="px-1 py-0.5 text-[9px] font-mono text-zinc-400 bg-zinc-800/80 rounded border border-white/[0.06] shrink-0 max-w-[84px] truncate" title="${escapeHtml(
-                s.project_name
-              )}">${escapeHtml(s.project_name)}</span>`
-            : ""
-        }
+        ${leadingBadgeHtml}
         <span class="text-xs truncate font-medium ${isUnread ? "text-sky-200" : ""}">${escapeHtml(cleanFriendlyTitle(s.title))}</span>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">

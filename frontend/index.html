@@ -21,7 +21,8 @@
   <link rel="manifest" href="/static/manifest.json?v=20261023_diamond_v4" />
   <!-- 本地化无公网依赖资源，杜绝小火箭全局代理时因外网 CDN 阻塞导致白屏加载卡死 -->
   <script src="/static/tailwind.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261024_align_v1" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261024_esm_fix_v5" />
+  <meta name="agentdeck-build" content="20261024_esm_fix_v5" />
 </head>
 <body class="bg-black text-zinc-100 select-none sm:select-auto antialiased">
   <!-- Toast 容器（下移避开顶部导航栏，杜绝遮挡） -->
@@ -569,6 +570,6 @@
       });
     }
   </script>
-  <script type="module" src="/static/app.js?v=20261024_status_restored_v1"></script>
+  <script type="module" src="/static/app.js?v=20261024_esm_fix_v5"></script>
 </body>
 </html>

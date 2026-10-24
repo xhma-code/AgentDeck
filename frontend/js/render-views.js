@@ -522,8 +522,12 @@ export function renderApprovalBanners() {
 }
 
 
-let qrExpireTimer = null;
-
+export function stopQrExpireCountdown() {
+  if (qrExpireTimer) {
+    clearTimeout(qrExpireTimer);
+    qrExpireTimer = null;
+  }
+}
 
 export function startQrExpireCountdown() {
   if (qrExpireTimer) {
@@ -869,16 +873,6 @@ export async function updateGitStatusBadge() {
     btn.classList.add("hidden");
     btn.classList.remove("flex");
   }
-}
-
-export function gitPathToSlotId(relPath) {
-  let hash = 0;
-  const str = String(relPath || "");
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i);
-    hash |= 0;
-  }
-  return "git_diff_slot_" + (hash >>> 0).toString(16);
 }
 
 export function renderGitStatusBody(data) {

@@ -45,8 +45,8 @@ export function highlightCodeHtml(rawCode) {
 }
 
 /**
-
-
+ * 行内 Markdown 轻量级格式化
+ */
 export function renderInlineMarkdown(rawLine) {
   let text = String(rawLine || "");
 
@@ -429,6 +429,3 @@ export function renderUnifiedDiffHtml(diffText, filePath = "", options = {}) {
     </div>
   `;
 }
-
-/**
-
