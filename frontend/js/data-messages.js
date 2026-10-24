@@ -94,6 +94,18 @@ export async function loadSessionMessages(unifiedId, options = false) {
           delete state.pendingTurnThinking[unifiedId];
           delete state.streamingBuffer[unifiedId];
         }
+
+        // 单向降级链平滑流转：运行中任务结束后，后台会话降级为「已完成·未读」，当前查看会话降级为「平稳暂留」
+        if (unifiedId === state.selectedSessionId) {
+          if (state.retainedActiveSessionIds) {
+            state.retainedActiveSessionIds.add(unifiedId);
+          }
+        } else {
+          if (state.unreadCompletedSessionIds) {
+            state.unreadCompletedSessionIds.add(unifiedId);
+          }
+        }
+
         let statusChanged = false;
         const targetSessions = [
           ...(state.allSessions || []),

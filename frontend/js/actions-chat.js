@@ -83,23 +83,13 @@ export async function handleSendPrompt(customPrompt = null) {
         prompt: text,
         model_name: chosenModel || undefined,
         execution_mode: chosenMode || undefined,
-        auto_fork_ide: true,
       },
     });
 
     const data = (res && res.result) ? res.result : (res || {});
-    if (data.forked_from && data.unified_id && data.unified_id !== state.selectedSessionId) {
-      showToast("已克隆至 AGY CLI 继续", "info");
-      const oldUid = state.selectedSessionId;
-      state.selectedSessionId = data.unified_id;
-      if (state.optimisticMessages[oldUid]) {
-        state.optimisticMessages[data.unified_id] = state.optimisticMessages[oldUid];
-        delete state.optimisticMessages[oldUid];
-      }
-      if (state.pendingTurnThinking[oldUid]) {
-        state.pendingTurnThinking[data.unified_id] = state.pendingTurnThinking[oldUid];
-        delete state.pendingTurnThinking[oldUid];
-      }
+    // 始终在原会话执行，保持当前选中会话不变
+    if (data && data.status === "sent_to_language_server") {
+      showToast("已下发至桌面 IDE 执行", "info");
     }
     await loadSessions();
     await loadSessionMessages(state.selectedSessionId, true);

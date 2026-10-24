@@ -324,3 +324,48 @@ export const icons = {
   note: (cls = "w-3 h-3 text-sky-400 shrink-0") =>
     `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
 };
+
+/**
+ * 搜索关键词安全高亮器（保留原文大小写与 XSS 净化）
+ */
+export function highlightText(rawText, query) {
+  if (!rawText) return "";
+  const str = String(rawText);
+  if (!query || !query.trim()) return escapeHtml(str);
+
+  const q = query.trim();
+  const escapedQuery = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`(${escapedQuery})`, "gi");
+  const parts = str.split(regex);
+
+  return parts
+    .map((part) => {
+      if (part.toLowerCase() === q.toLowerCase()) {
+        return `<mark class="bg-sky-500/30 text-sky-200 px-0.5 rounded font-medium">${escapeHtml(part)}</mark>`;
+      }
+      return escapeHtml(part);
+    })
+    .join("");
+}
+
+/**
+ * 提取搜索关键词附近的单行上下文切片
+ */
+export function extractSearchSnippet(text, query, foundIdx = -1, maxContext = 22) {
+  if (!text) return "";
+  const clean = String(text).replace(/[\r\n\t]+/g, " ").trim();
+  const lowerClean = clean.toLowerCase();
+  const q = (query || "").trim().toLowerCase();
+  if (!q) return clean.slice(0, 45);
+
+  const idx = foundIdx >= 0 ? foundIdx : lowerClean.indexOf(q);
+  if (idx === -1) return clean.slice(0, 45);
+
+  const start = Math.max(0, idx - maxContext);
+  const end = Math.min(clean.length, idx + q.length + maxContext);
+  let snippet = clean.slice(start, end);
+  if (start > 0) snippet = "..." + snippet;
+  if (end < clean.length) snippet = snippet + "...";
+  return snippet;
+}
+

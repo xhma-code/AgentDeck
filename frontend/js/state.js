@@ -54,6 +54,7 @@ export const state = {
   isAppInitialized: false, // 首次冷启动标志锁（防止后台刷新篡改用户主动选中的会话）
   expandedProjects: {}, // projectKey -> boolean
   projectSessionLimits: {}, // projectKey -> number (当前展开可见上限，默认 8)
+  retainedActiveSessionIds: new Set(), // 当前查看会话运行完成后的平稳暂留集合（切换离开时才归位）
   collapsedSections: (() => {
     try {
       return JSON.parse(localStorage.getItem("agentdeck_sections_collapsed") || "{}");
@@ -147,8 +148,29 @@ export function markSessionViewed(unifiedId) {
 }
 
 export function markSessionCompletedUnread(unifiedId) {
-  if (!unifiedId || unifiedId === state.selectedSessionId) return;
+  if (!unifiedId) return;
+  if (unifiedId === state.selectedSessionId) {
+    // 当前查看会话运行完成后平稳暂留在置顶与活动区，切换离开时再平滑归位
+    state.retainedActiveSessionIds.add(unifiedId);
+    return;
+  }
   state.unreadCompletedSessionIds.add(unifiedId);
+}
+
+export function retainCurrentSessionActive(unifiedId) {
+  if (!unifiedId) return;
+  state.retainedActiveSessionIds.add(unifiedId);
+}
+
+export function releaseRetainedSession(unifiedId) {
+  if (!unifiedId) return;
+  state.retainedActiveSessionIds.delete(unifiedId);
+}
+
+export function isSessionRetainedActive(s) {
+  const uid = typeof s === "string" ? s : s?.unified_id;
+  if (!uid) return false;
+  return state.retainedActiveSessionIds.has(uid);
 }
 
 export function isSessionCompletedUnread(s) {

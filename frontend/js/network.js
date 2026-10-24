@@ -363,6 +363,10 @@ export function handleRealtimeEvent(envelope) {
       }
       if (uid !== state.selectedSessionId) {
         markSessionCompletedUnread(uid);
+      } else {
+        if (state.retainedActiveSessionIds) {
+          state.retainedActiveSessionIds.add(uid);
+        }
       }
       renderSessionList();
       renderOtherRunningPill();

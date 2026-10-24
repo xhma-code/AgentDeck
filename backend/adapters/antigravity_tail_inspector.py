@@ -14,6 +14,7 @@ from typing import Any, Optional
 RECENT_ACTIVE_WINDOW_SECONDS: float = 60.0
 EXTENDED_ACTIVE_WINDOW_SECONDS: float = 300.0
 SHORT_IDLE_GRACE_SECONDS: float = 15.0
+ACTIVE_LEASE_SECONDS: float = 30.0
 
 
 def inspect_transcript_tail_status(tp: Path) -> tuple[bool, str]:
@@ -92,13 +93,13 @@ def inspect_transcript_tail_status(tp: Path) -> tuple[bool, str]:
     if is_terminal_response:
         return False, "idle"
 
-    # 4. 中间过渡态：最后一步是工具输出（GENERIC）或发起工具调用的 PLANNER_RESPONSE
-    # 此时 Agent 正在多步规划中（工具刚返回结果，模型紧接着要读取并生成下一步），在活跃窗口内稳定保持 running，严禁在中间间隙跳变为 idle
+    # 4. 中间过渡态与活跃租期保活：最后一步是工具输出（GENERIC）或发起工具调用的 PLANNER_RESPONSE
+    # 此时 Agent 正在多步规划中（工具刚返回结果，模型紧接着要读取并生成下一步），在 30 秒活跃租期内稳定保持 running，抗大模型推理停顿与写入间隙
     is_tool_intermediate_step = (
         step_type == "GENERIC"
         or (step_type == "PLANNER_RESPONSE" and bool(tool_calls))
     )
-    if is_tool_intermediate_step and age < SHORT_IDLE_GRACE_SECONDS:
+    if is_tool_intermediate_step and age < ACTIVE_LEASE_SECONDS:
         return True, "running"
 
     # 5. 兜底状态：如果已明确完成且超过短过渡期，平滑退火为 idle

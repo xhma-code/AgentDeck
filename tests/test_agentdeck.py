@@ -2602,16 +2602,16 @@ def test_inspect_transcript_tail_status_and_smooth_activity(tmp_path: Path):
     assert active is False
     assert status == "idle"
 
-    # 5. 工具刚执行完毕（GENERIC 步骤 DONE），等待模型接续思考生成回复，在极短窗口（5 秒内）平滑保持活跃
+    # 5. 工具刚执行完毕（GENERIC 步骤 DONE），30秒活跃租期内稳定保持活跃，抵御大模型推理长思考（如 25 秒无落盘）
     step3 = json.dumps({"step_index": 3, "type": "GENERIC", "status": "DONE", "content": "命令执行成功"}) + "\n"
     tp.write_text(step3, encoding="utf-8")
-    past_5s = time.time() - 5.0
-    os.utime(tp, (past_5s, past_5s))
+    past_25s = time.time() - 25.0
+    os.utime(tp, (past_25s, past_25s))
     active, status = inspect_transcript_tail_status(tp)
     assert active is True
     assert status == "running"
 
-    # 6. 中间工具调用步骤（PLANNER_RESPONSE 带有 tool_calls），在极短窗口（3 秒内）稳定保持活跃，严禁在工具间隙跳变
+    # 6. 中间工具调用步骤（PLANNER_RESPONSE 带有 tool_calls），在 30 秒活跃租期内稳定保持活跃，严禁在工具间隙跳变为 idle
     step4 = json.dumps({
         "step_index": 4,
         "type": "PLANNER_RESPONSE",
@@ -2620,11 +2620,18 @@ def test_inspect_transcript_tail_status_and_smooth_activity(tmp_path: Path):
         "tool_calls": [{"name": "run_command", "status": "DONE"}]
     }) + "\n"
     tp.write_text(step4, encoding="utf-8")
-    past_3s = time.time() - 3.0
-    os.utime(tp, (past_3s, past_3s))
+    past_20s = time.time() - 20.0
+    os.utime(tp, (past_20s, past_20s))
     active, status = inspect_transcript_tail_status(tp)
     assert active is True
-    assert status == "running" 
+    assert status == "running"
+
+    # 7. 中间步骤超过 35 秒（超限 30 秒租期且无新写入），平滑退火判定为闲置
+    past_35s = time.time() - 35.0
+    os.utime(tp, (past_35s, past_35s))
+    active, status = inspect_transcript_tail_status(tp)
+    assert active is False
+    assert status == "idle" 
 
 
 
