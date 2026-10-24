@@ -56,6 +56,7 @@ import {
   markSessionViewed,
   isSessionCompletedUnread,
   syncUnreadSessions,
+  saveLastViewedTimes,
 } from "./state.js";
 import {
   cleanFriendlyText,
@@ -292,7 +293,7 @@ export async function loadSessions(silent = false) {
       // 手机端抽屉展开浏览或用户正在滚动列表/搜索输入时，静默更新不销毁重构侧边栏 DOM，避免打断用户的滑动操作与视口跳动
       const isUserBusyWithList =
         state.isUserInteractingWithList ||
-        (document.activeElement && document.activeElement.id === "search-input");
+        (document.activeElement && (document.activeElement.id === "session-search-input" || document.activeElement.id === "search-input"));
       if (!isMobileDrawerActive) {
         if (silent && isUserBusyWithList) {
           scheduleDeferredSessionListRender();

@@ -58,12 +58,12 @@ export function renderTurnProcessBar(turn) {
         : `改动 ${editedFiles.length} 文件`;
     badges.push(
       `<button type="button" onclick="window.appActions.toggleTurnEditsOnly('${escapeJsSingleQuote(turnKey)}', event)"
-        class="px-1.5 py-0.5 rounded ${
+        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] leading-tight font-medium shrink-0 transition active:scale-95 cursor-pointer border ${
           isEditsOnly
-            ? "bg-emerald-500/25 text-emerald-200 border border-emerald-400 ring-1 ring-emerald-500/30"
+            ? "bg-emerald-500/25 text-emerald-200 border-emerald-400 ring-1 ring-emerald-500/30"
             : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25"
-        } text-[10px] font-medium shrink-0 flex items-center gap-1 transition active:scale-95 min-h-[36px] sm:min-h-0 px-2 sm:px-1.5 py-1 sm:py-0.5 cursor-pointer touch-manipulation" title="点击仅显示改动步骤">
-        <svg class="w-3 h-3 text-emerald-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        }" title="点击仅显示改动步骤">
+        <svg class="w-2.5 h-2.5 text-emerald-300 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
         <span class="truncate max-w-[105px] sm:max-w-[180px]">${escapeHtml(fileHint)}</span>
       </button>`
     );

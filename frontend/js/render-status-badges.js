@@ -47,17 +47,14 @@ export function renderHeaderStatus() {
 export function renderSidebarAwakeLock() {
   const btn = document.getElementById("sidebar-awake-btn");
   const icon = document.getElementById("sidebar-awake-icon");
-  const dot = document.getElementById("sidebar-awake-dot");
   if (!btn) return;
   const active = !!state.systemStatus?.awake_lock_active;
   if (active) {
     btn.title = "PC 防休眠锁已开启（点击关闭）";
-    if (icon) icon.className = "w-4 h-4 text-emerald-400 transition-colors drop-shadow-[0_0_8px_rgba(52,211,153,0.5)]";
-    if (dot) dot.classList.remove("hidden");
+    if (icon) icon.setAttribute("class", "w-4 h-4 text-emerald-400 transition-colors drop-shadow-[0_0_8px_rgba(52,211,153,0.5)]");
   } else {
     btn.title = "PC 防休眠锁已关闭（点击开启）";
-    if (icon) icon.className = "w-4 h-4 text-zinc-500 transition-colors";
-    if (dot) dot.classList.add("hidden");
+    if (icon) icon.setAttribute("class", "w-4 h-4 text-zinc-500 transition-colors");
   }
 }
 

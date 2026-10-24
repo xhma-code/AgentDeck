@@ -1,5 +1,5 @@
 // AgentDeck PWA Service Worker — 离线 App Shell 缓存与跨网络自愈支持
-const CACHE_NAME = "agentdeck-shell-20261024_copy_btn_fixed_v2";
+const CACHE_NAME = "agentdeck-shell-20261024_text_selection_v6";
 
 const APP_SHELL = [
   "/",
@@ -43,6 +43,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
+
+  // 仅处理 http 与 https 请求，忽略 chrome-extension:// 等插件协议
+  if (!url.protocol.startsWith("http")) {
+    return;
+  }
 
   // 动态数据探针与接口绝对不走 ServiceWorker 缓存
   if (

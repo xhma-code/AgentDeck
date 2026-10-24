@@ -157,17 +157,19 @@ export function renderAgentFilterTrigger() {
   const healthList = state.systemStatus?.agents_health || [];
 
   if (currentFilter === "all") {
-    label.textContent = "全部";
+    if (label.textContent !== "全部") label.textContent = "全部";
     const anyReady = healthList.length > 0 ? healthList.some((a) => a.ready) : true;
-    dot.className = `w-1.5 h-1.5 rounded-full shrink-0 ${anyReady ? "bg-emerald-400" : "bg-zinc-500"}`;
+    const targetClass = `w-1.5 h-1.5 rounded-full shrink-0 ${anyReady ? "bg-emerald-400" : "bg-zinc-500"}`;
+    if (dot.className !== targetClass) dot.className = targetClass;
   } else {
     const meta = AGENT_META[currentFilter];
     const shortLabel = meta?.short || meta?.label || currentFilter;
-    label.textContent = shortLabel;
+    if (label.textContent !== shortLabel) label.textContent = shortLabel;
 
     const currentHealth = healthList.find((a) => a.agent_type === currentFilter);
     const isReady = currentHealth ? currentHealth.ready : true;
-    dot.className = `w-1.5 h-1.5 rounded-full shrink-0 ${isReady ? "bg-emerald-400" : "bg-zinc-500"}`;
+    const targetClass = `w-1.5 h-1.5 rounded-full shrink-0 ${isReady ? "bg-emerald-400" : "bg-zinc-500"}`;
+    if (dot.className !== targetClass) dot.className = targetClass;
   }
 }
 
@@ -243,7 +245,7 @@ export function renderAgentFilterMenu() {
         }">
         <div class="flex items-center gap-2 min-w-0">
           <span class="w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}"></span>
-          <span class="truncate">${escapeHtml(a.label)}</span>
+          <span class="whitespace-nowrap font-medium text-zinc-200">${escapeHtml(a.label)}</span>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
           <span class="text-[10px] font-mono text-zinc-500">${sessCount}</span>
@@ -282,6 +284,7 @@ export function closeAgentFilterMenu() {
   }
 }
 import { isSessionAttentionNeeded, isSubagentSession } from "./data.js";
+import { searchSessionMatch } from "./session-helper.js";
 import { renderCompactSessionItem } from "./render-session-card.js";
 
 export function renderSessionList() {
@@ -293,16 +296,18 @@ export function renderSessionList() {
   const q = state.searchQuery.trim().toLowerCase();
   const rawList = state.allSessions.length > 0 ? state.allSessions : state.sessions;
   const sourceList = sortSessions(rawList);
+  const matchMap = new Map();
   const filtered = sourceList.filter((s) => {
     if (state.activeFilter !== "all" && s.agent_type !== state.activeFilter) {
       return false;
     }
     if (!q) return true;
-    return (
-      (s.title || "").toLowerCase().includes(q) ||
-      (s.preview || "").toLowerCase().includes(q) ||
-      (s.project_name || "").toLowerCase().includes(q)
-    );
+    const match = searchSessionMatch(s, q);
+    if (match && match.matched) {
+      matchMap.set(s.unified_id, match);
+      return true;
+    }
+    return false;
   });
 
   if (filtered.length === 0) {
@@ -396,7 +401,8 @@ export function renderSessionList() {
 
   // 3. 临时与最近对话（优先展示非项目的散落临时对话 + 最近活跃对话）
   const looseList = filtered.filter((s) => !s.is_project);
-  const recentDisplayList = (looseList.length > 0 ? looseList : filtered).slice(0, 15);
+  const pool = looseList.length > 0 ? looseList : filtered;
+  const recentDisplayList = q ? pool : pool.slice(0, 15);
 
   let html = "";
 
@@ -429,13 +435,13 @@ export function renderSessionList() {
           </div>
         </div>
         <div class="space-y-0.5">
-          ${activeUnreadList.map((s) => renderCompactSessionItem(s, true)).join("")}
+          ${activeUnreadList.map((s) => renderCompactSessionItem(s, true, matchMap.get(s.unified_id))).join("")}
           ${
             activeUnreadList.length > 0 && manualPinnedList.length > 0
               ? `<div class="my-1 border-t border-white/[0.06]"></div>`
               : ""
           }
-          ${manualPinnedList.map((s) => renderCompactSessionItem(s, true)).join("")}
+          ${manualPinnedList.map((s) => renderCompactSessionItem(s, true, matchMap.get(s.unified_id))).join("")}
         </div>
       </div>
     `;
@@ -513,7 +519,7 @@ export function renderSessionList() {
                                       visibleConvs.length === 0
                                         ? `<div class="px-2 py-1 text-[10px] text-zinc-600 italic">无对话</div>`
                                         : visibleConvs
-                                            .map((c) => renderCompactSessionItem(c, false))
+                                            .map((c) => renderCompactSessionItem(c, false, matchMap.get(c.unified_id)))
                                             .join("")
                                     }
                                     ${
@@ -574,19 +580,33 @@ export function renderSessionList() {
       ${
         !isConversationsCollapsed
           ? `<div class="space-y-0.5">
-              ${recentDisplayList.map((s) => renderCompactSessionItem(s, true)).join("")}
+              ${recentDisplayList.map((s) => renderCompactSessionItem(s, true, matchMap.get(s.unified_id))).join("")}
             </div>`
           : ""
       }
     </div>
   `;
 
-  container.innerHTML = html;
-  container.classList.remove("content-fade-in");
-  void container.offsetWidth; // 触发 reflow
-  container.classList.add("content-fade-in");
-  if (savedScrollTop > 0) {
-    container.scrollTop = savedScrollTop;
+  const isSkeletonActive = !!container.querySelector("#sidebar-skeleton-loader");
+
+  if (container.innerHTML !== html) {
+    container.innerHTML = html;
+    if (savedScrollTop > 0) {
+      container.scrollTop = savedScrollTop;
+    }
+  }
+
+  // 仅在首次从骨架屏切换为真实内容时提供一次 150ms 的平滑淡入；
+  // 常规数据刷新坚决不重新触发动画，彻底杜绝左侧菜单栏一闪一闪的频闪问题
+  if (isSkeletonActive) {
+    container.classList.remove("content-fade-in");
+    void container.offsetWidth; // 触发 reflow
+    container.classList.add("content-fade-in");
+    setTimeout(() => {
+      container.classList.remove("content-fade-in");
+    }, 200);
+  } else {
+    container.classList.remove("content-fade-in");
   }
 }
 

@@ -234,7 +234,16 @@ export async function loadSessionMessages(unifiedId, options = false) {
       renderMessagesList();
     }
   }
+  })();
+
+  inflightMessagesPromises.set(reqKey, taskPromise);
+  try {
+    return await taskPromise;
+  } finally {
+    inflightMessagesPromises.delete(reqKey);
+  }
 }
+
 
 
 export async function loadOlderMessages() {

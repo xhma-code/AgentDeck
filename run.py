@@ -28,6 +28,95 @@ from backend.core.tailscale_auth import render_terminal_qr_box
 VERSION = "2.0.0"
 
 
+def setup_windows_console_icon() -> None:
+    """在 Windows 环境下将当前控制台窗口、Alt+Tab 与任务栏图标替换为项目 Logo。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from pathlib import Path
+
+        # 1. 设置专属的 AppUserModelID，使 Windows 任务栏为其独立分组并加载自定义图标
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AgentDeck.Application.Launcher")
+        except Exception:
+            pass
+
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if not hwnd:
+            return
+
+        ico_path = str(Path(__file__).resolve().parent / "frontend" / "favicon.ico")
+        if not os.path.exists(ico_path):
+            return
+
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x00000010
+
+        # 加载 16x16 (小图标，用于控制台窗口标题栏左上角)
+        h_icon_sm = ctypes.windll.user32.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        # 加载 32x32 (大图标，用于 Alt+Tab 和任务栏任务预览)
+        h_icon_big = ctypes.windll.user32.LoadImageW(None, ico_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+
+        WM_SETICON = 0x0080
+        ICON_SMALL = 0
+        ICON_BIG = 1
+
+        if h_icon_sm:
+            ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_icon_sm)
+        if h_icon_big:
+            ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_icon_big)
+    except Exception as exc:
+        logger.debug("设置 Windows 控制台窗口图标失败: %s", exc)
+
+
+def ensure_windows_shortcut(desktop: bool = False) -> str:
+    """在 Windows 上生成/确保带项目 Logo 的启动快捷方式。"""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import subprocess
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent
+        start_cmd = root / "start.cmd"
+        ico_file = root / "frontend" / "favicon.ico"
+
+        if not start_cmd.exists() or not ico_file.exists():
+            return ""
+
+        if desktop:
+            dest_dir = Path(os.environ.get("USERPROFILE", "")) / "Desktop"
+            if not dest_dir.exists():
+                dest_dir = Path.home() / "Desktop"
+            target_lnk = dest_dir / "AgentDeck.lnk"
+        else:
+            target_lnk = root / "AgentDeck.lnk"
+
+        if not desktop and target_lnk.exists():
+            return str(target_lnk)
+
+        ps_script = (
+            f"$ws = New-Object -ComObject WScript.Shell; "
+            f"$s = $ws.CreateShortcut('{str(target_lnk)}'); "
+            f"$s.TargetPath = '{str(start_cmd)}'; "
+            f"$s.WorkingDirectory = '{str(root)}'; "
+            f"$s.IconLocation = '{str(ico_file)},0'; "
+            f"$s.Description = 'AgentDeck 一键启动中控台'; "
+            f"$s.Save();"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return str(target_lnk)
+    except Exception as exc:
+        logger.debug("确保 Windows 启动快捷方式失败: %s", exc)
+        return ""
+
+
 def print_startup_banner(app, port: int) -> str:
     """打印 4 大 Agent 启动体检表与手机扫码配对面板，返回推荐绑定的主网卡 IP。"""
     ts = app.state.ts_status
@@ -344,7 +433,24 @@ def main() -> None:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--desktop-shortcut",
+        dest="desktop_shortcut",
+        action="store_true",
+        help="在 Windows 桌面生成带项目 Logo 的 AgentDeck 快捷方式并退出",
+    )
     args = parser.parse_args()
+
+    setup_windows_console_icon()
+    ensure_windows_shortcut()
+
+    if args.desktop_shortcut:
+        lnk = ensure_windows_shortcut(desktop=True)
+        if lnk:
+            print(f"[✓] 已在桌面创建 AgentDeck 启动快捷方式: {lnk}")
+        else:
+            print("[x] 创建桌面快捷方式失败")
+        sys.exit(0)
 
     if args.doctor:
         sys.exit(run_doctor(args.port))

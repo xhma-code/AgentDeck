@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#090d16" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="AgentDeck" />
@@ -20,10 +21,10 @@
   <link rel="shortcut icon" href="/favicon.ico?v=20261023_diamond_v4" />
   <link rel="manifest" href="/static/manifest.json?v=20261023_diamond_v4" />
   <!-- 本地化无公网依赖资源，杜绝小火箭全局代理时因外网 CDN 阻塞导致白屏加载卡死 -->
-  <script src="/static/tailwind.min.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261024_hamburger_flow_v1" />
+  <script src="/static/tailwind.min.js?v=20261024_nowarn"></script>
+  <link rel="stylesheet" href="/static/styles.css?v=20261024_cursor_spacing_v5" />
   </head>
-<body class="bg-black text-zinc-100 select-none sm:select-auto antialiased">
+<body class="bg-black text-zinc-100 antialiased">
   <!-- Toast 容器（下移避开顶部导航栏，杜绝遮挡） -->
   <div id="toast-container" class="fixed toast-safe-top right-3 left-3 sm:left-auto sm:w-80 z-50 space-y-1.5 pointer-events-none"></div>
 
@@ -36,7 +37,7 @@
 
     <!-- 左侧边栏（参照 Antigravity-Deck：纯黑极简底色，去除与右侧的白色分割线） -->
     <aside id="sidebar-drawer"
-      class="fixed md:static inset-y-0 left-0 z-40 w-[82vw] max-w-[300px] md:w-72 bg-zinc-950 flex flex-col transform -translate-x-full md:translate-x-0 transition-transform duration-200 ease-out safe-top border-none">
+      class="fixed md:static inset-y-0 left-0 z-40 w-[85vw] max-w-[320px] md:w-72 bg-zinc-950 flex flex-col transform -translate-x-full md:translate-x-0 transition-transform duration-200 ease-out safe-top border-none">
 
       <!-- 顶部品牌与折叠按钮（保持左上角极简，新对话统一收纳至输入框上方） -->
       <div class="h-12 px-3 border-b border-white/[0.06] flex items-center justify-between shrink-0">
@@ -45,6 +46,13 @@
           <span class="font-bold text-base sm:text-[17px] tracking-tight text-white truncate">AgentDeck</span>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
+          <!-- 侧边栏状态指示与一键更新联动按钮：手机端保留圆圈图标以便更新和状态显示，电脑网页端隐藏（与右上角扫码前圆点去重） -->
+          <button id="sidebar-status-btn" onclick="window.appActions.handleStatusBtnClick()"
+            class="flex md:hidden h-8 w-8 rounded-lg bg-transparent hover:bg-zinc-900/60 text-zinc-300 items-center justify-center text-xs transition active:scale-95 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+            title="连接正常（有新版本时点击更新）" aria-label="系统连接与更新状态">
+            <span id="sidebar-status-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.7)]"></span>
+          </button>
+
           <!-- 极简防休眠开关：单色微型矢量咖啡杯图标，高亮表示常驻开启 -->
           <button id="sidebar-awake-btn" onclick="window.appActions.toggleAwakeLockFromSidebar()"
             class="relative w-8 h-8 rounded-lg bg-transparent hover:bg-zinc-900/60 text-zinc-400 hover:text-zinc-200 flex items-center justify-center transition active:scale-95 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
@@ -56,14 +64,6 @@
               <line x1="10" y1="1" x2="10" y2="4"></line>
               <line x1="14" y1="1" x2="14" y2="4"></line>
             </svg>
-            <span id="sidebar-awake-dot" class="hidden absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]"></span>
-          </button>
-
-          <!-- 侧边栏状态指示与一键更新联动按钮：手机端保留圆圈图标以便更新和状态显示，电脑网页端隐藏（与右上角扫码前圆点去重） -->
-          <button id="sidebar-status-btn" onclick="window.appActions.handleStatusBtnClick()"
-            class="flex md:hidden h-8 w-8 rounded-lg bg-transparent hover:bg-zinc-900/60 text-zinc-300 items-center justify-center text-xs transition active:scale-95 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
-            title="连接正常（有新版本时点击更新）" aria-label="系统连接与更新状态">
-            <span id="sidebar-status-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.7)]"></span>
           </button>
 
           <button onclick="window.appActions.toggleSidebar()"
@@ -89,11 +89,11 @@
         <div class="relative shrink-0">
           <button id="sidebar-agent-filter-btn" onclick="window.appActions.toggleAgentFilterMenu(event)"
             type="button"
-            class="h-8 min-w-[84px] max-w-[104px] px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 text-zinc-200 flex items-center justify-between gap-1.5 text-xs transition active:scale-95 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+            class="h-8 min-w-[88px] max-w-[136px] px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 text-zinc-200 flex items-center justify-between gap-1.5 text-xs transition active:scale-95 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
             aria-haspopup="true" aria-expanded="false" title="按 Agent 引擎筛选">
             <div class="flex items-center gap-1.5 min-w-0">
               <span id="sidebar-agent-filter-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
-              <span id="sidebar-agent-filter-label" class="text-[11px] font-medium text-zinc-200 truncate">全部</span>
+              <span id="sidebar-agent-filter-label" class="text-[11px] font-medium text-zinc-200 whitespace-nowrap">全部</span>
             </div>
             <svg class="w-3 h-3 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="6 9 12 15 18 9"></polyline>
@@ -102,14 +102,14 @@
 
           <!-- 动态 Agent 浮层选择面板 (z-50 浮于会话列表上方) -->
           <div id="sidebar-agent-filter-menu"
-            class="hidden absolute left-0 top-full mt-1.5 w-52 rounded-xl bg-zinc-950 border border-zinc-800 shadow-2xl p-1 z-50 space-y-0.5">
+            class="hidden absolute left-0 top-full mt-1.5 w-64 rounded-xl bg-zinc-950 border border-zinc-800 shadow-2xl p-1 z-50 space-y-0.5">
             <!-- 动态渲染菜单项 -->
           </div>
         </div>
 
         <!-- 搜索框 -->
         <div class="relative flex-1 min-w-0">
-          <input id="session-search-input" type="search" placeholder="搜索项目或对话..."
+          <input id="session-search-input" type="search" placeholder="搜索项目、标题或已加载内容..."
             class="w-full h-8 pl-7 pr-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500/60" />
           <svg class="w-3.5 h-3.5 text-zinc-500 absolute left-2 top-2.5 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="11" cy="11" r="8"></circle>
@@ -206,11 +206,6 @@
                   <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
                   <span>重命名</span>
                 </button>
-                <button onclick="window.appActions.relayToNewAgentSession()"
-                  class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-sky-400 hover:bg-sky-500/10 transition text-left min-h-[40px]">
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
-                  <span>在新 Agent 中接续</span>
-                </button>
                 <div class="h-px bg-zinc-800 my-1"></div>
                 <button onclick="window.appActions.deleteCurrentSession()"
                   class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition text-left min-h-[40px]">
@@ -271,7 +266,7 @@
       <div id="global-approval-banner" class="hidden shrink-0"></div>
 
       <!-- 对话卡片主视口 -->
-      <div id="messages-container" class="flex-1 overflow-y-auto px-2.5 sm:px-5 py-3 scroll-smooth">
+      <div id="messages-container" class="flex-1 overflow-y-auto px-2.5 sm:px-5 py-3 scroll-smooth select-text">
         <div class="space-y-4 p-2 sm:p-4 max-w-3xl mx-auto w-full animate-pulse opacity-70" id="initial-messages-skeleton">
           <div class="flex justify-end">
             <div class="h-10 bg-zinc-800/70 rounded-2xl w-2/5"></div>
@@ -313,15 +308,16 @@
           <div id="slash-popover" class="hidden mb-2 rounded-xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-1 max-h-72 sm:max-h-80 overflow-y-auto subtle-scrollbar"></div>
 
           <!-- 一体化 Agent 复合输入大框 -->
-          <div id="agent-input-card" class="relative w-full rounded-2xl bg-zinc-900/90 border border-zinc-800/80 shadow-lg shadow-black/60 focus-within:border-sky-500/60 focus-within:ring-1 focus-within:ring-sky-500/40 transition-all duration-200 flex flex-col">
+          <div id="agent-input-card" class="relative w-full rounded-2xl bg-zinc-900/90 border border-zinc-800/80 shadow-lg shadow-black/60 transition-all duration-200 flex flex-col" style="outline: none !important;">
             <!-- 上半部分：多行文本输入区 -->
             <div class="relative w-full px-3.5 pt-2.5 pb-1">
               <textarea id="prompt-input" rows="1"
                 placeholder=" "
+                style="outline: none !important; box-shadow: none !important; border: none !important;"
                 class="peer w-full min-h-[40px] max-h-48 py-1 bg-transparent border-0 text-xs sm:text-sm text-zinc-100 placeholder-transparent focus:outline-none focus:ring-0 resize-none block m-0 subtle-scrollbar leading-relaxed"></textarea>
 
               <div id="prompt-input-placeholder"
-                class="pointer-events-none absolute left-3.5 top-3.5 flex items-center text-xs sm:text-sm text-zinc-500 peer-placeholder-shown:flex hidden select-none leading-normal">
+                class="pointer-events-none absolute left-3.5 pl-1.5 top-3.5 flex items-center text-xs sm:text-sm text-zinc-500 peer-placeholder-shown:flex hidden select-none leading-normal">
                 <span>发消息给&nbsp;</span><span class="text-[10px] sm:text-xs text-zinc-400 font-mono">Agent</span><span>...</span>
               </div>
             </div>
@@ -623,10 +619,10 @@
   <script>
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/sw.js").catch(() => {});
+        navigator.serviceWorker.register("/sw.js").then((reg) => { reg.update().catch(() => {}); }).catch(() => {});
       });
     }
   </script>
-  <script type="module" src="/static/app.js?v=20261024_doctor_status_v1"></script>
+  <script type="module" src="/static/app.js?v=20261024_fix_svg_class_v3"></script>
 </body>
 </html>

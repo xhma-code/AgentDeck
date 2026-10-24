@@ -119,7 +119,15 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
 
     # 挂载静态资源与 PWA 路由（PWA 路由优先拦截动态 manifest 与首屏注入）
     app.include_router(static_pwa_router)
+    class NoCacheStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope):
+            response = await super().get_response(path, scope)
+            if path.endswith((".js", ".css", ".html", ".json")):
+                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+            return response
+
     if FRONTEND_DIR.exists():
-        app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+        app.mount("/static", NoCacheStaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
     return app

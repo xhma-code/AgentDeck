@@ -724,8 +724,8 @@ details:not([open]) > summary .toggle-arrow-closed {
   pointer-events: none;
 }
 
-/* 无障碍聚焦环规范：鼠标点击不显示生硬粗边，键盘 Tab 键导航时呈现发光 Sky 环 */
-:focus-visible {
+/* 无障碍聚焦环规范：鼠标点击不显示生硬粗边，键盘 Tab 键导航时呈现发光 Sky 环（排除文本输入主框） */
+:focus-visible:not(#prompt-input):not(#agent-input-card) {
   outline: 2px solid var(--border-focus) !important;
   outline-offset: 1px !important;
 }
@@ -773,7 +773,14 @@ details:not([open]) > summary .toggle-arrow-closed {
 /* ==========================================================================
    一体化 Agent 输入卡片规范
    ========================================================================== */
-#agent-input-card {
+#agent-input-card,
+#agent-input-card:focus,
+#agent-input-card:focus-within,
+#agent-input-card:focus-visible {
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.6) !important;
+  border-color: rgba(39, 39, 42, 0.8) !important;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -787,6 +794,18 @@ details:not([open]) > summary .toggle-arrow-closed {
   transition: height 0.15s ease-out;
   -webkit-appearance: none;
   appearance: none;
+}
+
+#prompt-input,
+#prompt-input:focus,
+#prompt-input:focus-within,
+#prompt-input:focus-visible,
+#prompt-input:active {
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  border-color: transparent !important;
 }
 
 #prompt-action-btn {
@@ -902,4 +921,46 @@ details:not([open]) > summary .toggle-arrow-closed {
 }
 .hamburger-btn-unread svg line {
   stroke: var(--accent-sky);
+}
+
+
+/* ==========================================================================
+   移动端与桌面端会话区域文本选中、长按划选与复制增强规范
+   ========================================================================== */
+#messages-container {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+
+#messages-container .text-zinc-100,
+#messages-container .text-zinc-200,
+#messages-container .text-zinc-300,
+#messages-container p,
+#messages-container span,
+#messages-container pre,
+#messages-container code,
+#messages-container blockquote,
+#messages-container .md-code-body,
+#messages-container .whitespace-pre-wrap {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+
+/* 按钮、图标手柄与纯装饰元素保持不被误选中 */
+#messages-container button,
+#messages-container svg,
+#messages-container summary,
+#messages-container .select-none,
+#messages-container [role="button"] {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+}
+
+/* 文本划选高亮光标样式 */
+#messages-container ::selection {
+  background-color: rgba(56, 189, 248, 0.4) !important;
+  color: #ffffff !important;
 }
