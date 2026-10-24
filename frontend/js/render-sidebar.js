@@ -60,28 +60,20 @@ export function renderSidebarStatus() {
   const headerIndicator = document.getElementById("header-status-indicator");
 
   if (state.hasUpdate) {
-    // 发现前端代码更新：亮蓝呼吸脉冲 + 向上箭头图标（手机端专属更新入口）
+    // 发现前端代码更新：亮蓝呼吸脉冲 + 纯文字“更新”
     if (btn) {
       btn.className =
-        "flex md:hidden h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/50 text-sky-200 items-center gap-1.5 text-xs transition active:scale-95 shadow-[0_0_12px_rgba(56,189,248,0.25)] animate-pulse cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none";
+        "flex h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/50 text-sky-200 items-center justify-center text-xs transition active:scale-95 shadow-[0_0_12px_rgba(56,189,248,0.25)] animate-pulse cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none";
       btn.title = "发现新版本前端代码，点击立即载入更新";
       btn.innerHTML = `
-        <svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="12" y1="19" x2="12" y2="5"></line>
-          <polyline points="5 12 12 5 19 12"></polyline>
-        </svg>
         <span class="text-[11px] font-semibold text-sky-300">更新</span>
       `;
     }
     if (headerIndicator) {
       headerIndicator.className =
-        "hidden md:flex h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/50 text-sky-300 items-center gap-1.5 text-xs transition active:scale-95 shadow-sm animate-pulse cursor-pointer";
+        "hidden md:flex h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/50 text-sky-300 items-center justify-center text-xs transition active:scale-95 shadow-sm animate-pulse cursor-pointer";
       headerIndicator.title = "发现前端代码更新，点击立即载入最新代码";
       headerIndicator.innerHTML = `
-        <svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="12" y1="19" x2="12" y2="5"></line>
-          <polyline points="5 12 12 5 19 12"></polyline>
-        </svg>
         <span class="text-[11px] font-semibold text-sky-300">更新</span>
       `;
     }
@@ -540,7 +532,7 @@ export function renderSessionList() {
                             </div>
                             ${
                               isOpen
-                                ? `<div class="pl-3 pr-1 pb-1 space-y-0.5 border-l border-zinc-800/80 ml-3 mb-1">
+                                ? `<div class="px-1.5 pb-1 space-y-0.5 mb-1">
                                     ${
                                       visibleConvs.length === 0
                                         ? `<div class="px-2 py-1 text-[10px] text-zinc-600 italic">无对话</div>`

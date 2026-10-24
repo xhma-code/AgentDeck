@@ -18,22 +18,16 @@ export function renderModelOptionsForAgent(selectEl, agentType, selectedModelId 
   const defaultModelItem = models.find((m) => m.is_default) || models[0];
   const activeId = selectedModelId || (defaultModelItem ? defaultModelItem.id : "");
   if (selectEl.tagName === "SELECT") {
-    const usage = state.currentTokenUsage;
-    const currentTokens = usage ? usage.context_tokens || 0 : 0;
     selectEl.innerHTML = models
       .map((m) => {
-        const tagSuffix = m.tag ? ` · ${m.tag}` : "";
-        const limit = getModelContextLimit(m.id);
-        let quotaPart = "";
-        if (currentTokens > 0) {
-          const pct = Math.round((currentTokens / limit) * 1000) / 10;
-          quotaPart = ` [水位 ${pct}% · ${formatTokenCount(currentTokens)}/${formatTokenCount(limit)}]`;
-        } else {
-          quotaPart = ` [容量 ${formatTokenCount(limit)}]`;
-        }
+        const quotaVal = typeof m.quota === "number" ? m.quota : 1.0;
+        const pct = Math.round(quotaVal * 100);
+        const tagPart = m.tag ? ` · ${m.tag}` : "";
+        const defaultPart = m.is_default ? " (默认)" : "";
+        const quotaPart = ` · ${pct}%`;
         const sel = m.id === activeId ? "selected" : "";
         return `<option value="${escapeHtml(m.id)}" ${sel}>${escapeHtml(
-          m.label + tagSuffix + quotaPart
+          m.label + tagPart + defaultPart + quotaPart
         )}</option>`;
       })
       .join("");
@@ -135,6 +129,8 @@ export function renderModelPicker() {
                   isSelected ? "bg-sky-400 ring-2 ring-sky-400/40" : "bg-zinc-700"
                 }"></div>
                 <span class="truncate font-medium text-zinc-100 ${isSelected ? "text-white font-semibold" : ""}">${escapeHtml(m.label)}</span>
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
                 ${
                   m.tag
                     ? `<span class="text-[9px] px-1 py-0.5 rounded font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30 shrink-0">${escapeHtml(
@@ -147,8 +143,6 @@ export function renderModelPicker() {
                     ? `<span class="text-[9px] px-1 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0" title="电脑端当前默认模型">默认</span>`
                     : ""
                 }
-              </div>
-              <div class="flex items-center gap-1.5 shrink-0">
                 <div class="w-10 sm:w-12 h-1.5 rounded-full bg-zinc-800 overflow-hidden shrink-0">
                   <div class="h-full rounded-full transition-all duration-300 ${barColorCls}" style="width: ${pct}%"></div>
                 </div>

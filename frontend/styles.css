@@ -78,12 +78,14 @@ option,
 optgroup {
   background-color: #18181b !important;
   color: #f4f4f5 !important;
+  white-space: nowrap !important;
 }
 
 select option {
   background-color: #18181b !important;
   color: #f4f4f5 !important;
   padding: 6px 10px;
+  white-space: nowrap !important;
 }
 
 select option:checked,

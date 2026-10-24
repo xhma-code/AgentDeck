@@ -29,6 +29,7 @@ import {
   renderLiveStreamOverlay,
   highlightSlashItem,
   updateCollapseStepsPillVisibility,
+  updateStickyPromptVisibility,
 } from "./js/render.js";
 import {
   updateDrawerVisibility,
@@ -325,6 +326,7 @@ async function initApp() {
         jumpBtn.classList.toggle("hidden", !state.autoScrollLocked);
       }
       updateCollapseStepsPillVisibility();
+      updateStickyPromptVisibility();
     });
   }
 

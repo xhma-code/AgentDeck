@@ -353,15 +353,15 @@ export function handleRealtimeEvent(envelope) {
     const uid = payload && payload.unified_id;
     if (uid) {
       delete state.pendingTurnThinking[uid];
-      delete state.streamingBuffer[uid];
-      if (state.optimisticMessages[uid]) {
-        delete state.optimisticMessages[uid];
-      }
       const sess = (state.allSessions || state.sessions).find((s) => s.unified_id === uid);
       if (sess && sess.status === "running") {
         sess.status = "idle";
       }
       if (uid !== state.selectedSessionId) {
+        delete state.streamingBuffer[uid];
+        if (state.optimisticMessages[uid]) {
+          delete state.optimisticMessages[uid];
+        }
         markSessionCompletedUnread(uid);
       } else {
         if (state.retainedActiveSessionIds) {
@@ -372,12 +372,24 @@ export function handleRealtimeEvent(envelope) {
       renderOtherRunningPill();
       if (uid === state.selectedSessionId) {
         renderCurrentSessionHeader();
-        renderLiveStreamOverlay();
       }
     }
     loadSessions(true);
     if (state.selectedSessionId && (!uid || uid === state.selectedSessionId)) {
-      loadSessionMessages(state.selectedSessionId, { silent: true });
+      loadSessionMessages(state.selectedSessionId, { silent: false }).finally(() => {
+        if (uid) {
+          delete state.streamingBuffer[uid];
+          if (state.optimisticMessages[uid]) {
+            delete state.optimisticMessages[uid];
+          }
+          renderLiveStreamOverlay();
+        }
+      });
+    } else if (uid) {
+      delete state.streamingBuffer[uid];
+      if (state.optimisticMessages[uid]) {
+        delete state.optimisticMessages[uid];
+      }
     }
     return;
   }

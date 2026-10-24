@@ -75,6 +75,12 @@ class EtagNegotiator:
                 st = fpath.stat()
                 current_mtime = st.st_mtime_ns
                 current_size = st.st_size
+                # 兼容 SQLite WAL 模式：高频变更只写入 -wal，必须联合感知
+                wal_path = Path(f"{fpath}-wal")
+                if wal_path.exists():
+                    st_wal = wal_path.stat()
+                    current_mtime = max(current_mtime, st_wal.st_mtime_ns)
+                    current_size += st_wal.st_size
             except OSError:
                 pass
 
@@ -118,6 +124,11 @@ class EtagNegotiator:
             try:
                 st = fpath.stat()
                 mtime_ns, fsize = st.st_mtime_ns, st.st_size
+                wal_path = Path(f"{fpath}-wal")
+                if wal_path.exists():
+                    st_wal = wal_path.stat()
+                    mtime_ns = max(mtime_ns, st_wal.st_mtime_ns)
+                    fsize += st_wal.st_size
             except OSError:
                 pass
 

@@ -386,7 +386,7 @@ class OpenCodeAdapter(BaseAgentAdapter):
             cmd = ["pwsh", "-NoProfile", "-File", bin_path]
         else:
             cmd = [bin_path]
-        cmd.extend(["run", "--session", raw_session_id])
+        cmd.extend(["run", "--session", raw_session_id, "--format", "json"])
         if clean_model:
             cmd.extend(["--model", clean_model])
         if execution_mode in ("accept_edits", "auto"):

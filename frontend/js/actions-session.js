@@ -33,6 +33,12 @@ import {
 import { handleTogglePin } from "./actions-approval.js";
 import { dispatchCommand } from "./command-queue.js";
 
+let sessionContextTargetId = null;
+let sessionLongPressTimer = null;
+let sessionLongPressStartX = 0;
+let sessionLongPressStartY = 0;
+let sessionLongPressMoved = false;
+
 export function toggleSessionMenu(ev) {
   if (ev) ev.stopPropagation();
   const menu = document.getElementById("session-action-menu");
@@ -49,6 +55,159 @@ export function toggleSessionMenu(ev) {
   } else {
     menu.classList.add("hidden");
   }
+}
+
+export function closeSessionContextMenu() {
+  const menu = document.getElementById("session-context-menu");
+  if (menu) menu.classList.add("hidden");
+}
+
+export function openSessionContextMenu(unifiedId, x, y, ev) {
+  if (ev) ev.preventDefault();
+  sessionContextTargetId = unifiedId;
+  const menu = document.getElementById("session-context-menu");
+  if (!menu) return;
+
+  const allList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  const target = allList.find((s) => s.unified_id === unifiedId);
+  const isPinned = target ? !!target.is_pinned : false;
+  const icon = document.getElementById("session-context-menu-pin-icon");
+  const text = document.getElementById("session-context-menu-pin-text");
+  if (icon) icon.className = isPinned ? "text-amber-400 text-xs" : "text-zinc-400 text-xs";
+  if (text) text.textContent = isPinned ? "取消置顶" : "置顶";
+
+  const menuWidth = 112;
+  const menuHeight = 110;
+  let left = x;
+  let top = y;
+  const padding = 8;
+  if (left + menuWidth > window.innerWidth - padding) {
+    left = window.innerWidth - menuWidth - padding;
+  }
+  if (top + menuHeight > window.innerHeight - padding) {
+    top = window.innerHeight - menuHeight - padding;
+  }
+  if (left < padding) left = padding;
+  if (top < padding) top = padding;
+
+  menu.style.left = left + "px";
+  menu.style.top = top + "px";
+  menu.classList.remove("hidden");
+}
+
+export async function contextTogglePin() {
+  closeSessionContextMenu();
+  if (!sessionContextTargetId) return;
+  const allList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  const target = allList.find((s) => s.unified_id === sessionContextTargetId);
+  if (!target) return;
+  try {
+    await handleTogglePin(target.unified_id, !!target.is_pinned);
+  } catch (err) {
+    console.error("切换置顶状态失败:", err);
+    showToast("置顶操作失败", "error");
+  }
+}
+
+export function contextRenameSession() {
+  closeSessionContextMenu();
+  if (!sessionContextTargetId) return;
+  const allList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  const target = allList.find((s) => s.unified_id === sessionContextTargetId);
+  if (!target) return;
+  const modal = document.getElementById("rename-session-modal");
+  const input = document.getElementById("rename-session-input");
+  if (modal && input) {
+    input.value = target.title || "";
+    modal.classList.remove("hidden");
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 50);
+  } else {
+    const newTitle = window.prompt("重命名：", target.title);
+    if (newTitle && newTitle.trim()) {
+      confirmRenameSessionWithTitleForId(target.unified_id, newTitle.trim());
+    }
+  }
+}
+
+export async function confirmRenameSessionWithTitleForId(unifiedId, trimmed) {
+  const allList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  const target = allList.find((s) => s.unified_id === unifiedId);
+  if (!target || trimmed === target.title) return;
+  const prevTitle = target.title;
+  try {
+    target.title = trimmed;
+    if (unifiedId === state.selectedSessionId) {
+      renderCurrentSessionHeader();
+    }
+    renderSessionList();
+    await dispatchCommand({
+      command_type: "RENAME_SESSION",
+      session_id: target.unified_id,
+      payload: { title: trimmed },
+    });
+    showToast("已重命名", "success");
+  } catch (err) {
+    if (target) target.title = prevTitle;
+    renderCurrentSessionHeader();
+    renderSessionList();
+    showToast(`重命名失败: ${err.message}`, "error");
+    loadSessions();
+  }
+}
+
+export async function contextDeleteSession() {
+  closeSessionContextMenu();
+  if (!sessionContextTargetId) return;
+  await deleteSession(sessionContextTargetId);
+}
+
+export function handleSessionTouchStart(ev, unifiedId) {
+  if (ev.touches.length !== 1) return;
+  const touch = ev.touches[0];
+  sessionLongPressStartX = touch.clientX;
+  sessionLongPressStartY = touch.clientY;
+  sessionLongPressMoved = false;
+  if (sessionLongPressTimer) {
+    clearTimeout(sessionLongPressTimer);
+    sessionLongPressTimer = null;
+  }
+  sessionLongPressTimer = setTimeout(() => {
+    if (sessionLongPressMoved) return;
+    const menu = document.getElementById("session-context-menu");
+    if (menu && !menu.classList.contains("hidden")) {
+      closeSessionContextMenu();
+      return;
+    }
+    openSessionContextMenu(unifiedId, sessionLongPressStartX, sessionLongPressStartY, ev);
+    if (navigator.vibrate) {
+      try { navigator.vibrate(10); } catch (e) {}
+    }
+  }, 450);
+}
+
+export function handleSessionTouchMove(ev) {
+  if (ev.touches.length !== 1) return;
+  const touch = ev.touches[0];
+  const dx = Math.abs(touch.clientX - sessionLongPressStartX);
+  const dy = Math.abs(touch.clientY - sessionLongPressStartY);
+  if (dx > 6 || dy > 6) {
+    sessionLongPressMoved = true;
+    if (sessionLongPressTimer) {
+      clearTimeout(sessionLongPressTimer);
+      sessionLongPressTimer = null;
+    }
+  }
+}
+
+export function handleSessionTouchEnd() {
+  if (sessionLongPressTimer) {
+    clearTimeout(sessionLongPressTimer);
+    sessionLongPressTimer = null;
+  }
+  sessionLongPressMoved = false;
 }
 
 export async function toggleCurrentPin() {
@@ -339,7 +498,7 @@ export async function toggleProjectHide(projectPath, currentHidden, ev) {
 
 export async function deleteSession(unifiedId, ev) {
   if (ev) ev.stopPropagation();
-  const curSess = state.sessions.find((s) => s.unified_id === unifiedId);
+  const curSess = state.sessions.find((s) => s.unified_id === unifiedId) || (state.allSessions || []).find((s) => s.unified_id === unifiedId);
   if (!curSess) return;
   if (!window.confirm(`确定从列表中移除会话“${curSess.title}”？
 仅移除本地记录，不删除源文件。`)) {
@@ -349,7 +508,7 @@ export async function deleteSession(unifiedId, ev) {
     await apiFetch(`/api/v1/sessions/${encodeURIComponent(unifiedId)}`, { method: "DELETE" });
     showToast("已从列表移除", "success");
     state.sessions = state.sessions.filter((s) => s.unified_id !== curSess.unified_id);
-    state.allSessions = state.allSessions.filter((s) => s.unified_id !== curSess.unified_id);
+    state.allSessions = (state.allSessions || []).filter((s) => s.unified_id !== curSess.unified_id);
     const nextSess = pickDefaultSession(state.sessions);
     state.selectedSessionId = nextSess?.unified_id || null;
     renderSessionList();
@@ -364,4 +523,19 @@ export async function deleteSession(unifiedId, ev) {
   } catch (err) {
     showToast(`删除失败: ${err.message}`, "error");
   }
+}
+
+if (typeof window !== "undefined") {
+  document.addEventListener("click", (ev) => {
+    const menu = document.getElementById("session-context-menu");
+    if (!menu || menu.classList.contains("hidden")) return;
+    if (menu.contains(ev.target)) return;
+    closeSessionContextMenu();
+  });
+  document.addEventListener("touchstart", (ev) => {
+    const menu = document.getElementById("session-context-menu");
+    if (!menu || menu.classList.contains("hidden")) return;
+    if (menu.contains(ev.target)) return;
+    closeSessionContextMenu();
+  }, { passive: true });
 }

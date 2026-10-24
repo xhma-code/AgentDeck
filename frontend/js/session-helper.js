@@ -135,11 +135,16 @@ export function getModelContextLimit(modelId) {
 export function getAgentDisplayName(agentType) {
   const nameMap = {
     claude_code: "Claude",
-    agy_ide: "Antigravity",
+    agy_ide: "AGY",
     agy_cli: "AGY",
+    antigravity: "AGY",
     opencode: "OpenCode",
   };
-  return nameMap[agentType] || AGENT_META[agentType]?.short || AGENT_META[agentType]?.label || "Agent";
+  if (nameMap[agentType]) return nameMap[agentType];
+  if (typeof agentType === "string" && (agentType.startsWith("agy") || agentType.includes("antigravity"))) {
+    return "AGY";
+  }
+  return AGENT_META[agentType]?.short || AGENT_META[agentType]?.label || "Agent";
 }
 
 export function isSessionWorking(unifiedId) {

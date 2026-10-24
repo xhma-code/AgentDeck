@@ -21,6 +21,7 @@ import {
   startQrExpireCountdown,
   highlightSlashItem,
   scrollToBottom,
+  scrollToCurrentPrompt,
 } from "./render.js";
 import {
   openNewSessionModal,
@@ -402,6 +403,7 @@ window.appActions = {
     state.autoScrollLocked = false;
     scrollToBottom();
   },
+  scrollToCurrentPrompt,
   loadFullOutput,
   insertSlashCommand,
   executeSlashDirectly,

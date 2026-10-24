@@ -173,8 +173,8 @@ export function renderMessagesList() {
           isLongUser && !isUserExpanded ? collapsedUserText : rawUserText;
 
         return `
-          <div class="flex justify-end mb-4">
-            <div class="max-w-[88%] sm:max-w-[76%] rounded-2xl rounded-tr-sm bg-zinc-900 border border-zinc-800 px-3.5 py-2.5 text-zinc-100 shadow-sm">
+          <div data-user-msg-id="${escapeHtml(m.item_id)}" data-user-msg-text="${escapeHtml(rawUserText)}" class="flex justify-end mb-4">
+            <div class="max-w-[88%] sm:max-w-[76%] rounded-2xl rounded-tr-sm bg-zinc-900 border border-zinc-800 px-3.5 py-2.5 text-zinc-100 shadow-sm transition-all duration-300">
               <div id="user-msg-text-${escapeHtml(
                 m.item_id
               )}" class="text-xs sm:text-[13px] leading-relaxed whitespace-pre-wrap break-words">${escapeHtml(
@@ -191,9 +191,6 @@ export function renderMessagesList() {
                     </button>`
                   : ""
               }
-              <div class="text-[10px] text-zinc-500 text-right mt-1">${formatRelativeTime(
-                m.created_at
-              )}</div>
             </div>
           </div>
         `;
@@ -250,6 +247,7 @@ export function renderMessagesList() {
     scrollToBottom();
   }
   updateCollapseStepsPillVisibility();
+  updateStickyPromptVisibility();
 }
 
 export function scrollToBottom() {
@@ -258,4 +256,67 @@ export function scrollToBottom() {
   container.scrollTop = container.scrollHeight;
   const jumpBtn = document.getElementById("scroll-bottom-pill");
   if (jumpBtn) jumpBtn.classList.add("hidden");
+}
+
+
+export function updateStickyPromptVisibility() {
+  const container = document.getElementById("messages-container");
+  const stickyBar = document.getElementById("sticky-user-prompt-bar");
+  const stickyText = document.getElementById("sticky-prompt-text");
+  const headerEl = document.querySelector("header");
+  if (!container || !stickyBar || !stickyText) return;
+
+  const userEls = container.querySelectorAll("[data-user-msg-id]");
+  if (userEls.length === 0) {
+    stickyBar.classList.add("hidden");
+    return;
+  }
+
+  if (headerEl) {
+    stickyBar.style.top = `${headerEl.offsetHeight}px`;
+  }
+
+  const containerRect = container.getBoundingClientRect();
+  const topThreshold = containerRect.top + 16;
+
+  let activeUserEl = null;
+  for (let i = 0; i < userEls.length; i++) {
+    const el = userEls[i];
+    const rect = el.getBoundingClientRect();
+    if (rect.bottom < topThreshold) {
+      activeUserEl = el;
+    } else {
+      break;
+    }
+  }
+
+  if (activeUserEl) {
+    const text = activeUserEl.getAttribute("data-user-msg-text") || "";
+    const cleanText = text.replace(/\s+/g, " ").trim();
+    stickyText.textContent = cleanText;
+    stickyBar.dataset.targetId = activeUserEl.getAttribute("data-user-msg-id") || "";
+    stickyBar.classList.remove("hidden");
+  } else {
+    stickyBar.classList.add("hidden");
+  }
+}
+
+export function scrollToCurrentPrompt() {
+  const stickyBar = document.getElementById("sticky-user-prompt-bar");
+  const targetId = stickyBar?.dataset.targetId;
+  if (!targetId) return;
+
+  const container = document.getElementById("messages-container");
+  const el = container?.querySelector(`[data-user-msg-id="${targetId}"]`);
+  if (!el) return;
+
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  const bubble = el.querySelector(".bg-zinc-900");
+  if (bubble) {
+    bubble.classList.add("ring-2", "ring-sky-400", "shadow-[0_0_16px_rgba(56,189,248,0.4)]");
+    setTimeout(() => {
+      bubble.classList.remove("ring-2", "ring-sky-400", "shadow-[0_0_16px_rgba(56,189,248,0.4)]");
+    }, 1500);
+  }
 }

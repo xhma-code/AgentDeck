@@ -72,13 +72,18 @@ export const GIT_STATUS_BADGES = {
 export const AGENT_META = {
   agy_ide: {
     label: "Antigravity",
-    short: "Antigravity",
+    short: "AGY",
     badgeClass: "bg-purple-500/15 text-purple-300 border-purple-500/30",
   },
   agy_cli: {
     label: "Antigravity CLI",
     short: "AGY",
     badgeClass: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+  },
+  antigravity: {
+    label: "Antigravity",
+    short: "AGY",
+    badgeClass: "bg-purple-500/15 text-purple-300 border-purple-500/30",
   },
   claude_code: {
     label: "Claude Code",

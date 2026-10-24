@@ -85,7 +85,12 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
       </span>`;
 
   return `
-    <div data-session-item="${escapeHtml(s.unified_id)}" onclick="window.appActions.selectSession('${escapeHtml(s.unified_id)}')"
+    <div data-session-item="${escapeHtml(s.unified_id)}"
+      onclick="window.appActions.selectSession('${escapeHtml(s.unified_id)}')"
+      oncontextmenu="event.preventDefault()"
+      ontouchstart="window.appActions.handleSessionTouchStart(event, '${escapeJsSingleQuote(s.unified_id)}')"
+      ontouchmove="window.appActions.handleSessionTouchMove(event)"
+      ontouchend="window.appActions.handleSessionTouchEnd(event)"
       class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-colors duration-150 flex items-center justify-between gap-2 ${
         isSelected
           ? "bg-zinc-800/95 border-sky-500/50 text-zinc-100"

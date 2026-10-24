@@ -215,6 +215,27 @@
               </div>
             </div>
 
+            <!-- 移动端左侧会话长按上下文菜单（置顶 / 重命名 / 删除） -->
+            <div id="session-context-menu"
+              class="hidden fixed w-28 rounded-xl bg-zinc-950 border border-zinc-800 shadow-2xl p-1 z-[999] space-y-0.5 whitespace-nowrap select-none">
+              <button onclick="window.appActions.contextTogglePin()"
+                class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
+                <span id="session-context-menu-pin-icon" class="text-xs">★</span>
+                <span id="session-context-menu-pin-text">置顶</span>
+              </button>
+              <button onclick="window.appActions.contextRenameSession()"
+                class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
+                <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
+                <span>重命名</span>
+              </button>
+              <div class="h-px bg-zinc-800/80 my-0.5"></div>
+              <button onclick="window.appActions.contextDeleteSession()"
+                class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition text-left min-h-[32px]">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                <span>删除</span>
+              </button>
+            </div>
+
             <!-- 2. 更新：包含更新态（有新代码时显示）与连接状态（重连/离线） -->
             <button id="header-status-indicator" onclick="window.appActions.handleStatusBtnClick()"
               class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg text-xs transition active:scale-95 cursor-pointer"
@@ -264,6 +285,27 @@
 
       <!-- 全局待审批横幅 -->
       <div id="global-approval-banner" class="hidden shrink-0"></div>
+
+      <!-- 当前对话指令置顶悬浮条：翻看长回复时自动吸顶悬浮 -->
+      <div id="sticky-user-prompt-bar"
+        class="hidden absolute left-0 right-0 z-20 px-3 sm:px-6 py-1.5 bg-zinc-950/90 backdrop-blur-md border-b border-white/[0.08] shadow-md transition-all duration-200">
+        <div class="max-w-5xl mx-auto flex items-center justify-between gap-2.5">
+          <div onclick="window.appActions.scrollToCurrentPrompt()"
+            class="flex items-center gap-2 min-w-0 flex-1 cursor-pointer group py-0.5"
+            title="点击跳转回原提问">
+            <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30 shrink-0 select-none">指令</span>
+            <span id="sticky-prompt-text" class="text-xs text-zinc-200 truncate font-medium group-hover:text-sky-300 transition-colors"></span>
+          </div>
+          <button onclick="window.appActions.scrollToCurrentPrompt()"
+            class="text-[11px] text-zinc-400 hover:text-sky-300 transition-colors flex items-center gap-1 shrink-0 px-2 py-0.5 rounded hover:bg-zinc-800/60 active:scale-95 cursor-pointer"
+            title="跳转回原提问">
+            <svg class="w-3.5 h-3.5 text-zinc-400 group-hover:text-sky-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 19V5M5 12l7-7 7 7"/>
+            </svg>
+            <span class="hidden sm:inline">定位提问</span>
+          </button>
+        </div>
+      </div>
 
       <!-- 对话卡片主视口 -->
       <div id="messages-container" class="flex-1 overflow-y-auto px-2.5 sm:px-5 py-3 scroll-smooth select-text">
