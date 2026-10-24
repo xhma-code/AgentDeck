@@ -50,7 +50,8 @@ def verify_request_auth(
     ts_status: TailscaleStatus = request.app.state.ts_status
 
     client_host = (request.client.host if request.client else "") or ""
-    provided_token = x_agentdeck_token or token
+    cookie_token = request.cookies.get("agentdeck_token")
+    provided_token = x_agentdeck_token or token or cookie_token
 
     if provided_token and auth_mgr.verify_token(provided_token, client_ip=client_host):
         return True

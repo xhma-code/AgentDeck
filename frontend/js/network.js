@@ -153,13 +153,15 @@ export function connectWebSocket() {
   wsInstance.onclose = (ev) => {
     clearWsHeartbeat();
     state.wsConnected = false;
-    state.wsReconnecting = true;
-    renderHeaderStatus();
     if (ev && ev.code === 1008) {
-      // 鉴权未通过被服务端拒绝，先尝试通过受信虚拟私网静默自愈一次，避免冷启动瞬态误报
+      // 鉴权未通过被服务端拒绝，先重置重连状态为未连接，避免界面假死挂起“重连中”
+      state.wsReconnecting = false;
+      renderHeaderStatus();
       loadSystemStatus().then(() => {
         if (state.token) {
           console.info("[AgentDeck WS] 握手 1008 自愈成功，正在使用新 Token 重连...");
+          state.wsReconnecting = true;
+          renderHeaderStatus();
           setTimeout(connectWebSocket, 800);
         } else {
           showPairingGuideModal();
@@ -169,6 +171,8 @@ export function connectWebSocket() {
       });
       return;
     }
+    state.wsReconnecting = true;
+    renderHeaderStatus();
     wsDisconnectStreak++;
     if (wsDisconnectStreak >= 2) {
       triggerAutoRoaming("websocket_disconnect");

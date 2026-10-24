@@ -117,10 +117,9 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
     app.include_router(sessions_router)
     app.include_router(websocket_router)
 
-    # 挂载静态前端目录
+    # 挂载静态资源与 PWA 路由（PWA 路由优先拦截动态 manifest 与首屏注入）
+    app.include_router(static_pwa_router)
     if FRONTEND_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
-
-    app.include_router(static_pwa_router)
 
     return app

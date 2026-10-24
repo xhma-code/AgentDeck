@@ -37,8 +37,7 @@ export async function submitPairCodeManual(code) {
       body: JSON.stringify({ pair_code: code, device_name: devName }),
     });
     if (res.token) {
-      state.token = res.token;
-      localStorage.setItem("agentdeck_token", res.token);
+      setAuthToken(res.token);
       showToast("设备配对成功！", "success");
       baseClosePairingGuide();
       const pwaUrl = new URL(window.location.href);

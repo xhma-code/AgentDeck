@@ -3036,3 +3036,39 @@ def test_mark_all_viewed_and_sync_viewed_endpoints(tmp_path: Path):
         # 确认所有已存在会话统一更新为最新时间
         assert new_overrides["agy_cli:sess_001"]["last_viewed_at"] == mark_resp.json()["last_viewed_at"]
         assert new_overrides["claude_code:sess_002"]["last_viewed_at"] == mark_resp.json()["last_viewed_at"]
+
+
+def test_pwa_cookie_auth_and_manifest_start_url(tmp_path: Path):
+    """测试 PWA Standalone 模式下的 Cookie 鉴权放行与动态 Manifest 生成。"""
+    from fastapi.testclient import TestClient
+    from backend.app import create_app
+    from backend.core.database import MetaDatabase
+
+    db = MetaDatabase(db_path=tmp_path / "test_pwa.db")
+    app = create_app(meta_db=db)
+
+    with TestClient(app) as client:
+        # 1. 配对接口正常下发 Set-Cookie
+        auth_mgr = app.state.auth_mgr
+        pcode = auth_mgr.bootstrap_pair_code
+        ex_resp = client.post("/api/v1/auth/exchange", json={"pair_code": pcode, "device_name": "Test Phone"})
+        assert ex_resp.status_code == 200
+        token = ex_resp.json()["token"]
+        assert "agentdeck_token" in ex_resp.cookies
+
+        # 2. 测试带 Cookie 访问保护接口正常放行
+        client.cookies.set("agentdeck_token", token)
+        auth_resp = client.get("/api/v1/sessions")
+        assert auth_resp.status_code in (200, 304)
+
+        # 3. 测试动态 Manifest 生成（URL 带 token 时 start_url 自动注入该 token）
+        manifest_resp = client.get("/manifest.webmanifest?token=my_secret_token")
+        assert manifest_resp.status_code == 200
+        m_data = manifest_resp.json()
+        assert m_data["start_url"] == "/?token=my_secret_token"
+        assert m_data["display"] == "standalone"
+
+        # 4. 测试 static manifest 端点优先从 Cookie 提取 token 注入 start_url
+        static_m_resp = client.get("/static/manifest.json")
+        assert static_m_resp.status_code == 200
+        assert token in static_m_resp.json()["start_url"]

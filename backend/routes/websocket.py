@@ -37,10 +37,12 @@ async def websocket_stream(
 
     client_host = (websocket.client.host if websocket.client else "") or ""
     bind_hosts = getattr(ts_status, "bind_hosts", []) or []
+    cookie_token = websocket.cookies.get("agentdeck_token")
+    effective_token = token or cookie_token
     is_trusted_net = (
         client_host in ("127.0.0.1", "::1", "localhost", "testclient")
         or (client_host in bind_hosts)
-        or auth_mgr.verify_token(token, client_ip=client_host)
+        or auth_mgr.verify_token(effective_token, client_ip=client_host)
         or auth_mgr.is_paired_trusted_vpn_ip(client_host)
     )
     if not is_trusted_net:

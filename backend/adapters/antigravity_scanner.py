@@ -97,6 +97,39 @@ def query_antigravity_sessions(
             ORDER BY last_modified_time DESC
             LIMIT ?
         """
+        # 性能极致优化：单次批量预查所有已记录的子进程归属与活跃状态（杜绝循环内的 N+1 次 SQLite 查询与磁盘 IO）
+        active_subagents_by_parent: dict[str, int] = {}
+        if has_parent_col:
+            try:
+                where_clause = "WHERE (parent_conversation_id IS NOT NULL AND parent_conversation_id != '')"
+                if has_depth_col:
+                    where_clause += " OR nesting_depth > 0"
+                sub_rows = safe_query_external_sqlite(
+                    summary_db_path,
+                    f"SELECT conversation_id, parent_conversation_id, status, not_fully_idle FROM conversation_summaries {where_clause}",
+                    (),
+                )
+                for sr in sub_rows:
+                    s_cid = str(sr.get("conversation_id") or "")
+                    p_cid = str(sr.get("parent_conversation_id") or "")
+                    if s_cid:
+                        known_parent_map[s_cid] = p_cid
+                        if p_cid:
+                            s_not_idle = bool(sr.get("not_fully_idle"))
+                            s_raw_status = str(sr.get("status") or "")
+                            if s_not_idle or "RUNNING" in s_raw_status.upper():
+                                s_tp = brain_dir / s_cid / ".system_generated" / "logs" / "transcript.jsonl"
+                                s_active = True
+                                if s_tp.is_file():
+                                    try:
+                                        s_active, _ = inspect_transcript_tail_status(s_tp)
+                                    except OSError:
+                                        s_active = True
+                                if s_active:
+                                    active_subagents_by_parent[p_cid] = active_subagents_by_parent.get(p_cid, 0) + 1
+            except Exception as e:
+                logger.debug(f"读取 Antigravity 子会话映射关系忽略容错: {e}")
+
         rows = safe_query_external_sqlite(summary_db_path, sql, (limit,))
         for r in rows:
             cid = str(r.get("conversation_id") or "")
@@ -111,33 +144,9 @@ def query_antigravity_sessions(
             else:
                 status = "idle"
 
-            # 检查名下是否有处于活跃态的子进程
-            has_active_sub = False
-            active_sub_count = 0
-            if has_parent_col:
-                try:
-                    sub_rows = safe_query_external_sqlite(
-                        summary_db_path,
-                        "SELECT conversation_id, status, not_fully_idle FROM conversation_summaries WHERE parent_conversation_id = ? AND killed = 0",
-                        (cid,),
-                    )
-                    for sr in sub_rows:
-                        s_cid = str(sr.get("conversation_id") or "")
-                        s_not_idle = bool(sr.get("not_fully_idle"))
-                        s_raw = str(sr.get("status") or "")
-                        if s_not_idle or "RUNNING" in s_raw.upper():
-                            s_tp = brain_dir / s_cid / ".system_generated" / "logs" / "transcript.jsonl"
-                            s_active = True
-                            if s_tp.is_file():
-                                try:
-                                    s_active, _ = inspect_transcript_tail_status(s_tp)
-                                except OSError:
-                                    s_active = True
-                            if s_active:
-                                has_active_sub = True
-                                active_sub_count += 1
-                except Exception as e:
-                    logger.debug(f"单会话检查子进程活跃容错: {e}")
+            # 内存秒级映射名下活跃子进程数量（0ms 无磁盘开销）
+            active_sub_count = active_subagents_by_parent.get(cid, 0)
+            has_active_sub = active_sub_count > 0
 
             # 状态权威性校准：若会话 transcript 明确已结束，绝不被滞后的 SQLite 表误判为活跃；
             # 但若名下存在活跃子进程，父会话必须保持活跃态
@@ -198,39 +207,6 @@ def query_antigravity_sessions(
                 has_active_subagent=has_active_sub,
                 active_subagents_count=active_sub_count,
             )
-
-        active_subagents_by_parent: dict[str, int] = {}
-        # 预查所有已记录的子进程归属与活跃状态，以供 brain 目录补漏与父会话活跃冒泡
-        if has_parent_col:
-            try:
-                where_clause = "WHERE (parent_conversation_id IS NOT NULL AND parent_conversation_id != '')"
-                if has_depth_col:
-                    where_clause += " OR nesting_depth > 0"
-                sub_rows = safe_query_external_sqlite(
-                    summary_db_path,
-                    f"SELECT conversation_id, parent_conversation_id, status, not_fully_idle FROM conversation_summaries {where_clause}",
-                    (),
-                )
-                for sr in sub_rows:
-                    s_cid = str(sr.get("conversation_id") or "")
-                    p_cid = str(sr.get("parent_conversation_id") or "")
-                    if s_cid:
-                        known_parent_map[s_cid] = p_cid
-                        if p_cid:
-                            s_not_idle = bool(sr.get("not_fully_idle"))
-                            s_raw_status = str(sr.get("status") or "")
-                            if s_not_idle or "RUNNING" in s_raw_status.upper():
-                                s_tp = brain_dir / s_cid / ".system_generated" / "logs" / "transcript.jsonl"
-                                s_active = True
-                                if s_tp.is_file():
-                                    try:
-                                        s_active, _ = inspect_transcript_tail_status(s_tp)
-                                    except OSError:
-                                        s_active = True
-                                if s_active:
-                                    active_subagents_by_parent[p_cid] = active_subagents_by_parent.get(p_cid, 0) + 1
-            except Exception as e:
-                logger.debug(f"读取 Antigravity 子会话映射关系忽略容错: {e}")
 
     # 2. 补漏 brain 目录
     if brain_dir.is_dir():

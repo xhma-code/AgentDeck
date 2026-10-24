@@ -75,6 +75,16 @@ def aggregate_all_sessions(
     elif len(target_adapters) == 1:
         all_sessions.extend(_fetch_adapter_sessions(target_adapters[0]))
 
+    # 性能优化：按 Agent 类型单次预热可用模型 ID 集合，杜绝循环内重复计算
+    valid_ids_by_agent: dict[str, set[str]] = {}
+    for a_type, adp in adapters.items():
+        if hasattr(adp, "get_available_models_with_quota"):
+            try:
+                avail = adp.get_available_models_with_quota()
+                valid_ids_by_agent[a_type] = {m["id"].lower() for m in avail}
+            except Exception:
+                pass
+
     merged: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
@@ -100,15 +110,9 @@ def aggregate_all_sessions(
             sess.model_name = resolve_default_model_fn(sess.agent_type)
 
         # 校验模型是否在当前 Agent 的可用模型中有效，若失效自动校准为当前电脑端生效的默认模型
-        adapter_obj = adapters.get(sess.agent_type)
-        if adapter_obj and hasattr(adapter_obj, "get_available_models_with_quota"):
-            try:
-                avail = adapter_obj.get_available_models_with_quota()
-                valid_ids = {m["id"].lower() for m in avail}
-                if valid_ids and sess.model_name.lower() not in valid_ids:
-                    sess.model_name = resolve_default_model_fn(sess.agent_type)
-            except Exception:
-                pass
+        valid_ids = valid_ids_by_agent.get(sess.agent_type)
+        if valid_ids and sess.model_name and sess.model_name.lower() not in valid_ids:
+            sess.model_name = resolve_default_model_fn(sess.agent_type)
 
         is_proj, norm_path, proj_name = resolve_proj(sess.project_path)
         sess.project_path = norm_path

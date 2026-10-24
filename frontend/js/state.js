@@ -5,8 +5,32 @@
 import { DEFAULT_MODELS_BY_AGENT } from "./config.js";
 import { isSessionStatusActive } from "./session-helper.js";
 
+export function getCookie(name) {
+  try {
+    const match = document.cookie.match(new RegExp("(^|;\\s*)" + name + "=([^;]*)"));
+    return match ? decodeURIComponent(match[2]) : "";
+  } catch (_) {
+    return "";
+  }
+}
+
 export const state = {
-  token: localStorage.getItem("agentdeck_token") || "",
+  // PWA 独立沙盒双重容灾：若 localStorage 为空，自动从浏览器共享 Cookie 恢复 Token 并写回本地
+  token: (() => {
+    let t = "";
+    try {
+      t = localStorage.getItem("agentdeck_token") || "";
+    } catch (_) {}
+    if (!t) {
+      t = getCookie("agentdeck_token");
+      if (t) {
+        try {
+          localStorage.setItem("agentdeck_token", t);
+        } catch (_) {}
+      }
+    }
+    return t;
+  })(),
   activeBaseUrl: "", // 动态信道热切换基地址（支持 In-App 无刷新平滑漫游）
   wsConnected: false,
   wsReconnecting: false,

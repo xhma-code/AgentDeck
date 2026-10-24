@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import re
 from pathlib import Path
 
@@ -65,19 +67,72 @@ async def serve_service_worker() -> Response:
     return JSONResponse({"error": "未找到 Service Worker 脚本"}, status_code=404)
 
 
+@router.get("/manifest.webmanifest")
+@router.get("/static/manifest.json")
+async def serve_manifest(request: Request, token: Optional[str] = None) -> Response:
+    t = token or request.cookies.get("agentdeck_token") or ""
+    start_url = f"/?token={t}" if t else "/"
+    manifest_data = {
+        "name": "AgentDeck — 多 Agent 移动中控台",
+        "short_name": "AgentDeck",
+        "description": "通过 Tailscale / ZeroTier 虚拟网络同步查看与操控 Antigravity IDE、Antigravity CLI、Claude Code 与 OpenCode 会话",
+        "start_url": start_url,
+        "display": "standalone",
+        "background_color": "#090d16",
+        "theme_color": "#090d16",
+        "orientation": "portrait-primary",
+        "icons": [
+            {
+                "src": "/static/apple-touch-icon.png?v=20261023_diamond_v4",
+                "sizes": "180x180",
+                "type": "image/png",
+            },
+            {
+                "src": "/static/icon-192.png?v=20261023_diamond_v4",
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "any maskable",
+            },
+            {
+                "src": "/static/icon-512.png?v=20261023_diamond_v4",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any maskable",
+            },
+        ],
+    }
+    return JSONResponse(
+        content=manifest_data,
+        media_type="application/manifest+json",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
+
+
 @router.get("/", response_class=HTMLResponse)
 @router.get("/index.html", response_class=HTMLResponse)
-async def serve_pwa_index() -> HTMLResponse:
+async def serve_pwa_index(request: Request) -> HTMLResponse:
     index_file = FRONTEND_DIR / "index.html"
     if index_file.exists():
         content = index_file.read_text(encoding="utf-8")
         fp = calc_frontend_fingerprint()
         meta_tag = f'<meta name="agentdeck-build" content="{fp}">'
-        if "</head>" in content:
+        if '<meta name="agentdeck-build"' in content:
+            content = re.sub(r'<meta name="agentdeck-build"[^>]*>', meta_tag, content)
+        elif "</head>" in content:
             content = content.replace("</head>", f"  {meta_tag}\n</head>", 1)
         content = re.sub(r'(/static/app\.js\?v=)[^"\']+', rf'\g<1>{fp}', content)
         content = re.sub(r'(/static/styles\.css\?v=)[^"\']+', rf'\g<1>{fp}', content)
-        return HTMLResponse(
+
+        # 检查 token 参数或 Cookie，支持动态 manifest 引用与 Cookie 保活
+        url_token = request.query_params.get("token") or request.cookies.get("agentdeck_token")
+        if url_token:
+            content = re.sub(
+                r'<link rel="manifest"[^>]*>',
+                f'<link rel="manifest" href="/manifest.webmanifest?token={url_token}">',
+                content,
+            )
+
+        resp = HTMLResponse(
             content=content,
             headers={
                 "Content-Type": "text/html; charset=utf-8",
@@ -87,4 +142,15 @@ async def serve_pwa_index() -> HTMLResponse:
                 "Pragma": "no-cache",
             },
         )
+        if url_token:
+            resp.set_cookie(
+                key="agentdeck_token",
+                value=url_token,
+                max_age=315360000,
+                path="/",
+                httponly=False,
+                samesite="lax",
+            )
+        return resp
     return HTMLResponse("<h1>AgentDeck 正在初始化前端资源...</h1>", status_code=503)
+

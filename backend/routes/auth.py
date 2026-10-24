@@ -14,6 +14,7 @@ from typing import Any
 import qrcode
 import qrcode.image.svg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 
 from backend.routes.deps import (
     get_auth_mgr,
@@ -53,7 +54,18 @@ async def exchange_pair_code(req: PairCodeExchangeRequest, request: Request) -> 
             "paired_at": time.time(),
         },
     )
-    return {"ok": True, **res}
+    response = JSONResponse(content={"ok": True, **res})
+    token_val = res.get("token")
+    if token_val:
+        response.set_cookie(
+            key="agentdeck_token",
+            value=token_val,
+            max_age=315360000,
+            path="/",
+            httponly=False,
+            samesite="lax",
+        )
+    return response
 
 
 @router.post("/refresh_pair_code")

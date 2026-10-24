@@ -38,9 +38,34 @@ export function showPairingGuideModal(msg) {
   modal.classList.remove("hidden");
 }
 
+export function setAuthToken(token) {
+  if (!token) return;
+  state.token = token;
+  try {
+    localStorage.setItem("agentdeck_token", token);
+  } catch (_) {}
+  try {
+    document.cookie = `agentdeck_token=${encodeURIComponent(token)}; path=/; max-age=315360000; SameSite=Lax`;
+  } catch (_) {}
+  try {
+    let manifestEl = document.querySelector('link[rel="manifest"]');
+    if (!manifestEl) {
+      manifestEl = document.createElement("link");
+      manifestEl.rel = "manifest";
+      document.head.appendChild(manifestEl);
+    }
+    manifestEl.href = `/manifest.webmanifest?token=${encodeURIComponent(token)}`;
+  } catch (_) {}
+}
+
 export function closePairingGuideModal() {
   const modal = document.getElementById("pairing-guide-modal");
   if (modal) modal.classList.add("hidden");
+  // 关闭配对弹窗时重置虚假重连状态，避免界面假死挂起“重连中”
+  if (!state.wsConnected) {
+    state.wsReconnecting = false;
+    import("./render.js").then((m) => m.renderHeaderStatus()).catch(() => {});
+  }
 }
 
 
@@ -98,10 +123,7 @@ export async function apiFetch(path, options = {}) {
           if (statusResp.ok) {
             const sData = await statusResp.json().catch(() => ({}));
             if (sData && sData.trusted_client_token) {
-              state.token = sData.trusted_client_token;
-              try {
-                localStorage.setItem("agentdeck_token", sData.trusted_client_token);
-              } catch (_) {}
+              setAuthToken(sData.trusted_client_token);
               closePairingGuideModal();
               console.info("[AgentDeck] 401 拦截触发静默自愈成功，自动重试原业务请求");
               return await apiFetch(path, { ...options, _retried: true });
@@ -129,10 +151,7 @@ export async function checkAndExchangePairCode() {
   // 1. 优先读取跨通道或书签携带的有效 Token
   const urlToken = params.get("token");
   if (urlToken) {
-    state.token = urlToken;
-    try {
-      localStorage.setItem("agentdeck_token", urlToken);
-    } catch (_) {}
+    setAuthToken(urlToken);
     closePairingGuideModal();
     return;
   }
@@ -157,8 +176,7 @@ export async function checkAndExchangePairCode() {
       body: JSON.stringify({ pair_code: pairCode, device_name: devName }),
     });
     if (res.token) {
-      state.token = res.token;
-      localStorage.setItem("agentdeck_token", res.token);
+      setAuthToken(res.token);
       showToast("设备配对成功！", "success");
       closePairingGuideModal();
       // 将 pair_code 置换为长期 token 保存在地址栏，确保随后添加到主屏幕时 PWA 独立沙盒原生携带该授权 token
