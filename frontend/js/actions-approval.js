@@ -6,7 +6,9 @@ import { state } from "./state.js";
 import { apiFetch, showToast } from "./api.js";
 import { loadSessions } from "./data.js";
 import { renderInteractiveQuestionsCard } from "./render-interactive-questions.js";
+import { renderApprovalBanners } from "./render-approval-views.js";
 import { handleSendPrompt } from "./actions-chat.js";
+import { dispatchCommand } from "./command-queue.js";
 
 let holdTimer = null;
 let holdStartTime = 0;
@@ -78,9 +80,15 @@ export function cancelHoldToApprove(btnEl) {
 export async function handleTogglePin(unifiedId, currentPinned, ev) {
   if (ev) ev.stopPropagation();
   try {
-    await apiFetch(`/api/v1/sessions/${encodeURIComponent(unifiedId)}/meta`, {
-      method: "PATCH",
-      body: JSON.stringify({ is_pinned: currentPinned ? 0 : 1 }),
+    const nextPinned = currentPinned ? 0 : 1;
+    const sess = (state.allSessions || state.sessions).find((s) => s.unified_id === unifiedId);
+    if (sess) sess.is_pinned = nextPinned;
+    import("./render.js").then((m) => m.renderSessionList()).catch(() => {});
+
+    await dispatchCommand({
+      command_type: "PIN_SESSION",
+      session_id: unifiedId,
+      payload: { is_pinned: !!nextPinned },
     });
     await loadSessions();
   } catch (err) {
@@ -197,3 +205,25 @@ export const questionActions = {
   submitQuestionAnswers,
   skipQuestionAnswers,
 };
+
+export function toggleDenyFeedback(open) {
+  state.denyFeedbackOpen = open !== undefined ? Boolean(open) : !state.denyFeedbackOpen;
+  renderApprovalBanners();
+  if (state.denyFeedbackOpen) {
+    setTimeout(() => {
+      const inp = document.getElementById("deny-feedback-input");
+      if (inp) inp.focus();
+    }, 50);
+  }
+}
+
+export function submitDenyWithFeedback(unifiedId) {
+  const inp = document.getElementById("deny-feedback-input");
+  const feedback = inp ? inp.value.trim() : "";
+  submitApprovalDecision(unifiedId, "denied", feedback);
+}
+
+export function setQuestionWriteIn(turnKey, qi, val) {
+  const qKey = `${turnKey}_q${qi}`;
+  state.questionWriteIns[qKey] = val;
+}

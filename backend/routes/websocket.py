@@ -70,6 +70,10 @@ async def websocket_stream(
             action = data.get("action")
             if action == "ping":
                 await websocket.send_json({"type": "PONG", "seq_id": orchestrator._seq_counter})
+            elif action == "execute_command":
+                ack = await orchestrator.execute_command(data)
+                ack["seq_id"] = orchestrator.event_bus.seq_counter
+                await websocket.send_json(ack)
             elif action == "sync":
                 last_seq = int(data.get("since_seq") or 0)
                 snap = orchestrator.get_state_snapshot(since_seq_id=last_seq)

@@ -20,6 +20,12 @@ import {
   renderQrModalContent,
 } from "./render.js";
 
+import {
+  handleCommandAck,
+  flushPendingCommands,
+  updateQueueBadge,
+} from "./command-queue.js";
+
 export let wsInstance = null;
 export let wsHeartbeatTimer = null;
 export let wsPongTimeoutTimer = null;
@@ -117,6 +123,8 @@ export function connectWebSocket() {
     state.wsConnected = true;
     state.wsReconnecting = false;
     renderHeaderStatus();
+    window._agentDeckActiveWs = wsInstance;
+    flushPendingCommands(wsInstance);
     if (wasReconnecting) {
       const now = Date.now();
       if (now - lastWsSyncToastTime > 8000) {
@@ -141,6 +149,10 @@ export function connectWebSocket() {
         }
         return;
       }
+      if (msg.action === "command_ack" || msg.type === "COMMAND_ACK") {
+        handleCommandAck(msg);
+        return;
+      }
       if (msg.seq_id && msg.seq_id > state.lastSeqId) {
         state.lastSeqId = msg.seq_id;
       }
@@ -153,6 +165,7 @@ export function connectWebSocket() {
   wsInstance.onclose = (ev) => {
     clearWsHeartbeat();
     state.wsConnected = false;
+    updateQueueBadge();
     if (ev && ev.code === 1008) {
       // 鉴权未通过被服务端拒绝，先重置重连状态为未连接，避免界面假死挂起“重连中”
       state.wsReconnecting = false;
@@ -312,6 +325,27 @@ export function handleRealtimeEvent(envelope) {
     clearAllUnreadCompletedSessions(vAt);
     renderSessionList();
     renderOtherRunningPill();
+    return;
+  }
+
+  if (type === "SESSION_UPDATED" || type === "SESSION_CREATED" || type === "SESSION_DELETED") {
+    if (type === "SESSION_UPDATED" && payload && payload.unified_id) {
+      const uid = payload.unified_id;
+      const match = (state.allSessions || state.sessions).find((s) => s.unified_id === uid);
+      if (match) {
+        if (payload.title) match.title = payload.title;
+        if (payload.is_pinned !== undefined) match.is_pinned = payload.is_pinned ? 1 : 0;
+        if (payload.meta) {
+          if (payload.meta.title) match.title = payload.meta.title;
+          if (payload.meta.is_pinned !== undefined) match.is_pinned = payload.meta.is_pinned ? 1 : 0;
+        }
+      }
+      renderSessionList();
+      if (uid === state.selectedSessionId) {
+        renderCurrentSessionHeader();
+      }
+    }
+    loadSessions(true);
     return;
   }
 

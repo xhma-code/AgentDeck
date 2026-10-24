@@ -27,6 +27,7 @@ import {
   renderModeOptionsForAgent,
 } from "./render-views.js";
 import { handleTogglePin } from "./actions-approval.js";
+import { dispatchCommand } from "./command-queue.js";
 
 export function toggleSessionMenu(ev) {
   if (ev) ev.stopPropagation();
@@ -54,24 +55,57 @@ export async function toggleCurrentPin() {
   await handleTogglePin(curSess.unified_id, !!curSess.is_pinned);
 }
 
-export async function renameCurrentSession() {
+export function renameCurrentSession() {
   const menu = document.getElementById("session-action-menu");
   if (menu) menu.classList.add("hidden");
   const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
   if (!curSess) return;
-  const newTitle = window.prompt("重命名：", curSess.title);
-  if (!newTitle || !newTitle.trim() || newTitle.trim() === curSess.title) return;
+  const modal = document.getElementById("rename-session-modal");
+  const input = document.getElementById("rename-session-input");
+  if (modal && input) {
+    input.value = curSess.title || "";
+    modal.classList.remove("hidden");
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 50);
+  } else {
+    const newTitle = window.prompt("重命名：", curSess.title);
+    if (newTitle && newTitle.trim()) {
+      confirmRenameSessionWithTitle(newTitle.trim());
+    }
+  }
+}
+
+export function closeRenameModal() {
+  const modal = document.getElementById("rename-session-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+export async function confirmRenameSession() {
+  const input = document.getElementById("rename-session-input");
+  const newTitle = input ? input.value.trim() : "";
+  closeRenameModal();
+  if (!newTitle) return;
+  await confirmRenameSessionWithTitle(newTitle);
+}
+
+export async function confirmRenameSessionWithTitle(trimmed) {
+  const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+  if (!curSess || trimmed === curSess.title) return;
   try {
-    await apiFetch(`/api/v1/sessions/${encodeURIComponent(curSess.unified_id)}/meta`, {
-      method: "PATCH",
-      body: JSON.stringify({ title: newTitle.trim() }),
-    });
-    curSess.title = newTitle.trim();
+    curSess.title = trimmed;
     renderCurrentSessionHeader();
     renderSessionList();
+    await dispatchCommand({
+      command_type: "RENAME_SESSION",
+      session_id: curSess.unified_id,
+      payload: { title: trimmed },
+    });
     showToast("已重命名", "success");
   } catch (err) {
     showToast(`重命名失败: ${err.message}`, "error");
+    loadSessions();
   }
 }
 
@@ -82,10 +116,6 @@ export async function deleteCurrentSession() {
   if (!curSess) return;
   if (!window.confirm(`确定删除「${curSess.title}」？此操作不可逆。`)) return;
   try {
-    await apiFetch(`/api/v1/sessions/${encodeURIComponent(curSess.unified_id)}`, {
-      method: "DELETE",
-    });
-    showToast("已删除", "success");
     state.sessions = state.sessions.filter((s) => s.unified_id !== curSess.unified_id);
     state.allSessions = state.allSessions.filter((s) => s.unified_id !== curSess.unified_id);
     const nextSess = pickDefaultSession(state.sessions);
@@ -99,9 +129,31 @@ export async function deleteCurrentSession() {
       state.messages = [];
       renderMessagesList();
     }
+    await dispatchCommand({
+      command_type: "DELETE_SESSION",
+      session_id: curSess.unified_id,
+      payload: {},
+    });
+    showToast("已删除", "success");
   } catch (err) {
     showToast(`删除失败: ${err.message}`, "error");
+    loadSessions();
   }
+}
+
+export function relayToNewAgentSession() {
+  const menu = document.getElementById("session-action-menu");
+  if (menu) menu.classList.add("hidden");
+  const curSess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+  if (!curSess) return;
+
+  const lastMsg = state.messages.length > 0 ? state.messages[state.messages.length - 1] : null;
+  let prefill = "";
+  if (lastMsg && lastMsg.content) {
+    const rawExcerpt = lastMsg.content.slice(0, 180).replace(/\s+/g, " ");
+    prefill = `[接续自 ${curSess.agent_type || "前序会话"}] 关于「${curSess.title}」的后续推进：\n`;
+  }
+  openNewSessionModal(prefill, curSess.project_path || "");
 }
 
 export function jumpToRunningSession() {

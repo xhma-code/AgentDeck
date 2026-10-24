@@ -179,7 +179,10 @@ class StreamRunner:
                 allow_real_process_in_test=allow_real_process_in_test,
             )
         )
-        return {"ok": True, "unified_id": actual_unified_id, "status": "stream_started"}
+        ret: dict[str, Any] = {"ok": True, "unified_id": actual_unified_id, "status": "stream_started"}
+        if actual_unified_id != unified_id:
+            ret["forked_from"] = unified_id
+        return ret
 
     async def watch_direct_turn_progress(
         self, unified_id: str, agent_type: str, raw_session_id: str

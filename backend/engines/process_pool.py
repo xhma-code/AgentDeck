@@ -25,6 +25,7 @@ from backend.core.database import MetaDatabase
 from backend.core.logger import PROJECT_ROOT, log_structured_error, logger
 from backend.engines.approval import ApprovalCoordinator, PendingApproval
 from backend.engines.cache import EtagNegotiator, SessionMessagesEtagEntry
+from backend.engines.command_bus import CommandBus
 from backend.engines.event_bus import RealtimeEventBus
 from backend.engines.model_catalog import (
     AGENT_MODELS,
@@ -104,6 +105,7 @@ class AgentOrchestrator:
         )
         self._idle_ttl_task: Optional[asyncio.Task[None]] = None
         self._cache_store: dict[str, tuple[float, Any]] = {}
+        self.command_bus = CommandBus(orchestrator=self)
 
     @property
     def pending_approvals(self) -> dict[str, PendingApproval]:
@@ -177,6 +179,10 @@ class AgentOrchestrator:
 
     def unregister_ws_subscriber(self, send_fn: Callable[[dict[str, Any]], Coroutine[Any, Any, None]]) -> None:
         self.event_bus.unregister_subscriber(send_fn)
+
+    async def execute_command(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        """统一通过 CommandBus 处理带幂等防重的全双工命令帧。"""
+        return await self.command_bus.execute_command(envelope)
 
     async def broadcast_event(self, event_type: str, payload: dict[str, Any]) -> None:
         await self.event_bus.broadcast(event_type, payload)

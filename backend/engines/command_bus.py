@@ -1,0 +1,329 @@
+# -*- coding: utf-8 -*-
+"""
+AgentDeck 全双工命令总线 (Command Bus) 与幂等防重调度器。
+
+核心职责：
+1. 统一接收手机端与桌面端通过 WebSocket 发送的结构化命令帧 (`action: "execute_command"`)。
+2. 维护带 TTL 淘汰的客户端消息幂等表 (`client_msg_id`)，防弱网断线重发导致的重复执行。
+3. 调度底层 Orchestrator、MetaDatabase 与 Agent 适配器，支持透明 Fork-to-CLI 与安全中断。
+4. 立即向客户端返回高可靠 ACK 确认帧，并通过 EventBus 广播全端秒级同步。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import Any, Optional
+
+from backend.core.logger import log_structured_error, logger
+
+
+class CommandBus:
+    """全双工指令调度中枢与幂等防重引擎。"""
+
+    def __init__(self, orchestrator: Any, ttl_seconds: float = 3600.0) -> None:
+        self.orchestrator = orchestrator
+        self.ttl_seconds = ttl_seconds
+        # 记录已处理的命令：client_msg_id -> {"status": str, "result": Any, "error": str, "ts": float}
+        self._processed_commands: dict[str, dict[str, Any]] = {}
+        # 会话级执行锁：防止同会话并发重复派发相同指令
+        self._session_locks: dict[str, asyncio.Lock] = {}
+
+    def _cleanup_expired_records(self) -> None:
+        """淘汰超时的历史命令幂等记录，防止内存泄漏。"""
+        now = time.monotonic()
+        expired_keys = [
+            k for k, v in self._processed_commands.items()
+            if now - v.get("ts", now) > self.ttl_seconds
+        ]
+        for k in expired_keys:
+            self._processed_commands.pop(k, None)
+
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        return self._session_locks[session_id]
+
+    async def execute_command(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        """
+        处理单条命令帧，并返回结构化 ACK 回执。
+        帧规范：
+        {
+            "action": "execute_command",
+            "client_msg_id": "cmsg_xxx",
+            "command_type": "PIN_SESSION" | "RENAME_SESSION" | "SEND_PROMPT" | "ABORT_SESSION" | "CREATE_SESSION" | "DELETE_SESSION" | "APPROVE_TOOL",
+            "session_id": "agy_cli:xxx",
+            "payload": { ... },
+            "client_timestamp": 1729770000000
+        }
+        """
+        self._cleanup_expired_records()
+
+        client_msg_id = str(envelope.get("client_msg_id") or "").strip()
+        command_type = str(envelope.get("command_type") or "").strip().upper()
+        session_id = str(envelope.get("session_id") or "").strip()
+        payload = envelope.get("payload") or {}
+
+        if not client_msg_id:
+            return {
+                "action": "command_ack",
+                "type": "COMMAND_ACK",
+                "client_msg_id": "",
+                "command_type": command_type,
+                "status": "error",
+                "error": "缺少 client_msg_id",
+            }
+
+        # 1. 幂等性命中检查：若该命令已完成或正在执行，直接返回缓存 ACK
+        if client_msg_id in self._processed_commands:
+            cached = self._processed_commands[client_msg_id]
+            logger.info(f"[CommandBus] 命中幂等防重缓存: {client_msg_id} ({command_type})")
+            return {
+                "action": "command_ack",
+                "type": "COMMAND_ACK",
+                "client_msg_id": client_msg_id,
+                "command_type": command_type,
+                "status": cached.get("status", "success"),
+                "result": cached.get("result"),
+                "error": cached.get("error"),
+                "is_duplicate": True,
+            }
+
+        # 标记为处理中
+        self._processed_commands[client_msg_id] = {
+            "status": "in_progress",
+            "result": None,
+            "error": None,
+            "ts": time.monotonic(),
+        }
+
+        try:
+            handler = getattr(self, f"_handle_{command_type.lower()}", None)
+            if not handler:
+                raise ValueError(f"不支持的指令类型: {command_type}")
+
+            result = await handler(session_id=session_id, payload=payload, client_msg_id=client_msg_id)
+
+            self._processed_commands[client_msg_id] = {
+                "status": "success",
+                "result": result,
+                "error": None,
+                "ts": time.monotonic(),
+            }
+
+            return {
+                "action": "command_ack",
+                "type": "COMMAND_ACK",
+                "client_msg_id": client_msg_id,
+                "command_type": command_type,
+                "status": "success",
+                "result": result,
+                "error": None,
+            }
+        except Exception as exc:
+            err_msg = str(exc)
+            log_structured_error(
+                problem=f"指令执行失败 [{command_type}] ({client_msg_id})",
+                cause=err_msg,
+                fix="检查指令载荷格式、会话状态或进程执行上下文。",
+                exc=exc,
+            )
+            self._processed_commands[client_msg_id] = {
+                "status": "error",
+                "result": None,
+                "error": err_msg,
+                "ts": time.monotonic(),
+            }
+            return {
+                "action": "command_ack",
+                "type": "COMMAND_ACK",
+                "client_msg_id": client_msg_id,
+                "command_type": command_type,
+                "status": "error",
+                "result": None,
+                "error": err_msg,
+            }
+
+    # -------------------------------------------------------------------------
+    # 具体指令业务处理器
+    # -------------------------------------------------------------------------
+
+    async def _handle_pin_session(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        """置顶或取消置顶会话。"""
+        if not session_id or ":" not in session_id:
+            raise ValueError(f"无效的 session_id: {session_id}")
+        is_pinned = 1 if payload.get("is_pinned", True) else 0
+        agent_type, raw_id = session_id.split(":", 1)
+
+        init_title = None
+        init_path = None
+        existing_meta = self.orchestrator.meta_db.get_session_overrides().get(session_id)
+        if not existing_meta and agent_type in self.orchestrator.adapters:
+            try:
+                base_sess = self.orchestrator.adapters[agent_type].get_session(raw_id)
+                if base_sess:
+                    init_title = getattr(base_sess, "title", None)
+                    init_path = getattr(base_sess, "project_path", None)
+            except Exception:
+                pass
+
+        meta = self.orchestrator.meta_db.upsert_session_meta(
+            unified_id=session_id,
+            agent_type=agent_type,
+            raw_session_id=raw_id,
+            title=init_title,
+            project_path=init_path,
+            is_pinned=is_pinned,
+        )
+        self.orchestrator.bump_version()
+
+        # 广播全端秒级同步
+        await self.orchestrator.broadcast_event(
+            "SESSION_UPDATED",
+            {
+                "unified_id": session_id,
+                "meta": meta,
+                "action": "pin",
+                "is_pinned": bool(is_pinned),
+            },
+        )
+        return {"unified_id": session_id, "is_pinned": bool(is_pinned)}
+
+    async def _handle_rename_session(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        """重命名会话标题。"""
+        if not session_id or ":" not in session_id:
+            raise ValueError(f"无效的 session_id: {session_id}")
+        new_title = str(payload.get("title") or "").strip()
+        if not new_title:
+            raise ValueError("会话新标题不能为空")
+
+        agent_type, raw_id = session_id.split(":", 1)
+        init_path = None
+        existing_meta = self.orchestrator.meta_db.get_session_overrides().get(session_id)
+        if not existing_meta and agent_type in self.orchestrator.adapters:
+            try:
+                base_sess = self.orchestrator.adapters[agent_type].get_session(raw_id)
+                if base_sess:
+                    init_path = getattr(base_sess, "project_path", None)
+            except Exception:
+                pass
+
+        meta = self.orchestrator.meta_db.upsert_session_meta(
+            unified_id=session_id,
+            agent_type=agent_type,
+            raw_session_id=raw_id,
+            project_path=init_path,
+            title=new_title,
+        )
+        self.orchestrator.bump_version()
+
+        await self.orchestrator.broadcast_event(
+            "SESSION_UPDATED",
+            {
+                "unified_id": session_id,
+                "meta": meta,
+                "action": "rename",
+                "title": new_title,
+            },
+        )
+        return {"unified_id": session_id, "title": new_title}
+
+    async def _handle_create_session(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        """在手机端新建一个 Agent 会话。"""
+        agent_type = str(payload.get("agent_type") or "agy_cli").strip()
+        project_path = str(payload.get("project_path") or "").strip()
+        title = str(payload.get("title") or "").strip()
+        initial_prompt = str(payload.get("initial_prompt") or "").strip()
+        model_name = payload.get("model_name")
+        execution_mode = payload.get("execution_mode")
+
+        unified_id, meta = await self.orchestrator.create_session(
+            agent_type=agent_type,
+            project_path=project_path,
+            title=title,
+            initial_prompt=initial_prompt,
+            model_name=model_name,
+            execution_mode=execution_mode,
+        )
+
+        await self.orchestrator.broadcast_event(
+            "SESSION_CREATED",
+            {
+                "unified_id": unified_id,
+                "meta": meta,
+            },
+        )
+        return {"unified_id": unified_id, "meta": meta}
+
+    async def _handle_delete_session(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        """删除会话索引元数据。"""
+        target_id = session_id or str(payload.get("unified_id") or "").strip()
+        if not target_id:
+            raise ValueError("缺少要删除的 session_id")
+
+        self.orchestrator.meta_db.delete_session_meta(target_id)
+        self.orchestrator.bump_version()
+
+        await self.orchestrator.broadcast_event(
+            "SESSION_DELETED",
+            {"unified_id": target_id},
+        )
+        return {"unified_id": target_id, "deleted": True}
+
+    async def _handle_send_prompt(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        """向会话发送提示词指令（包含 IDE 会话透明 Fork-to-CLI 与子进程拉起）。"""
+        if not session_id or ":" not in session_id:
+            raise ValueError(f"无效的 session_id: {session_id}")
+        prompt = str(payload.get("prompt") or "").strip()
+        if not prompt:
+            raise ValueError("发送指令内容不能为空")
+
+        project_path = payload.get("project_path")
+        execution_mode = payload.get("execution_mode")
+        model_name = payload.get("model_name")
+        auto_fork_ide = bool(payload.get("auto_fork_ide", True))
+
+        lock = self._get_session_lock(session_id)
+        async with lock:
+            res = await self.orchestrator.send_prompt_to_session(
+                unified_id=session_id,
+                prompt=prompt,
+                project_path=project_path,
+                execution_mode=execution_mode,
+                model_name=model_name,
+                auto_fork_ide=auto_fork_ide,
+            )
+            return res
+
+    async def _handle_abort_session(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        """中止会话执行（优雅拦截与递归杀树）。"""
+        if not session_id or ":" not in session_id:
+            raise ValueError(f"无效的 session_id: {session_id}")
+
+        reason = str(payload.get("reason") or "手机端手动中断").strip()
+        agent_type, _ = session_id.split(":", 1)
+
+        # 检查是否为桌面 IDE 活跃会话
+        is_active = self.orchestrator.is_session_active(session_id)
+        if agent_type == "agy_ide" and is_active and session_id not in self.orchestrator.active_direct_tasks:
+            # 优雅拦截提示
+            return {
+                "unified_id": session_id,
+                "status": "ide_active_manual_stop_required",
+                "message": "该任务正在桌面 IDE 中执行，无法远程强杀，请在电脑端停止。",
+            }
+
+        await self.orchestrator.abort_session(session_id, reason=reason)
+        return {"unified_id": session_id, "status": "aborted", "reason": reason}
+
+    async def _handle_approve_tool(self, session_id: str, payload: dict[str, Any], **_: Any) -> dict[str, Any]:
+        """审批工具调用。"""
+        if not session_id:
+            raise ValueError("缺少 session_id")
+        decision = str(payload.get("decision") or "").strip()
+        feedback = str(payload.get("feedback") or "").strip()
+        return await self.orchestrator.resolve_tool_approval(
+            unified_id=session_id,
+            decision=decision,
+            feedback=feedback,
+        )

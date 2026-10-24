@@ -6,11 +6,13 @@ import { state } from "./state.js";
 import { showToast, apiFetch } from "./api.js";
 import {
   loadSessions,
+  loadWorkspaces,
   selectSession,
   getProjectInfo,
 } from "./data.js";
 import { escapeHtml } from "./utils.js";
 import { renderModelOptionsForAgent, renderModeOptionsForAgent } from "./render-views.js";
+import { dispatchCommand } from "./command-queue.js";
 
 export function bindSessionListScrollGuardian() {
   const container = document.getElementById("session-list-container");
@@ -258,16 +260,38 @@ export async function confirmCreateNewSession() {
     await loadWorkspaces();
   }
 
-  const res = await apiFetch("/api/v1/sessions", {
-    method: "POST",
-    body: JSON.stringify({
-      agent_type: agentType,
-      project_path: finalPath,
-      execution_mode: mode,
-      model_name: modelName,
-      initial_prompt: initialPrompt,
-    }),
-  });
+  let res = null;
+  try {
+    const cmdRes = await dispatchCommand({
+      command_type: "CREATE_SESSION",
+      session_id: "",
+      payload: {
+        agent_type: agentType,
+        project_path: finalPath,
+        execution_mode: mode,
+        model_name: modelName,
+        initial_prompt: initialPrompt,
+      },
+    });
+    res = (cmdRes && cmdRes.result) ? cmdRes.result : (cmdRes || {});
+  } catch (err) {
+    console.warn("[Modals] WebSocket 创建会话异常，回退至 HTTP 接口:", err);
+    try {
+      res = await apiFetch("/api/v1/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          agent_type: agentType,
+          project_path: finalPath,
+          execution_mode: mode,
+          model_name: modelName,
+          initial_prompt: initialPrompt,
+        }),
+      });
+    } catch (httpErr) {
+      showToast(`创建会话失败: ${httpErr.message}`, "error");
+      return;
+    }
+  }
 
   document.getElementById("new-session-modal").classList.add("hidden");
   document.getElementById("new-session-prompt").value = "";
