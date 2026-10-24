@@ -14,7 +14,7 @@ export function cleanFriendlyTitle(title) {
 export function isSessionStatusActive(s) {
   if (!s || !s.status) return false;
   const st = String(s.status).toLowerCase();
-  return st === "running" || st === "desktop_active";
+  return st === "running" || st === "desktop_active" || Boolean(s.has_active_subagent);
 }
 
 export const SESSION_PRIORITY = Object.freeze({
@@ -29,7 +29,12 @@ export function getSessionPriorityWeight(s) {
   const st = String(s.status || "").toLowerCase();
   if (st === "waiting_approval") return SESSION_PRIORITY.WAITING_APPROVAL;
   if (isSessionCompletedUnread(s)) return SESSION_PRIORITY.COMPLETED_UNREAD;
-  if (st === "running" || st === "desktop_active" || (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id))) {
+  if (
+    st === "running" ||
+    st === "desktop_active" ||
+    Boolean(s.has_active_subagent) ||
+    (typeof isSessionWorking === "function" && isSessionWorking(s.unified_id))
+  ) {
     return SESSION_PRIORITY.ACTIVE;
   }
   return SESSION_PRIORITY.DEFAULT;
@@ -145,11 +150,11 @@ export function isSessionWorking(unifiedId) {
     return true;
   }
   const sess = state.sessions.find((s) => s.unified_id === unifiedId);
-  if (sess && (sess.status === "running" || sess.status === "desktop_active")) {
+  if (sess && (sess.status === "running" || sess.status === "desktop_active" || Boolean(sess.has_active_subagent))) {
     return true;
   }
   const allSess = state.allSessions.find((s) => s.unified_id === unifiedId);
-  if (allSess && (allSess.status === "running" || allSess.status === "desktop_active")) {
+  if (allSess && (allSess.status === "running" || allSess.status === "desktop_active" || Boolean(allSess.has_active_subagent))) {
     return true;
   }
   if (state.selectedSessionId === unifiedId && state.messages && state.messages.length > 0) {

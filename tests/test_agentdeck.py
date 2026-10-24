@@ -2889,3 +2889,103 @@ async def test_session_viewed_cross_client_sync(tmp_path: Path):
             assert evt_frame["type"] == "SESSION_VIEWED"
             assert evt_frame["payload"]["unified_id"] == uid
             assert evt_frame["payload"]["last_viewed_at"] == data["last_viewed_at"]
+
+
+@pytest.mark.asyncio
+async def test_antigravity_subagent_active_propagation(tmp_path: Path):
+    """测试 Antigravity 子进程/子代理运行中时，父会话正确识别为活跃态并冒泡状态。"""
+    import sqlite3
+    import time
+    import json
+    from backend.adapters.antigravity_adapter import AntigravityAdapter
+
+    parent_cid = "parent_test_conv_id"
+    sub_cid = "subagent_test_conv_id"
+
+    # 1. 父会话的 transcript：Agent 已停步等待 (DONE, 无活动工具调用)
+    brain_dir = tmp_path / "brain"
+    parent_tp = brain_dir / parent_cid / ".system_generated" / "logs" / "transcript.jsonl"
+    parent_tp.parent.mkdir(parents=True, exist_ok=True)
+    step_parent = json.dumps({
+        "type": "PLANNER_RESPONSE",
+        "source": "MODEL",
+        "status": "DONE",
+        "content": "已启动子任务，等待完成...",
+        "tool_calls": []
+    }) + "\n"
+    parent_tp.write_text(step_parent, encoding="utf-8")
+
+    # 2. 子会话的 transcript：子进程正在运行中 (RUNNING 工具调用)
+    sub_tp = brain_dir / sub_cid / ".system_generated" / "logs" / "transcript.jsonl"
+    sub_tp.parent.mkdir(parents=True, exist_ok=True)
+    step_sub = json.dumps({
+        "type": "PLANNER_RESPONSE",
+        "source": "MODEL",
+        "status": "RUNNING",
+        "content": "正在执行子任务...",
+        "tool_calls": [{"name": "run_command", "status": "RUNNING"}]
+    }) + "\n"
+    sub_tp.write_text(step_sub, encoding="utf-8")
+
+    # 3. 在 SQLite conversation_summaries.db 中记录父会话与子会话归属关系
+    db_path = tmp_path / "conversation_summaries.db"
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE conversation_summaries (
+            conversation_id TEXT PRIMARY KEY,
+            title TEXT,
+            preview TEXT,
+            step_count INTEGER,
+            last_modified_time INTEGER,
+            workspace_uris TEXT,
+            status TEXT,
+            not_fully_idle INTEGER,
+            parent_conversation_id TEXT,
+            nesting_depth INTEGER DEFAULT 0,
+            killed INTEGER DEFAULT 0
+        )
+    """)
+    now_ms = int(time.time() * 1000)
+    # 父会话：SQLite 中显示 not_fully_idle = 1 (等待子进程中，电脑端显示 ...)
+    cur.execute("""
+        INSERT INTO conversation_summaries
+        VALUES (?, '主会话', '派生了子任务', 3, ?, 'file:///test', 'CASCADE_RUN_STATUS_RUNNING', 1, '', 0, 0)
+    """, (parent_cid, now_ms))
+
+    # 子会话：指向 parent_cid，not_fully_idle = 1
+    cur.execute("""
+        INSERT INTO conversation_summaries
+        VALUES (?, '子会话', '子代理执行中', 1, ?, 'file:///test', 'CASCADE_RUN_STATUS_RUNNING', 1, ?, 1, 0)
+    """, (sub_cid, now_ms, parent_cid))
+    conn.commit()
+    conn.close()
+
+    adapter = AntigravityAdapter(
+        agent_type="agy_ide",
+        agent_label="Antigravity IDE",
+        root_dir=tmp_path
+    )
+
+    # 4. 验证 is_external_session_active 能穿透父会话，识别到子进程活跃，返回 True
+    assert adapter.is_external_session_active(parent_cid) is True
+
+    # 5. 验证 get_active_session_ids 包含父会话
+    active_ids = adapter.get_active_session_ids()
+    assert f"agy_ide:{parent_cid}" in active_ids
+
+    # 6. 验证 list_sessions 中父会话状态正确升格为 desktop_active，并标记 has_active_subagent
+    sessions = adapter.list_sessions(limit=10)
+    parent_sess = next((s for s in sessions if s.raw_session_id == parent_cid), None)
+    assert parent_sess is not None
+    assert parent_sess.status == "desktop_active"
+    assert parent_sess.has_active_subagent is True
+    assert parent_sess.active_subagents_count >= 1
+    assert parent_sess.desktop_locked is True
+
+    # 7. 验证 get_session(parent_cid) 单会话查询同样正确识别子进程活跃
+    single_parent = adapter.get_session(parent_cid)
+    assert single_parent is not None
+    assert single_parent.status == "desktop_active"
+    assert single_parent.has_active_subagent is True
+    assert single_parent.desktop_locked is True

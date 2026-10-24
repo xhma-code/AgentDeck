@@ -112,6 +112,8 @@ class UnifiedSession:
     desktop_locked: bool = False
     parent_unified_id: Optional[str] = None
     is_subagent: bool = False
+    has_active_subagent: bool = False
+    active_subagents_count: int = 0
     last_viewed_at: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:

@@ -36,6 +36,16 @@ export function renderCompactSessionItem(s, showProjectTag = true) {
         <span class="relative inline-flex rounded-full h-2 w-2 bg-amber-400"></span>
       </span>
     `;
+  } else if (s.has_active_subagent) {
+    const subCount = s.active_subagents_count || 1;
+    const subTitle = `子进程运行中 (${subCount})`;
+    statusDotHtml = `
+      <span class="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-sky-500/15 border border-sky-400/30 text-sky-300 text-[10px] font-mono leading-none" title="${subTitle}" aria-label="${subTitle}">
+        <span class="w-1 h-1 rounded-full bg-sky-400 animate-pulse"></span>
+        <span class="w-1 h-1 rounded-full bg-sky-400 animate-pulse" style="animation-delay: 200ms;"></span>
+        <span class="w-1 h-1 rounded-full bg-sky-400 animate-pulse" style="animation-delay: 400ms;"></span>
+      </span>
+    `;
   } else if (s.status === "running" || isWorking) {
     statusDotHtml = `
       <span class="relative flex h-2 w-2" title="运行中" aria-label="运行中">

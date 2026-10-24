@@ -113,45 +113,73 @@ class AntigravityAdapter(BaseAgentAdapter):
         self._brain_scan_cache = (0.0, {})
 
     def is_external_session_active(self, raw_session_id: str) -> bool:
-        """单行极速探测 Antigravity 会话是否处于外部运行/活跃态（优先以 transcript.jsonl 权威日志为准）。"""
+        """单行极速探测 Antigravity 会话是否处于外部运行/活跃态（优先以 transcript 权威日志为准，联动子会话）。"""
         tp = self.get_session_transcript_path(raw_session_id)
         if tp and tp.exists():
             try:
                 is_active, _ = inspect_transcript_tail_status(tp)
-                return is_active
+                if is_active:
+                    return True
             except Exception as exc:
                 logger.debug(f"探测 transcript 状态异常 ({raw_session_id[:8]}): {exc}")
 
-        # 若 transcript 尚不存在（如新会话初始化尚未生成日志），回退至 SQLite 摘要表探测
+        # 若主会话自身 transcript 未显式活跃，进一步检查是否存在处于活跃态的子代理/子进程
         if self.summary_db_path.exists():
-            sql = "SELECT status, not_fully_idle FROM conversation_summaries WHERE conversation_id = ? AND killed = 0 LIMIT 1"
-            rows = safe_query_external_sqlite(self.summary_db_path, sql, (raw_session_id,))
-            if rows:
-                r = rows[0]
-                not_idle = bool(r.get("not_fully_idle"))
-                raw_status = str(r.get("status") or "")
-                if self.agent_type == "agy_ide" and not_idle:
-                    return True
-                if not_idle or "RUNNING" in raw_status.upper():
-                    return True
+            sql_sub = """
+                SELECT conversation_id, status, not_fully_idle
+                FROM conversation_summaries
+                WHERE parent_conversation_id = ? AND killed = 0
+            """
+            sub_rows = safe_query_external_sqlite(self.summary_db_path, sql_sub, (raw_session_id,))
+            for sr in sub_rows:
+                s_cid = str(sr.get("conversation_id") or "")
+                s_not_idle = bool(sr.get("not_fully_idle"))
+                s_raw = str(sr.get("status") or "")
+                if s_not_idle or "RUNNING" in s_raw.upper():
+                    s_tp = self.get_session_transcript_path(s_cid)
+                    if s_tp and s_tp.is_file():
+                        try:
+                            s_act, _ = inspect_transcript_tail_status(s_tp)
+                            if s_act:
+                                return True
+                        except Exception:
+                            return True
+                    else:
+                        return True
+
+            # 若主会话 transcript 尚不存在，回退至 SQLite 摘要表探测
+            if not tp or not tp.exists():
+                sql_self = "SELECT status, not_fully_idle FROM conversation_summaries WHERE conversation_id = ? AND killed = 0 LIMIT 1"
+                rows = safe_query_external_sqlite(self.summary_db_path, sql_self, (raw_session_id,))
+                if rows:
+                    r = rows[0]
+                    not_idle = bool(r.get("not_fully_idle"))
+                    raw_status = str(r.get("status") or "")
+                    if self.agent_type == "agy_ide" and not_idle:
+                        return True
+                    if not_idle or "RUNNING" in raw_status.upper():
+                        return True
         return False
 
     def get_active_session_ids(self) -> list[str]:
-        """返回 Antigravity 当前处于原生活跃态的 unified_id 列表。"""
-        active_ids: list[str] = []
+        """返回 Antigravity 当前处于原生活跃态的 unified_id 列表（含主会话与子进程活跃的父会话）。"""
+        active_ids: set[str] = set()
         if self.summary_db_path.exists():
             sql = """
-                SELECT conversation_id
+                SELECT conversation_id, parent_conversation_id
                 FROM conversation_summaries
                 WHERE killed = 0 AND (not_fully_idle = 1 OR status LIKE '%RUNNING%')
-                LIMIT 5
+                LIMIT 20
             """
             rows = safe_query_external_sqlite(self.summary_db_path, sql)
             for r in rows:
                 cid = r.get("conversation_id")
+                p_cid = r.get("parent_conversation_id")
                 if cid:
-                    active_ids.append(f"{self.agent_type}:{cid}")
-        return active_ids
+                    active_ids.add(f"{self.agent_type}:{cid}")
+                if p_cid:
+                    active_ids.add(f"{self.agent_type}:{p_cid}")
+        return list(active_ids)[:10]
 
     def get_session_transcript_path(self, raw_session_id: str) -> Optional[Path]:
         return self.brain_dir / raw_session_id / ".system_generated" / "logs" / "transcript.jsonl"
