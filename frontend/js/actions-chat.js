@@ -20,6 +20,7 @@ import {
 } from "./render.js";
 import { openNewSessionModal } from "./modals.js";
 import { renderModelPicker } from "./render-views.js";
+import { dispatchCommand } from "./command-queue.js";
 
 export async function handleSendPrompt(customPrompt = null) {
   const inputEl = document.getElementById("prompt-input");
@@ -74,30 +75,29 @@ export async function handleSendPrompt(customPrompt = null) {
   renderMessagesList();
   renderLiveStreamOverlay();
 
-  try {
-    const res = await apiFetch(
-      `/api/v1/sessions/${encodeURIComponent(state.selectedSessionId)}/send`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          prompt: text,
-          model_name: chosenModel || undefined,
-          execution_mode: chosenMode || undefined,
-          auto_fork_ide: true,
-        }),
-      }
-    );
+    try {
+    const res = await dispatchCommand({
+      command_type: "SEND_PROMPT",
+      session_id: state.selectedSessionId,
+      payload: {
+        prompt: text,
+        model_name: chosenModel || undefined,
+        execution_mode: chosenMode || undefined,
+        auto_fork_ide: true,
+      },
+    });
 
-    if (res.forked_from && res.unified_id && res.unified_id !== state.selectedSessionId) {
+    const data = (res && res.result) ? res.result : (res || {});
+    if (data.forked_from && data.unified_id && data.unified_id !== state.selectedSessionId) {
       showToast("已克隆至 AGY CLI 继续", "info");
       const oldUid = state.selectedSessionId;
-      state.selectedSessionId = res.unified_id;
+      state.selectedSessionId = data.unified_id;
       if (state.optimisticMessages[oldUid]) {
-        state.optimisticMessages[res.unified_id] = state.optimisticMessages[oldUid];
+        state.optimisticMessages[data.unified_id] = state.optimisticMessages[oldUid];
         delete state.optimisticMessages[oldUid];
       }
       if (state.pendingTurnThinking[oldUid]) {
-        state.pendingTurnThinking[res.unified_id] = state.pendingTurnThinking[oldUid];
+        state.pendingTurnThinking[data.unified_id] = state.pendingTurnThinking[oldUid];
         delete state.pendingTurnThinking[oldUid];
       }
     }
@@ -105,17 +105,24 @@ export async function handleSendPrompt(customPrompt = null) {
     await loadSessionMessages(state.selectedSessionId, true);
   } catch (err) {
     console.error("发送失败:", err);
+    showToast(`发送失败: ${err.message}`, "error");
   }
 }
 
 export async function handleAbortCurrentSession() {
   if (!state.selectedSessionId) return;
   try {
-    await apiFetch(
-      `/api/v1/sessions/${encodeURIComponent(state.selectedSessionId)}/abort`,
-      { method: "POST" }
-    );
-    showToast("已发送中断信号", "info");
+    const res = await dispatchCommand({
+      command_type: "ABORT_SESSION",
+      session_id: state.selectedSessionId,
+      payload: { reason: "手机端手动中断" },
+    });
+    const result = res && res.result ? res.result : {};
+    if (result.message) {
+      showToast(result.message, "info");
+    } else {
+      showToast("已发送中断信号", "info");
+    }
     delete state.pendingTurnThinking[state.selectedSessionId];
     if (state.optimisticMessages[state.selectedSessionId]) {
       state.optimisticMessages[state.selectedSessionId] = [];
@@ -123,7 +130,7 @@ export async function handleAbortCurrentSession() {
     await loadSessions();
     await loadSessionMessages(state.selectedSessionId, true);
   } catch (e) {
-    showToast("中断失败", "error");
+    showToast(`中断失败: ${e.message}`, "error");
   }
 }
 
@@ -236,6 +243,7 @@ export function insertSlashCommand(cmd) {
   if (!inputEl) return;
   inputEl.value = `${cmd} `;
   inputEl.focus();
+  handlePromptInput();
   state.slashMenuOpen = false;
   renderSlashMenu();
 }
@@ -325,4 +333,28 @@ export async function selectModel(modelId, e) {
     hiddenSelect.value = modelId;
   }
   await handleModelChange(modelId);
+}
+
+
+export function handlePromptInput() {
+  const inputEl = document.getElementById("prompt-input");
+  if (!inputEl) return;
+
+  // 1. 动态自适应调整多行文本高度（基础 42px，上限 180px 随后滚动）
+  inputEl.style.height = "auto";
+  const newHeight = Math.min(Math.max(inputEl.scrollHeight, 42), 180);
+  inputEl.style.height = `${newHeight}px`;
+
+  // 2. 斜杠指令检查与浮层渲染
+  const val = inputEl.value;
+  if (val.startsWith("/")) {
+    state.slashMenuOpen = true;
+    renderSlashMenu(val);
+  } else if (state.slashMenuOpen) {
+    state.slashMenuOpen = false;
+    renderSlashMenu("");
+  }
+
+  // 3. 动态刷新发送按钮可用性
+  updatePromptActionBtnState();
 }

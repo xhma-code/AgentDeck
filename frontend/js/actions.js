@@ -35,6 +35,9 @@ import {
   toggleSessionMenu,
   toggleCurrentPin,
   renameCurrentSession,
+  closeRenameModal,
+  confirmRenameSession,
+  relayToNewAgentSession,
   deleteCurrentSession,
   jumpToRunningSession,
   markAllSessionsViewed,
@@ -70,6 +73,7 @@ import {
   selectSlashCommand,
   toggleModelPicker,
   selectModel,
+  handlePromptInput,
 } from "./actions-chat.js";
 import {
   submitApprovalDecision,
@@ -120,6 +124,9 @@ window.appActions = {
   toggleSessionMenu,
   toggleCurrentPin,
   renameCurrentSession,
+  closeRenameModal,
+  confirmRenameSession,
+  relayToNewAgentSession,
   deleteCurrentSession,
   jumpToRunningSession,
   markAllSessionsViewed,
@@ -137,6 +144,7 @@ window.appActions = {
 
   // 聊天与模型选择交互
   handlePromptAction,
+  handlePromptInput,
   fillPromptAndSend,
   selectSlashCommand,
   toggleModelPicker,
@@ -233,6 +241,7 @@ window.appActions = {
     updateDrawerVisibility();
   },
   async openQrModal() {
+    state.selectedQrNet = null;
     startQrExpireCountdown();
     const m = document.getElementById("qr-modal");
     if (m) m.classList.remove("hidden");

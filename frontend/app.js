@@ -182,7 +182,7 @@ async function initApp() {
       if (e.key === "Enter" && !e.shiftKey && window.innerWidth >= 768) {
         e.preventDefault();
         const btn = document.getElementById("prompt-action-btn");
-        if (btn && btn.getAttribute("data-mode") === "abort") {
+        if (btn && (btn.getAttribute("data-mode") === "abort" || btn.dataset.action === "abort")) {
           window.appActions.abortSession();
         } else {
           window.appActions.sendPrompt();

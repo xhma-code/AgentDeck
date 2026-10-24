@@ -172,7 +172,7 @@ export function updatePromptActionBtnState() {
   if (isWorking && !hasText) {
     btn.dataset.action = "abort";
     btn.className =
-      "shrink-0 h-10 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center m-0";
+      "h-7 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow active:scale-95 transition flex items-center justify-center shrink-0 cursor-pointer";
     if (btnText) {
       btnText.textContent = "中断";
     }
@@ -180,7 +180,7 @@ export function updatePromptActionBtnState() {
   } else {
     btn.dataset.action = "send";
     btn.className =
-      "shrink-0 h-10 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center m-0";
+      "h-7 px-3 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs shadow active:scale-95 transition flex items-center justify-center shrink-0 cursor-pointer";
     if (btnText) {
       btnText.textContent = "发送";
     }

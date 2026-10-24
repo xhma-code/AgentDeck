@@ -204,6 +204,11 @@
                   <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
                   <span>重命名</span>
                 </button>
+                <button onclick="window.appActions.relayToNewAgentSession()"
+                  class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-sky-400 hover:bg-sky-500/10 transition text-left min-h-[40px]">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+                  <span>在新 Agent 中接续</span>
+                </button>
                 <div class="h-px bg-zinc-800 my-1"></div>
                 <button onclick="window.appActions.deleteCurrentSession()"
                   class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition text-left min-h-[40px]">
@@ -300,69 +305,75 @@
       <div id="bottom-approval-bar" class="hidden shrink-0 z-20"></div>
 
       <!-- 底部控制舱（模型选择 + 模式选择 + 新对话 + 输入框） -->
-      <footer class="border-t border-white/[0.06] bg-black/95 px-2.5 sm:px-4 pt-2 safe-bottom shrink-0">
-        <div class="max-w-5xl mx-auto w-full">
-          <!-- 工具栏：模型选择 + 执行策略 + 新对话，统一平级流式布局彻底消除重叠 -->
-          <div class="flex items-center gap-1.5 pb-1.5 w-full overflow-x-auto no-scrollbar select-none">
-            <!-- 模型选择器（参照 Antigravity-Deck：展开展示模型名称与余量百分比） -->
-            <div class="relative shrink-0" id="model-picker-container">
-              <input type="hidden" id="model-select" value="" />
-              <button type="button" id="model-picker-btn" onclick="window.appActions.toggleModelPicker(event)"
-                class="flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg px-2 sm:px-2.5 h-8 text-[11px] text-zinc-100 font-medium transition active:scale-95 shrink-0"
-                title="选择模型并查看实时配额">
-                <span class="text-xs">🧠</span>
-                <span id="model-picker-label" class="max-w-[105px] sm:max-w-[170px] truncate">选择模型...</span>
-                <svg id="model-picker-arrow" class="w-2.5 h-2.5 text-zinc-400 shrink-0 ml-0.5 transition-transform duration-200" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5l3 3 3-3"/></svg>
-              </button>
-
-              <!-- 向上弹出的 Model Picker 浮层（100% 纯黑实底，杜绝透明与背景文字重叠） -->
-              <div id="model-picker-popover" class="hidden fixed rounded-xl border border-zinc-700 p-1 z-[60] max-h-80 overflow-y-auto subtle-scrollbar"
-                style="background-color: #09090b !important; box-shadow: 0 20px 45px rgba(0,0,0,0.95), 0 0 0 1px rgba(255,255,255,0.1) !important;"></div>
-            </div>
-
-            <!-- 执行策略选择器 -->
-            <div class="flex items-center bg-zinc-900 border border-zinc-800 rounded-lg px-1.5 sm:px-2 h-8 shrink-0">
-              <select id="execution-mode-select" onchange="window.appActions.changeMode(this)"
-                class="bg-zinc-900 text-[11px] text-zinc-100 font-medium focus:outline-none cursor-pointer [&>option]:bg-zinc-900 [&>option]:text-zinc-100 py-1">
-                <option value="ask">🛡️ 审批</option>
-                <option value="plan">📋 规划</option>
-                <option value="accept_edits">✏️ 自动改</option>
-                <option value="auto">⚡ 全自动</option>
-              </select>
-            </div>
-
-            <!-- 桌面端弹性撑开空白，手机端保持紧凑间距 -->
-            <div class="flex-1 min-w-[2px]"></div>
-
-            <!-- 新对话按钮（平级自适应，杜绝小屏重叠） -->
-            <button type="button" onclick="window.appActions.openNewSessionModal()"
-              class="flex items-center gap-1 bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/35 text-sky-300 rounded-lg px-2 sm:px-2.5 h-8 text-[11px] font-semibold transition active:scale-95 shrink-0"
-              title="在此新建对话">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-              <span class="inline">新对话</span>
-            </button>
-          </div>
-
-          <!-- 斜杠指令与全部 Skills 浮动菜单 -->
+      <footer class="border-t border-white/[0.06] bg-black/95 px-2.5 sm:px-4 py-2 safe-bottom shrink-0">
+        <div class="max-w-5xl mx-auto w-full relative">
+          <!-- 斜杠指令与全部 Skills 浮动菜单（在大框正上方弹出） -->
           <div id="slash-popover" class="hidden mb-2 rounded-xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-1 max-h-72 sm:max-h-80 overflow-y-auto subtle-scrollbar"></div>
 
-          <!-- 输入框与动态 发送/中断 按钮 (对齐客户端交互) -->
-          <div class="flex items-center gap-1.5">
-            <div class="relative flex-1 min-w-0 flex items-center">
+          <!-- 一体化 Agent 复合输入大框 -->
+          <div id="agent-input-card" class="relative w-full rounded-2xl bg-zinc-900/90 border border-zinc-800/80 transition-all duration-200 flex flex-col focus-within:border-sky-500/60">
+            <!-- 上半部分：多行文本输入区 -->
+            <div class="relative w-full px-3.5 pt-2.5 pb-1">
               <textarea id="prompt-input" rows="1"
                 placeholder=" "
-                class="peer w-full h-10 max-h-28 min-h-[40px] px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs sm:text-sm text-zinc-100 placeholder-transparent focus:outline-none focus:border-sky-500/70 focus-visible:ring-1 focus-visible:ring-sky-500/50 resize-none block m-0"></textarea>
+                class="peer w-full min-h-[42px] max-h-48 py-1 bg-transparent border-0 text-xs sm:text-sm text-zinc-100 placeholder-transparent focus:outline-none focus:ring-0 resize-none block m-0 subtle-scrollbar leading-relaxed"></textarea>
 
               <div id="prompt-input-placeholder"
-                class="pointer-events-none absolute left-3 inset-y-0 flex items-center text-xs sm:text-sm text-zinc-500 peer-placeholder-shown:flex hidden select-none leading-normal">
+                class="pointer-events-none absolute left-3.5 top-3.5 flex items-center text-xs sm:text-sm text-zinc-500 peer-placeholder-shown:flex hidden select-none leading-normal">
                 <span>发消息给&nbsp;</span><span class="text-[10px] sm:text-xs text-zinc-400 font-mono">Agent</span><span>...</span>
               </div>
             </div>
 
-            <button id="prompt-action-btn" type="button" onclick="window.appActions.handlePromptAction()"
-              class="shrink-0 h-10 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs sm:text-sm shadow active:scale-95 transition flex items-center justify-center gap-1 m-0">
-              <span id="prompt-action-btn-text">发送</span>
-            </button>
+            <!-- 下半部分：内嵌底部操作条 -->
+            <div class="px-2.5 pb-2 pt-1 flex items-center justify-between gap-1.5 select-none">
+              <!-- 左侧控制胶囊组：模型选择 + 审批权限 -->
+              <div class="flex items-center gap-1.5 min-w-0 overflow-x-auto no-scrollbar py-0.5">
+                <!-- 模型选择器（展开展示模型名称与余量百分比） -->
+                <div class="relative shrink-0" id="model-picker-container">
+                  <input type="hidden" id="model-select" value="" />
+                  <button type="button" id="model-picker-btn" onclick="window.appActions.toggleModelPicker(event)"
+                    class="flex items-center gap-1 bg-zinc-950/70 hover:bg-zinc-800/80 border border-zinc-800/70 hover:border-zinc-700/80 rounded-lg px-2 sm:px-2.5 h-7 text-[11px] text-zinc-200 font-medium transition active:scale-95 shrink-0"
+                    title="选择模型并查看实时配额">
+                    <span class="text-xs">🧠</span>
+                    <span id="model-picker-label" class="max-w-[105px] sm:max-w-[170px] truncate">选择模型...</span>
+                    <svg id="model-picker-arrow" class="w-2.5 h-2.5 text-zinc-400 shrink-0 ml-0.5 transition-transform duration-200" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5l3 3 3-3"/></svg>
+                  </button>
+
+                  <!-- 向上弹出的 Model Picker 浮层 -->
+                  <div id="model-picker-popover" class="hidden fixed rounded-xl border border-zinc-700 p-1 z-[60] max-h-80 overflow-y-auto subtle-scrollbar"
+                    style="background-color: #09090b !important; box-shadow: 0 20px 45px rgba(0,0,0,0.95), 0 0 0 1px rgba(255,255,255,0.1) !important;"></div>
+                </div>
+
+                <!-- 执行策略选择器 -->
+                <div class="flex items-center bg-zinc-950/70 hover:bg-zinc-800/80 border border-zinc-800/70 hover:border-zinc-700/80 rounded-lg px-1.5 sm:px-2 h-7 shrink-0 transition">
+                  <select id="execution-mode-select" onchange="window.appActions.changeMode(this)"
+                    class="bg-transparent text-[11px] text-zinc-200 font-medium focus:outline-none cursor-pointer [&>option]:bg-zinc-900 [&>option]:text-zinc-100 py-0.5"
+                    title="选择执行模式（审批 / 规划 / 自动改 / 全自动）">
+                    <option value="ask">🛡️ 审批</option>
+                    <option value="plan">📋 规划</option>
+                    <option value="accept_edits">✏️ 自动改</option>
+                    <option value="auto">⚡ 全自动</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- 右侧快捷操作组：新对话 + 发送/中断 -->
+              <div class="flex items-center gap-1.5 shrink-0 ml-auto">
+                <!-- 新对话按钮（桌面端图标+文字，小屏自适应只保留图标） -->
+                <button type="button" onclick="window.appActions.openNewSessionModal()"
+                  class="flex items-center gap-1 bg-zinc-950/70 hover:bg-zinc-800/80 border border-zinc-800/70 hover:border-zinc-700/80 text-zinc-300 hover:text-white rounded-lg px-2 sm:px-2.5 h-7 text-[11px] font-medium transition active:scale-95 shrink-0"
+                  title="在此新建对话">
+                  <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                  <span class="hidden sm:inline">新对话</span>
+                </button>
+
+                <!-- 发送 / 中断主操作按钮 -->
+                <button id="prompt-action-btn" type="button" onclick="window.appActions.handlePromptAction()"
+                  class="h-7 px-3 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs shadow active:scale-95 transition flex items-center justify-center gap-1 shrink-0 cursor-pointer">
+                  <span id="prompt-action-btn-text">发送</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </footer>
@@ -442,6 +453,28 @@
           class="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs transition shadow-lg shadow-sky-500/20">
           立即配对并进入中控台
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 重命名会话模态框 -->
+  <div id="rename-session-modal" role="dialog" aria-modal="true"
+    class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-4 shadow-2xl space-y-3">
+      <div class="flex items-center justify-between pb-2 border-b border-zinc-800">
+        <div class="font-bold text-sm text-zinc-100">重命名会话</div>
+        <button onclick="window.appActions.closeRenameModal()" class="text-zinc-400 hover:text-white px-2 py-0.5" aria-label="关闭">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <input id="rename-session-input" type="text"
+        class="w-full px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 placeholder-zinc-500 focus:border-sky-500 focus:outline-none"
+        placeholder="输入新标题..." onkeydown="if(event.key==='Enter')window.appActions.confirmRenameSession();if(event.key==='Escape')window.appActions.closeRenameModal();" />
+      <div class="flex items-center justify-end gap-2 pt-1">
+        <button onclick="window.appActions.closeRenameModal()"
+          class="px-3 py-1.5 rounded-xl text-xs font-medium text-zinc-400 hover:bg-zinc-800 transition">取消</button>
+        <button onclick="window.appActions.confirmRenameSession()"
+          class="px-3.5 py-1.5 rounded-xl text-xs font-medium bg-sky-500 text-zinc-950 hover:bg-sky-400 font-semibold transition">确定</button>
       </div>
     </div>
   </div>
