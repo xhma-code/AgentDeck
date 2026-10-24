@@ -54,6 +54,7 @@ export async function submitPairCodeManual(code) {
 
 export function closeQrModal() {
   state.pairedSuccessNotice = null;
+  state.selectedQrNet = null;
   stopQrExpireCountdown();
   const m = document.getElementById("qr-modal");
   if (m) m.classList.add("hidden");
@@ -185,36 +186,12 @@ export function closeTokenUsageModal() {
 }
 
 export async function openAgentsHealthModal() {
-  const modal = document.getElementById("agents-health-modal");
-  if (!modal) return;
-  renderAgentsHealthModal();
-  modal.classList.remove("hidden");
-  if (!state.systemStatus?.agents_health || state.systemStatus.agents_health.length === 0) {
-    try {
-      await loadSystemStatus();
-      renderAgentsHealthModal();
-    } catch (_) {}
-  }
+  // Agent 体检功能已融合至顶部 Agent 下拉菜单中，不再使用独立弹窗
 }
 
-export function closeAgentsHealthModal() {
-  const modal = document.getElementById("agents-health-modal");
-  if (modal) modal.classList.add("hidden");
-}
+export function closeAgentsHealthModal() {}
 
-export async function refreshAgentsHealth() {
-  const refreshBtn = document.getElementById("agents-health-refresh-btn");
-  if (refreshBtn) refreshBtn.classList.add("animate-spin");
-  try {
-    await loadSystemStatus();
-    renderAgentsHealthModal();
-    showToast("体检状态已刷新", "success");
-  } catch (err) {
-    showToast("刷新体检失败", "error");
-  } finally {
-    if (refreshBtn) refreshBtn.classList.remove("animate-spin");
-  }
-}
+export async function refreshAgentsHealth() {}
 
 export async function openGitStatusModal() {
   const modal = document.getElementById("doc-preview-modal");

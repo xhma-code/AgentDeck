@@ -74,9 +74,8 @@ export function renderSidebarStatus() {
       `;
     }
     if (headerIndicator) {
-      headerIndicator.classList.remove("hidden");
       headerIndicator.className =
-        "h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/50 text-sky-300 flex items-center gap-1.5 text-xs transition active:scale-95 shadow-sm animate-pulse cursor-pointer";
+        "hidden md:flex h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/50 text-sky-300 items-center gap-1.5 text-xs transition active:scale-95 shadow-sm animate-pulse cursor-pointer";
       headerIndicator.title = "发现前端代码更新，点击立即载入最新代码";
       headerIndicator.innerHTML = `
         <svg class="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -147,13 +146,146 @@ export {
 import {
   renderHeaderStatus,
   renderSidebarAwakeLock,
-  renderSidebarHealthStatus,
-  renderAgentsHealthModal,
 } from "./render-status-badges.js";
+
+export function renderAgentFilterTrigger() {
+  const label = document.getElementById("sidebar-agent-filter-label");
+  const dot = document.getElementById("sidebar-agent-filter-dot");
+  if (!label || !dot) return;
+
+  const currentFilter = state.activeFilter || "all";
+  const healthList = state.systemStatus?.agents_health || [];
+
+  if (currentFilter === "all") {
+    label.textContent = "全部";
+    const anyReady = healthList.length > 0 ? healthList.some((a) => a.ready) : true;
+    dot.className = `w-1.5 h-1.5 rounded-full shrink-0 ${anyReady ? "bg-emerald-400" : "bg-zinc-500"}`;
+  } else {
+    const meta = AGENT_META[currentFilter];
+    const shortLabel = meta?.short || meta?.label || currentFilter;
+    label.textContent = shortLabel;
+
+    const currentHealth = healthList.find((a) => a.agent_type === currentFilter);
+    const isReady = currentHealth ? currentHealth.ready : true;
+    dot.className = `w-1.5 h-1.5 rounded-full shrink-0 ${isReady ? "bg-emerald-400" : "bg-zinc-500"}`;
+  }
+}
+
+export function renderAgentFilterMenu() {
+  const menu = document.getElementById("sidebar-agent-filter-menu");
+  if (!menu) return;
+
+  const healthList = state.systemStatus?.agents_health || [];
+  const rawList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
+  const totalCount = rawList.length;
+
+  const allActive = (state.activeFilter || "all") === "all";
+  const anyReady = healthList.length > 0 ? healthList.some((a) => a.ready) : true;
+
+  const agentItems = [];
+  const handledKeys = new Set();
+
+  if (healthList.length > 0) {
+    for (const item of healthList) {
+      handledKeys.add(item.agent_type);
+      agentItems.push({
+        agent_type: item.agent_type,
+        label: item.agent_label || AGENT_META[item.agent_type]?.label || item.agent_type,
+        short: AGENT_META[item.agent_type]?.short || item.agent_label || item.agent_type,
+        ready: item.ready,
+        description: item.description || "",
+      });
+    }
+  }
+
+  for (const [key, meta] of Object.entries(AGENT_META)) {
+    if (!handledKeys.has(key)) {
+      agentItems.push({
+        agent_type: key,
+        label: meta.label || key,
+        short: meta.short || meta.label || key,
+        ready: true,
+        description: "",
+      });
+    }
+  }
+
+  let html = `
+    <button onclick="window.appActions.selectAgentFilter('all', event)"
+      type="button"
+      class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition text-left cursor-pointer ${
+        allActive ? "bg-zinc-800/80 text-white font-medium" : "text-zinc-300 hover:bg-zinc-900 hover:text-white"
+      }">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="w-1.5 h-1.5 rounded-full shrink-0 ${anyReady ? "bg-emerald-400" : "bg-zinc-500"}"></span>
+        <span class="truncate">全部 Agent</span>
+      </div>
+      <span class="text-[10px] font-mono px-1.5 py-0.5 rounded ${
+        allActive ? "bg-zinc-700 text-zinc-200" : "text-zinc-500"
+      }">${totalCount}</span>
+    </button>
+    <div class="h-px bg-zinc-800/80 my-1"></div>
+  `;
+
+  for (const a of agentItems) {
+    const isCur = state.activeFilter === a.agent_type;
+    const sessCount = rawList.filter((s) => s.agent_type === a.agent_type).length;
+    const dotCls = a.ready ? "bg-emerald-400" : "bg-zinc-600";
+    const statusText = a.ready ? "就绪" : "未挂载";
+    const statusCls = a.ready ? "text-emerald-400/80" : "text-zinc-500";
+
+    html += `
+      <button onclick="window.appActions.selectAgentFilter('${escapeJsSingleQuote(a.agent_type)}', event)"
+        type="button"
+        title="${escapeHtml(a.description || a.label)}"
+        class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition text-left cursor-pointer ${
+          isCur ? "bg-zinc-800/80 text-white font-medium" : "text-zinc-300 hover:bg-zinc-900 hover:text-white"
+        }">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}"></span>
+          <span class="truncate">${escapeHtml(a.label)}</span>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <span class="text-[10px] font-mono text-zinc-500">${sessCount}</span>
+          <span class="text-[10px] ${statusCls}">${statusText}</span>
+        </div>
+      </button>
+    `;
+  }
+
+  menu.innerHTML = html;
+}
+
+export function toggleAgentFilterMenu(ev) {
+  if (ev) ev.stopPropagation();
+  const menu = document.getElementById("sidebar-agent-filter-menu");
+  const btn = document.getElementById("sidebar-agent-filter-btn");
+  if (!menu) return;
+
+  const isHidden = menu.classList.contains("hidden");
+  if (isHidden) {
+    renderAgentFilterMenu();
+    menu.classList.remove("hidden");
+    if (btn) btn.setAttribute("aria-expanded", "true");
+  } else {
+    menu.classList.add("hidden");
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  }
+}
+
+export function closeAgentFilterMenu() {
+  const menu = document.getElementById("sidebar-agent-filter-menu");
+  const btn = document.getElementById("sidebar-agent-filter-btn");
+  if (menu && !menu.classList.contains("hidden")) {
+    menu.classList.add("hidden");
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  }
+}
 import { isSessionAttentionNeeded, isSubagentSession } from "./data.js";
 import { renderCompactSessionItem } from "./render-session-card.js";
 
 export function renderSessionList() {
+  renderAgentFilterTrigger();
   const container = document.getElementById("session-list-container");
   if (!container) return;
   const savedScrollTop = container.scrollTop;

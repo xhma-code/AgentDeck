@@ -8,7 +8,6 @@ import { escapeHtml } from "./utils.js";
 
 export function renderHeaderStatus() {
   renderSidebarStatus();
-  renderSidebarHealthStatus();
   const netBadge = document.getElementById("network-status-badge");
   const healthDot = document.getElementById("header-health-dot");
   const reconnectBanner = document.getElementById("reconnect-banner");
@@ -46,119 +45,28 @@ export function renderHeaderStatus() {
 }
 
 export function renderSidebarAwakeLock() {
+  const btn = document.getElementById("sidebar-awake-btn");
+  const icon = document.getElementById("sidebar-awake-icon");
   const dot = document.getElementById("sidebar-awake-dot");
-  const text = document.getElementById("sidebar-awake-text");
-  if (!dot || !text) return;
+  if (!btn) return;
   const active = !!state.systemStatus?.awake_lock_active;
   if (active) {
-    dot.className = "w-1.5 h-1.5 rounded-full bg-emerald-400";
-    text.textContent = "防休眠: 开";
-    text.className = "text-emerald-300 font-medium";
+    btn.title = "PC 防休眠锁已开启（点击关闭）";
+    if (icon) icon.className = "w-4 h-4 text-emerald-400 transition-colors drop-shadow-[0_0_8px_rgba(52,211,153,0.5)]";
+    if (dot) dot.classList.remove("hidden");
   } else {
-    dot.className = "w-1.5 h-1.5 rounded-full bg-zinc-600";
-    text.textContent = "防休眠: 关";
-    text.className = "text-zinc-400";
+    btn.title = "PC 防休眠锁已关闭（点击开启）";
+    if (icon) icon.className = "w-4 h-4 text-zinc-500 transition-colors";
+    if (dot) dot.classList.add("hidden");
   }
 }
 
 export function renderSidebarHealthStatus() {
-  const btn = document.getElementById("sidebar-health-btn");
-  const dot = document.getElementById("sidebar-health-dot");
-  const icon = document.getElementById("sidebar-health-icon");
-  const text = document.getElementById("sidebar-health-text");
-  if (!btn && !dot) return;
-
-  const list = state.systemStatus?.agents_health || [];
-  if (!Array.isArray(list) || list.length === 0) {
-    if (dot) dot.className = "w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0";
-    if (icon) icon.className = "w-3.5 h-3.5 shrink-0 text-zinc-400";
-    if (text) {
-      text.textContent = "体检";
-      text.className = "text-zinc-400";
-    }
-    if (btn) {
-      btn.className = "py-1 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800/80 text-zinc-400 hover:text-zinc-200 text-[11px] font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer shrink-0";
-      btn.title = "查看 4 大 Agent 运行体检状态";
-    }
-    return;
-  }
-
-  const allReady = list.length > 0 && list.every((a) => a.ready);
-  const anyReady = list.some((a) => a.ready);
-
-  if (allReady) {
-    if (dot) dot.className = "w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0";
-    if (icon) icon.className = "w-3.5 h-3.5 shrink-0 text-emerald-400";
-    if (text) {
-      text.textContent = "体检";
-      text.className = "text-emerald-300 font-medium";
-    }
-    if (btn) {
-      btn.className = "py-1 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer shrink-0";
-      btn.title = "4 大 Agent 均已就绪，运行状态正常";
-    }
-  } else if (anyReady) {
-    if (dot) dot.className = "w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0";
-    if (icon) icon.className = "w-3.5 h-3.5 shrink-0 text-amber-400";
-    if (text) {
-      text.textContent = "体检";
-      text.className = "text-amber-300 font-medium";
-    }
-    if (btn) {
-      btn.className = "py-1 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-amber-500/30 text-amber-300 text-[11px] font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer shrink-0";
-      btn.title = "部分 Agent 未挂载，点击查看体检";
-    }
-  } else {
-    if (dot) dot.className = "w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0";
-    if (icon) icon.className = "w-3.5 h-3.5 shrink-0 text-zinc-500";
-    if (text) {
-      text.textContent = "体检";
-      text.className = "text-zinc-400";
-    }
-    if (btn) {
-      btn.className = "py-1 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800/80 text-zinc-400 text-[11px] font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer shrink-0";
-      btn.title = "Agent 均未就绪，点击查看体检";
-    }
-  }
+  // 体检功能已融合至 Agent 下拉菜单，此处保留空函数以兼容调用
 }
 
-
 export function renderAgentsHealthModal() {
-  const body = document.getElementById("agents-health-modal-body");
-  if (!body) return;
-  const list = state.systemStatus?.agents_health || [];
-  if (!list.length) {
-    body.innerHTML = `
-      <div class="py-6 text-center text-zinc-500 text-xs space-y-2">
-        <div class="inline-block w-4 h-4 border-2 border-zinc-600 border-t-emerald-400 rounded-full animate-spin"></div>
-        <div>正在体检 4 大 Agent 运行就绪状态...</div>
-      </div>
-    `;
-    return;
-  }
-  body.innerHTML = list
-    .map(
-      (a) => `
-        <div class="p-2.5 rounded-xl bg-zinc-950/80 border border-zinc-800 flex items-start justify-between gap-2">
-          <div class="space-y-0.5 min-w-0">
-            <div class="text-xs font-semibold flex items-center gap-1.5 ${
-              a.ready ? "text-emerald-300" : "text-zinc-400"
-            }">
-              <span class="w-1.5 h-1.5 rounded-full ${a.ready ? "bg-emerald-400" : "bg-zinc-600"}"></span>
-              <span>${escapeHtml(a.agent_label)}</span>
-            </div>
-            <div class="text-[10px] text-zinc-500 leading-relaxed truncate" title="${escapeHtml(a.description || "")}">${escapeHtml(a.description || "")}</div>
-          </div>
-          <span class="text-[10px] px-1.5 py-0.5 rounded font-mono shrink-0 ${
-            a.ready ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-zinc-800 text-zinc-500"
-          }">
-            ${a.ready ? "就绪" : "未挂载"}
-          </span>
-        </div>
-      `
-    )
-    .join("");
+  // 体检弹窗已移除
 }
 
 export { renderCompactSessionItem, sortSessions } from "./render-session-card.js";
-import { renderCompactSessionItem, sortSessions } from "./render-session-card.js";

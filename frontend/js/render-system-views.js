@@ -77,29 +77,20 @@ export function renderQrModalContent() {
   const orderWeight = { wifi: 1, tailscale: 2, zerotier: 3 };
   const channelList = (channels || []).slice().sort((a, b) => (orderWeight[a.type] || 9) - (orderWeight[b.type] || 9));
 
-  if (!state.selectedQrNet) {
-    // 默认自适应策略：
-    // 若当前访问端是局域网物理连线（或本机环回），近场扫码优先展示 Wi-Fi 直连（即扫即连零门槛）；
-    // 仅当用户正在通过 Tailscale/ZeroTier 远程访问控制台时，才默认选对应 VPN 通道。
-    const curHost = window.location.hostname;
+  if (!state.selectedQrNet || !channelList.some((c) => c.type === state.selectedQrNet)) {
+    // 扫码连接默认优先展示中间的 Tailscale 隧道，若 Tailscale 未启用则依次回退
     const tsChannel = channelList.find((c) => c.type === "tailscale");
-    const ztChannel = channelList.find((c) => c.type === "zerotier");
     const wifiChannel = channelList.find((c) => c.type === "wifi");
+    const ztChannel = channelList.find((c) => c.type === "zerotier");
 
-    // 精确匹配当前 Origin IP，严禁使用 10. 前缀粗暴误判物理局域网！
-    const isTsHost = Boolean(tsChannel && tsChannel.ip && tsChannel.ip === curHost);
-    const isZtHost = Boolean(ztChannel && ztChannel.ip && ztChannel.ip === curHost);
-
-    if (isTsHost) {
+    if (tsChannel) {
       state.selectedQrNet = "tailscale";
-    } else if (isZtHost) {
-      state.selectedQrNet = "zerotier";
     } else if (wifiChannel) {
       state.selectedQrNet = "wifi";
-    } else if (tsChannel) {
-      state.selectedQrNet = "tailscale";
+    } else if (ztChannel) {
+      state.selectedQrNet = "zerotier";
     } else {
-      state.selectedQrNet = channelList[0]?.type || "wifi";
+      state.selectedQrNet = channelList[0]?.type || "tailscale";
     }
   }
 

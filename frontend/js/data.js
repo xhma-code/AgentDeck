@@ -73,6 +73,7 @@ import {
   renderHeaderStatus,
   renderSidebarStatus,
   renderSidebarAwakeLock,
+  renderAgentFilterTrigger,
   renderSidebarHealthStatus,
   renderQrModalContent,
   renderTokenUsage,
@@ -149,6 +150,7 @@ export async function loadSystemStatus() {
     }
     renderHeaderStatus();
     renderSidebarAwakeLock();
+    renderAgentFilterTrigger();
     renderSidebarHealthStatus();
     renderApprovalBanners();
     renderQrModalContent();

@@ -20,6 +20,10 @@ import {
   renderQrModalContent,
   startQrExpireCountdown,
   renderOtherRunningPill,
+  renderSidebarAwakeLock,
+  renderAgentFilterTrigger,
+  toggleAgentFilterMenu,
+  closeAgentFilterMenu,
 } from "./render.js";
 import { openNewSessionModal } from "./modals.js";
 import {
@@ -273,27 +277,34 @@ export function switchQrChannel(type) {
   renderQrModalContent();
 }
 
+export { toggleAgentFilterMenu, closeAgentFilterMenu };
+
+export function selectAgentFilter(filter, ev) {
+  if (ev) ev.stopPropagation();
+  setFilter(filter);
+}
+
 export async function toggleAwakeLockFromSidebar() {
   const nextState = !state.systemStatus?.awake_lock_active;
+  if (!state.systemStatus) state.systemStatus = {};
+  state.systemStatus.awake_lock_active = nextState;
+  renderSidebarAwakeLock();
+
   try {
     await apiFetch(`/api/v1/system/awake-lock?enable=${nextState}`, { method: "POST" });
     await loadSystemStatus();
     showToast(nextState ? "PC 防休眠锁已开启" : "PC 防休眠锁已关闭", "info");
   } catch (e) {
+    state.systemStatus.awake_lock_active = !nextState;
+    renderSidebarAwakeLock();
     showToast("切换防休眠失败: " + e.message, "error");
   }
 }
 
 export function setFilter(filter) {
   state.activeFilter = filter;
-  document.querySelectorAll("[data-agent-tab]").forEach((btn) => {
-    const tab = btn.getAttribute("data-agent-tab");
-    if (tab === filter) {
-      btn.className = "px-2.5 py-1.5 sm:py-1 rounded-lg bg-sky-500 text-zinc-950 font-semibold text-[11px] shrink-0 transition active:scale-95";
-    } else {
-      btn.className = "px-2.5 py-1.5 sm:py-1 rounded-lg bg-zinc-900 text-zinc-300 hover:bg-zinc-800 text-[11px] shrink-0 transition active:scale-95";
-    }
-  });
+  closeAgentFilterMenu();
+  renderAgentFilterTrigger();
   renderSessionList();
 }
 

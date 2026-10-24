@@ -222,14 +222,29 @@ async function initApp() {
         sessionMenu.classList.add("hidden");
       }
     }
+
+    const agentFilterMenu = document.getElementById("sidebar-agent-filter-menu");
+    const agentFilterBtn = document.getElementById("sidebar-agent-filter-btn");
+    if (agentFilterMenu && !agentFilterMenu.classList.contains("hidden")) {
+      if (!agentFilterMenu.contains(e.target) && !agentFilterBtn?.contains(e.target)) {
+        agentFilterMenu.classList.add("hidden");
+        if (agentFilterBtn) agentFilterBtn.setAttribute("aria-expanded", "false");
+      }
+    }
   });
 
   // 全局键盘 Escape 键支持一键关闭任何打开的模态框
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
+      const agentFilterMenu = document.getElementById("sidebar-agent-filter-menu");
+      const agentFilterBtn = document.getElementById("sidebar-agent-filter-btn");
+      if (agentFilterMenu && !agentFilterMenu.classList.contains("hidden")) {
+        agentFilterMenu.classList.add("hidden");
+        if (agentFilterBtn) agentFilterBtn.setAttribute("aria-expanded", "false");
+      }
+
       const modals = [
         "qr-modal",
-        "agents-health-modal",
         "pairing-guide-modal",
         "new-session-modal",
         "git-status-modal",

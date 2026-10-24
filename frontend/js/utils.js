@@ -158,11 +158,6 @@ export function applyButtonCheckmark(btnEl, options = {}) {
     clearTimeout(btnEl._copyResetTimer);
   } else {
     btnEl._oldCopyHtml = btnEl.innerHTML;
-    btnEl._oldWidth = btnEl.style.width;
-    const computedW = btnEl.getBoundingClientRect().width;
-    if (computedW > 0) {
-      btnEl.style.width = `${Math.ceil(computedW)}px`;
-    }
   }
 
   const existingSvg = btnEl.querySelector("svg");
@@ -192,12 +187,6 @@ export function applyButtonCheckmark(btnEl, options = {}) {
     if (btnEl._oldCopyHtml !== undefined) {
       btnEl.innerHTML = btnEl._oldCopyHtml;
       delete btnEl._oldCopyHtml;
-    }
-    if (btnEl._oldWidth !== undefined) {
-      btnEl.style.width = btnEl._oldWidth;
-      delete btnEl._oldWidth;
-    } else {
-      btnEl.style.width = "";
     }
     btnEl.classList.remove("text-emerald-300");
     delete btnEl._copyResetTimer;
