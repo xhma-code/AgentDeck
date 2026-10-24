@@ -29,6 +29,7 @@ export const state = {
   workspaces: [],
   isAppInitialized: false, // 首次冷启动标志锁（防止后台刷新篡改用户主动选中的会话）
   expandedProjects: {}, // projectKey -> boolean
+  projectSessionLimits: {}, // projectKey -> number (当前展开可见上限，默认 8)
   collapsedSections: (() => {
     try {
       return JSON.parse(localStorage.getItem("agentdeck_sections_collapsed") || "{}");
@@ -47,6 +48,7 @@ export const state = {
   autoScrollLocked: false,
   expandedTurns: {}, // turnKey -> boolean
   turnThinkingExpanded: {}, // turnKey -> boolean（用户主动展开思考时在运行中保持展开）
+  turnFilterEdits: {}, // turnKey -> boolean（为 true 时仅显示产生改动的步骤）
   expandedDetails: {}, // detailId -> boolean（保留已展开的思考/输出详情状态）
   lazyDetailsStore: {}, // detailId -> { type, raw, diff }
   turnsMap: {}, // turnKey -> turn object（供局部切换展开时不重绘整页）
@@ -107,6 +109,17 @@ export function markSessionViewed(unifiedId) {
   state.sessionLastViewedTimes[unifiedId] = Date.now();
   state.unreadCompletedSessionIds.delete(unifiedId);
   saveLastViewedTimes();
+
+  // 跨端同步：静默上报服务端已读状态，实时广播给其他客户端（如电脑查看后手机消红）
+  try {
+    if (typeof fetch === "function") {
+      const token = localStorage.getItem("agentdeck_auth_token") || "";
+      fetch(`/api/v1/sessions/${encodeURIComponent(unifiedId)}/viewed`, {
+        method: "POST",
+        headers: token ? { "Authorization": `Bearer ${token}` } : {},
+      }).catch(() => {});
+    }
+  } catch (_) {}
 }
 
 export function markSessionCompletedUnread(unifiedId) {
@@ -132,10 +145,17 @@ export function syncUnreadSessions(sessionList) {
     if (isSessionStatusActive(s) || s.status === "waiting_approval") {
       continue;
     }
-    const lastViewed = state.sessionLastViewedTimes[s.unified_id] || 0;
+    const localViewed = state.sessionLastViewedTimes[s.unified_id] || 0;
+    const remoteViewed = s.last_viewed_at ? new Date(s.last_viewed_at).getTime() : 0;
+    const lastViewed = Math.max(localViewed, isNaN(remoteViewed) ? 0 : remoteViewed);
     const updatedAt = s.updated_at ? new Date(s.updated_at).getTime() : 0;
-    if (updatedAt > 0 && lastViewed > 0 && updatedAt > lastViewed && (now - updatedAt < 24 * 3600 * 1000)) {
+
+    if (lastViewed > 0 && updatedAt > 0 && lastViewed >= updatedAt) {
+      state.unreadCompletedSessionIds.delete(s.unified_id);
+    } else if (updatedAt > 0 && (lastViewed === 0 || updatedAt > lastViewed) && (now - updatedAt < 24 * 3600 * 1000)) {
       state.unreadCompletedSessionIds.add(s.unified_id);
+    } else {
+      state.unreadCompletedSessionIds.delete(s.unified_id);
     }
   }
 }

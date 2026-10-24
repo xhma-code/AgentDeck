@@ -4,6 +4,7 @@
 
 import {
   AGENT_META,
+  DEFAULT_PROJECT_SESSION_LIMIT,
 } from "./config.js";
 import {
   state,
@@ -291,7 +292,23 @@ export function renderSessionList() {
                   : projects
                       .map((proj) => {
                         const isOpen = !!state.expandedProjects[proj.key] || !!q;
-                        const visibleConvs = proj.sessions.slice(0, 8);
+                        const defaultLimit = DEFAULT_PROJECT_SESSION_LIMIT;
+                        let limit = state.projectSessionLimits?.[proj.key] || defaultLimit;
+
+                        // 若当前选中的会话排在第 8 个之后，自动扩充当前 limit 保证选中项始终可见
+                        if (isOpen && state.selectedSessionId) {
+                          const selectedIdx = proj.sessions.findIndex((s) => s.unified_id === state.selectedSessionId);
+                          if (selectedIdx >= limit) {
+                            limit = Math.ceil((selectedIdx + 1) / defaultLimit) * defaultLimit;
+                            if (!state.projectSessionLimits) state.projectSessionLimits = {};
+                            state.projectSessionLimits[proj.key] = limit;
+                          }
+                        }
+
+                        const visibleConvs = proj.sessions.slice(0, limit);
+                        const hasMore = proj.sessions.length > limit;
+                        const canCollapse = limit > defaultLimit && proj.sessions.length > defaultLimit;
+                        const remainingCount = Math.max(0, proj.sessions.length - limit);
                         return `
                           <div class="group/proj rounded-lg bg-zinc-900/35 border border-zinc-900">
                             <div onclick="window.appActions.toggleProject('${escapeHtml(proj.key)}')"
@@ -325,6 +342,35 @@ export function renderSessionList() {
                                         : visibleConvs
                                             .map((c) => renderCompactSessionItem(c, false))
                                             .join("")
+                                    }
+                                    ${
+                                      (hasMore || canCollapse)
+                                        ? `<div class="pt-1.5 pb-0.5 flex items-center justify-between gap-1 text-[11px] text-zinc-500 px-1">
+                                            ${
+                                              hasMore
+                                                ? `<button onclick="window.appActions.expandProjectSessions('${escapeJsSingleQuote(
+                                                    proj.key
+                                                  )}', ${defaultLimit}, event)"
+                                                    class="hover:text-sky-400 text-zinc-400 transition-colors inline-flex items-center gap-1 active:scale-95 py-1 px-1.5 rounded hover:bg-zinc-800/60 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+                                                    title="再展开 ${defaultLimit} 个会话">
+                                                    <span>展开更多</span>
+                                                    <span class="text-[10px] text-zinc-500 font-mono font-normal">(剩余 ${remainingCount})</span>
+                                                  </button>`
+                                                : `<span></span>`
+                                            }
+                                            ${
+                                              canCollapse
+                                                ? `<button onclick="window.appActions.collapseProjectSessions('${escapeJsSingleQuote(
+                                                    proj.key
+                                                  )}', event)"
+                                                    class="hover:text-zinc-200 text-zinc-500 transition-colors active:scale-95 py-1 px-1.5 ml-auto rounded hover:bg-zinc-800/60 cursor-pointer focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+                                                    title="收起至初始 ${defaultLimit} 个会话">
+                                                    收起
+                                                  </button>`
+                                                : ""
+                                            }
+                                          </div>`
+                                        : ""
                                     }
                                   </div>`
                                 : ""
