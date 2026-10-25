@@ -46,6 +46,7 @@ import {
   isSessionStatusActive,
   isSessionWorking,
   getProjectInfo,
+  getAggregatedProjects,
   getPendingAttentionSessions,
   getAllAttentionSessions,
   getSessionPriorityWeight,
@@ -153,6 +154,30 @@ export function renderAgentFilterTrigger() {
     const anyReady = healthList.length > 0 ? healthList.some((a) => a.ready) : true;
     const targetClass = `w-1.5 h-1.5 rounded-full shrink-0 ${anyReady ? "bg-emerald-400" : "bg-zinc-500"}`;
     if (dot.className !== targetClass) dot.className = targetClass;
+  } else if (
+    currentFilter === "antigravity" ||
+    currentFilter === "agy" ||
+    currentFilter === "agy_ide" ||
+    currentFilter === "agy_cli" ||
+    currentFilter.startsWith("agy")
+  ) {
+    if (label.textContent !== "AGY") label.textContent = "AGY";
+    const agyHealth = healthList.filter((a) => a.agent_type?.startsWith("agy") || a.agent_type === "antigravity");
+    const isReady = agyHealth.length > 0 ? agyHealth.some((a) => a.ready) : true;
+    const targetClass = `w-1.5 h-1.5 rounded-full shrink-0 ${isReady ? "bg-emerald-400" : "bg-zinc-500"}`;
+    if (dot.className !== targetClass) dot.className = targetClass;
+  } else if (currentFilter === "claude_code" || currentFilter === "claude" || currentFilter === "cc") {
+    if (label.textContent !== "CC") label.textContent = "CC";
+    const ccHealth = healthList.find((a) => a.agent_type === "claude_code" || a.agent_type === "claude");
+    const isReady = ccHealth ? ccHealth.ready : true;
+    const targetClass = `w-1.5 h-1.5 rounded-full shrink-0 ${isReady ? "bg-emerald-400" : "bg-zinc-500"}`;
+    if (dot.className !== targetClass) dot.className = targetClass;
+  } else if (currentFilter === "opencode" || currentFilter === "oc") {
+    if (label.textContent !== "OC") label.textContent = "OC";
+    const ocHealth = healthList.find((a) => a.agent_type === "opencode");
+    const isReady = ocHealth ? ocHealth.ready : true;
+    const targetClass = `w-1.5 h-1.5 rounded-full shrink-0 ${isReady ? "bg-emerald-400" : "bg-zinc-500"}`;
+    if (dot.className !== targetClass) dot.className = targetClass;
   } else {
     const meta = AGENT_META[currentFilter];
     const shortLabel = meta?.short || meta?.label || currentFilter;
@@ -173,33 +198,75 @@ export function renderAgentFilterMenu() {
   const rawList = state.allSessions && state.allSessions.length > 0 ? state.allSessions : state.sessions || [];
   const totalCount = rawList.length;
 
-  const allActive = (state.activeFilter || "all") === "all";
+  const currentFilter = state.activeFilter || "all";
+  const allActive = currentFilter === "all";
   const anyReady = healthList.length > 0 ? healthList.some((a) => a.ready) : true;
 
-  const agentItems = [];
-  const handledKeys = new Set();
+  // 1. Antigravity (AGY)：合并 agy_ide、agy_cli、antigravity，消除冗余选项
+  const agyHealth = healthList.filter((a) => a.agent_type?.startsWith("agy") || a.agent_type === "antigravity");
+  const agyReady = agyHealth.length > 0 ? agyHealth.some((a) => a.ready) : true;
+  const agyCount = rawList.filter((s) => s.agent_type?.startsWith("agy") || s.agent_type === "antigravity").length;
+  const isAgyActive =
+    currentFilter === "antigravity" ||
+    currentFilter === "agy" ||
+    currentFilter === "agy_ide" ||
+    currentFilter === "agy_cli" ||
+    currentFilter.startsWith("agy");
 
-  if (healthList.length > 0) {
-    for (const item of healthList) {
-      handledKeys.add(item.agent_type);
+  // 2. Claude Code (CC)
+  const ccHealth = healthList.find((a) => a.agent_type === "claude_code" || a.agent_type === "claude");
+  const ccReady = ccHealth ? ccHealth.ready : true;
+  const ccCount = rawList.filter((s) => s.agent_type === "claude_code" || s.agent_type === "claude").length;
+  const isCcActive = currentFilter === "claude_code" || currentFilter === "claude" || currentFilter === "cc";
+
+  // 3. OpenCode (OC)
+  const ocHealth = healthList.find((a) => a.agent_type === "opencode");
+  const ocReady = ocHealth ? ocHealth.ready : true;
+  const ocCount = rawList.filter((s) => s.agent_type === "opencode").length;
+  const isOcActive = currentFilter === "opencode" || currentFilter === "oc";
+
+  const agentItems = [
+    {
+      filterKey: "antigravity",
+      label: "Antigravity",
+      short: "AGY",
+      count: agyCount,
+      ready: agyReady,
+      isActive: isAgyActive,
+      description: "Google Antigravity Agent (AGY)",
+    },
+    {
+      filterKey: "claude_code",
+      label: "Claude Code",
+      short: "CC",
+      count: ccCount,
+      ready: ccReady,
+      isActive: isCcActive,
+      description: "Anthropic Claude Code (CC)",
+    },
+    {
+      filterKey: "opencode",
+      label: "OpenCode",
+      short: "OC",
+      count: ocCount,
+      ready: ocReady,
+      isActive: isOcActive,
+      description: "OpenCode Agent (OC)",
+    },
+  ];
+
+  // 兜底支持未来第三方可能动态接入的其他 Agent
+  const knownKeys = new Set(["agy_ide", "agy_cli", "antigravity", "claude_code", "claude", "opencode"]);
+  for (const item of healthList) {
+    if (!knownKeys.has(item.agent_type)) {
       agentItems.push({
-        agent_type: item.agent_type,
-        label: item.agent_label || AGENT_META[item.agent_type]?.label || item.agent_type,
-        short: AGENT_META[item.agent_type]?.short || item.agent_label || item.agent_type,
+        filterKey: item.agent_type,
+        label: item.agent_label || item.agent_type,
+        short: item.agent_type.toUpperCase().slice(0, 3),
+        count: rawList.filter((s) => s.agent_type === item.agent_type).length,
         ready: item.ready,
+        isActive: currentFilter === item.agent_type,
         description: item.description || "",
-      });
-    }
-  }
-
-  for (const [key, meta] of Object.entries(AGENT_META)) {
-    if (!handledKeys.has(key)) {
-      agentItems.push({
-        agent_type: key,
-        label: meta.label || key,
-        short: meta.short || meta.label || key,
-        ready: true,
-        description: "",
       });
     }
   }
@@ -222,25 +289,24 @@ export function renderAgentFilterMenu() {
   `;
 
   for (const a of agentItems) {
-    const isCur = state.activeFilter === a.agent_type;
-    const sessCount = rawList.filter((s) => s.agent_type === a.agent_type).length;
     const dotCls = a.ready ? "bg-emerald-400" : "bg-zinc-600";
     const statusText = a.ready ? "就绪" : "未挂载";
     const statusCls = a.ready ? "text-emerald-400/80" : "text-zinc-500";
 
     html += `
-      <button onclick="window.appActions.selectAgentFilter('${escapeJsSingleQuote(a.agent_type)}', event)"
+      <button onclick="window.appActions.selectAgentFilter('${escapeJsSingleQuote(a.filterKey)}', event)"
         type="button"
         title="${escapeHtml(a.description || a.label)}"
         class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition text-left cursor-pointer ${
-          isCur ? "bg-zinc-800/80 text-white font-medium" : "text-zinc-300 hover:bg-zinc-900 hover:text-white"
+          a.isActive ? "bg-zinc-800/80 text-white font-medium" : "text-zinc-300 hover:bg-zinc-900 hover:text-white"
         }">
         <div class="flex items-center gap-2 min-w-0">
           <span class="w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}"></span>
           <span class="whitespace-nowrap font-medium text-zinc-200">${escapeHtml(a.label)}</span>
+          <span class="text-[10px] font-mono text-zinc-400">(${escapeHtml(a.short)})</span>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
-          <span class="text-[10px] font-mono text-zinc-500">${sessCount}</span>
+          <span class="text-[10px] font-mono text-zinc-500">${a.count}</span>
           <span class="text-[10px] ${statusCls}">${statusText}</span>
         </div>
       </button>
@@ -306,8 +372,24 @@ export function renderSessionList() {
   const sourceList = sortSessions(mergedRawList);
   const matchMap = new Map();
   const filtered = sourceList.filter((s) => {
-    if (state.activeFilter !== "all" && s.agent_type !== state.activeFilter) {
-      return false;
+    if (state.activeFilter && state.activeFilter !== "all") {
+      if (
+        state.activeFilter === "antigravity" ||
+        state.activeFilter === "agy" ||
+        state.activeFilter === "agy_ide" ||
+        state.activeFilter === "agy_cli" ||
+        state.activeFilter.startsWith("agy")
+      ) {
+        const isAgy = s.agent_type === "antigravity" || (typeof s.agent_type === "string" && s.agent_type.startsWith("agy"));
+        if (!isAgy) return false;
+      } else if (state.activeFilter === "claude_code" || state.activeFilter === "claude" || state.activeFilter === "cc") {
+        const isClaude = s.agent_type === "claude_code" || s.agent_type === "claude";
+        if (!isClaude) return false;
+      } else if (state.activeFilter === "opencode" || state.activeFilter === "oc") {
+        if (s.agent_type !== "opencode") return false;
+      } else if (s.agent_type !== state.activeFilter) {
+        return false;
+      }
     }
     if (!q) return true;
 
@@ -363,37 +445,9 @@ export function renderSessionList() {
   const manualPinnedList = filtered.filter((s) => s.is_pinned && !activeIds.has(s.unified_id) && !isSubagentSession(s));
   const totalTopCount = activeUnreadList.length + manualPinnedList.length;
 
-  // 2. 按真正工程项目 (is_project === true) 聚合
-  const projectMap = new Map();
-  for (const ws of state.workspaces) {
-    const info = getProjectInfo(ws.workspace_path);
-    if (info.key && !projectMap.has(info.key)) {
-      projectMap.set(info.key, {
-        key: info.key,
-        name: ws.workspace_name || info.name,
-        path: info.path,
-        sessions: [],
-      });
-    }
-  }
-  for (const s of filtered) {
-    if (!s.is_project || isSubagentSession(s)) continue;
-    const info = getProjectInfo(s.project_path);
-    if (!info.key) continue;
-    if (!projectMap.has(info.key)) {
-      projectMap.set(info.key, {
-        key: info.key,
-        name: s.project_name || info.name,
-        path: info.path,
-        sessions: [],
-      });
-    }
-    projectMap.get(info.key).sessions.push(s);
-  }
-
-  const projects = Array.from(projectMap.values()).filter(
-    (p) => p.sessions.length > 0 || !q
-  );
+  // 2. 按真正工程项目去重聚合，并优先按活跃度降序展示（运行中 > 最新更新 > 会话数）
+  const allProjects = getAggregatedProjects(filtered, state.workspaces);
+  const projects = allProjects.filter((p) => p.sessions.length > 0 || !q);
 
   // 首次加载优先自动展开包含运行中会话或当前选中会话的项目
   if (!state.didInitExpand && projects.length > 0) {
@@ -629,3 +683,5 @@ export function renderSessionList() {
 }
 
 export { renderOtherRunningPill } from "./render-session-card.js";
+
+export { renderSessionList as renderSidebar };

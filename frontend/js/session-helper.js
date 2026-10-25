@@ -29,8 +29,9 @@ export const SESSION_PRIORITY = Object.freeze({
 export function getSessionPriorityWeight(s) {
   if (!s) return SESSION_PRIORITY.DEFAULT;
   const st = String(s.status || "").toLowerCase();
-  if (st === "error") return SESSION_PRIORITY.ERROR;
   if (st === "waiting_approval") return SESSION_PRIORITY.WAITING_APPROVAL;
+  // 错误会话仅在未查看时动态提升至「置顶与活动」；用户点击查看或全部已读后，平滑归位回普通工程或列表
+  if (st === "error" && isSessionCompletedUnread(s)) return SESSION_PRIORITY.ERROR;
   if (isSessionCompletedUnread(s)) return SESSION_PRIORITY.COMPLETED_UNREAD;
   if (
     st === "running" ||
@@ -113,7 +114,10 @@ export function pickDefaultSession(sessionList) {
 }
 
 export function getProjectInfo(rawPath) {
-  let clean = String(rawPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  let clean = String(rawPath || "")
+    .replace(/\\/g, "/")
+    .replace(/\/{2,}/g, "/")
+    .replace(/\/+$/, "");
   if (!clean) {
     return { key: "", name: "未分类", path: "" };
   }
@@ -226,11 +230,12 @@ export function getModelContextLimit(modelId) {
 
 export function getAgentDisplayName(agentType) {
   const nameMap = {
-    claude_code: "Claude",
+    claude_code: "CC",
+    claude: "CC",
     agy_ide: "AGY",
     agy_cli: "AGY",
     antigravity: "AGY",
-    opencode: "OpenCode",
+    opencode: "OC",
   };
   if (nameMap[agentType]) return nameMap[agentType];
   if (typeof agentType === "string" && (agentType.startsWith("agy") || agentType.includes("antigravity"))) {

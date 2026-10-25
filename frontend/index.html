@@ -538,6 +538,7 @@
   </div>
 
   <div id="new-session-modal" role="dialog" aria-modal="true" aria-labelledby="new-session-modal-title"
+    onclick="window.appActions.handleNewSessionModalClick(event)"
     class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
     <div class="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-4 shadow-2xl space-y-2.5">
       <div class="flex items-center justify-between pb-2 border-b border-zinc-800">
@@ -548,32 +549,62 @@
       </div>
 
       <div class="grid grid-cols-2 gap-2">
-        <div>
+        <!-- Agent 选择器 -->
+        <div class="relative">
           <label class="block text-[11px] text-zinc-400 mb-1">Agent</label>
-          <select id="new-session-agent" onchange="window.appActions.onNewSessionAgentChange(this.value)"
-            class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100">
-            <option value="agy_cli">Antigravity (AGY)</option>
-            <option value="claude_code">Claude Code</option>
-            <option value="opencode">OpenCode</option>
-          </select>
+          <input type="hidden" id="new-session-agent" value="agy_cli" />
+          <button type="button" id="new-session-agent-btn" onclick="window.appActions.toggleNewSessionAgentDropdown(event)"
+            class="w-full h-8 px-2.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-100 flex items-center justify-between cursor-pointer transition select-none">
+            <div class="flex items-center gap-1.5 min-w-0 flex-1 pr-1">
+              <span id="new-session-agent-dot" class="w-1.5 h-1.5 rounded-full bg-purple-400 shrink-0"></span>
+              <span id="new-session-agent-label" class="truncate font-medium text-zinc-100 text-xs">Antigravity (AGY)</span>
+            </div>
+            <svg id="new-session-agent-arrow" class="w-3.5 h-3.5 text-zinc-400 shrink-0 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div id="new-session-agent-dropdown"
+            class="hidden absolute left-0 right-0 top-full mt-1 z-30 rounded-xl bg-zinc-950/95 backdrop-blur-md border border-zinc-800 shadow-2xl p-1 max-h-52 overflow-y-auto space-y-0.5">
+          </div>
         </div>
-        <div>
+
+        <!-- 权限模式选择器 -->
+        <div class="relative">
           <label class="block text-[11px] text-zinc-400 mb-1">权限模式</label>
-          <select id="new-session-mode" class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100">
-            <option value="auto">⚡ 全自动 (Auto)</option>
-            <option value="accept_edits">✏️ 自动改 (Edit)</option>
-            <option value="plan">📋 规划 (Plan)</option>
-            <option value="ask">🛡️ 审批 (Ask)</option>
-          </select>
+          <input type="hidden" id="new-session-mode" value="auto" />
+          <button type="button" id="new-session-mode-btn" onclick="window.appActions.toggleNewSessionModeDropdown(event)"
+            class="w-full h-8 px-2.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-100 flex items-center justify-between cursor-pointer transition select-none">
+            <div class="flex items-center gap-1.5 min-w-0 flex-1 pr-1">
+              <span id="new-session-mode-label" class="truncate font-medium text-zinc-100 text-xs">⚡ 全自动</span>
+            </div>
+            <svg id="new-session-mode-arrow" class="w-3.5 h-3.5 text-zinc-400 shrink-0 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div id="new-session-mode-dropdown"
+            class="hidden absolute left-0 right-0 top-full mt-1 z-30 rounded-xl bg-zinc-950/95 backdrop-blur-md border border-zinc-800 shadow-2xl p-1 max-h-52 overflow-y-auto space-y-0.5">
+          </div>
         </div>
       </div>
 
-      <div>
+      <!-- 模型选择（移动端适配单行防溢出） -->
+      <div class="relative">
         <label class="block text-[11px] text-zinc-400 mb-1">模型</label>
-        <select id="new-session-model" class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100"></select>
+        <input type="hidden" id="new-session-model" value="" />
+        <button type="button" id="new-session-model-btn" onclick="window.appActions.toggleNewSessionModelDropdown(event)"
+          class="w-full h-8 px-2.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-100 flex items-center justify-between cursor-pointer transition select-none">
+          <div class="flex items-center gap-1.5 min-w-0 flex-1 pr-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0"></span>
+            <span id="new-session-model-label" class="truncate font-medium text-zinc-100 text-xs">请选择模型</span>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <span id="new-session-model-badge" class="hidden text-[10px] px-1 py-0.2 rounded font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30"></span>
+            <svg id="new-session-model-arrow" class="w-3.5 h-3.5 text-zinc-400 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </div>
+        </button>
+        <div id="new-session-model-dropdown"
+          class="hidden absolute left-0 right-0 top-full mt-1 z-30 rounded-xl bg-zinc-950/95 backdrop-blur-md border border-zinc-800 shadow-2xl p-1 max-h-52 overflow-y-auto space-y-0.5">
+        </div>
       </div>
 
-      <div>
+      <!-- 项目目录选择（双行排版，优先活跃项目，长路径单行省略不换行） -->
+      <div class="relative">
         <div class="flex items-center justify-between mb-1">
           <label class="block text-[11px] text-zinc-400">项目目录</label>
           <button type="button" id="toggle-custom-path-btn" onclick="window.appActions.toggleCustomPathInput()"
@@ -581,7 +612,21 @@
             + 输入其它路径
           </button>
         </div>
-        <select id="new-session-workspace" class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100"></select>
+        <input type="hidden" id="new-session-workspace" value="" />
+        <button type="button" id="new-session-workspace-btn" onclick="window.appActions.toggleNewSessionWorkspaceDropdown(event)"
+          class="w-full h-10 px-2.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-100 flex items-center justify-between cursor-pointer transition select-none">
+          <div class="flex items-center gap-2 min-w-0 flex-1 pr-1 text-left">
+            <span class="text-xs shrink-0">📂</span>
+            <div class="flex flex-col min-w-0 flex-1">
+              <span id="new-session-workspace-name" class="font-medium text-xs text-zinc-100 truncate">请选择项目</span>
+              <span id="new-session-workspace-sub" class="text-[10px] text-zinc-500 font-mono truncate"></span>
+            </div>
+          </div>
+          <svg id="new-session-workspace-arrow" class="w-3.5 h-3.5 text-zinc-400 shrink-0 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div id="new-session-workspace-dropdown"
+          class="hidden absolute left-0 right-0 top-full mt-1 z-30 rounded-xl bg-zinc-950/95 backdrop-blur-md border border-zinc-800 shadow-2xl p-1 max-h-56 overflow-y-auto space-y-0.5">
+        </div>
       </div>
 
       <div id="new-session-custom-path-container" class="hidden">
@@ -712,6 +757,6 @@
       });
     }
   </script>
-  <script type="module" src="/static/app.js?v=20261024_sidebar_noflicker_v1"></script>
+  <script type="module" src="/static/app.js?v=20261025_agent_abbr_v1"></script>
 </body>
 </html>

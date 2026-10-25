@@ -86,9 +86,9 @@ export const AGENT_META = {
     badgeClass: "bg-purple-500/15 text-purple-300 border-purple-500/30",
   },
   agy_cli: {
-    label: "Antigravity CLI",
+    label: "Antigravity",
     short: "AGY",
-    badgeClass: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+    badgeClass: "bg-purple-500/15 text-purple-300 border-purple-500/30",
   },
   antigravity: {
     label: "Antigravity",
@@ -97,7 +97,12 @@ export const AGENT_META = {
   },
   claude_code: {
     label: "Claude Code",
-    short: "Claude",
+    short: "CC",
+    badgeClass: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  },
+  claude: {
+    label: "Claude Code",
+    short: "CC",
     badgeClass: "bg-amber-500/15 text-amber-300 border-amber-500/30",
   },
   opencode: {

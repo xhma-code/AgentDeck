@@ -33,12 +33,20 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
   const isWorking = typeof isSessionWorking === "function" ? isSessionWorking(s.unified_id) : false;
   let statusDotHtml = null;
   if (s.status === "error") {
-    statusDotHtml = `
-      <span class="relative flex h-2 w-2" title="会话中断 / 额度耗尽" aria-label="异常中断">
-        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-        <span class="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
-      </span>
-    `;
+    if (isUnread) {
+      statusDotHtml = `
+        <span class="relative flex h-2 w-2" title="会话中断 / 额度耗尽（未查看）" aria-label="未读异常中断">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+        </span>
+      `;
+    } else {
+      statusDotHtml = `
+        <span class="relative flex h-1.5 w-1.5" title="上次执行中断 / 额度耗尽" aria-label="已查看中断">
+          <span class="w-1.5 h-1.5 rounded-full bg-rose-500/70"></span>
+        </span>
+      `;
+    }
   } else if (s.status === "waiting_approval") {
     statusDotHtml = `
       <span class="relative flex h-2 w-2" title="等待审批" aria-label="等待审批">
@@ -77,20 +85,19 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
   }
 
   // 前缀微标呈现规则：
-  // 1. 若为工程项目会话且处于置顶等显示区域：开头只显示项目名称微标，不显示 agent 类型，节省手机窄屏单行宽度；
-  // 2. 临时会话：保持不变，显示 agent 类型微标；
-  // 3. 项目内部展开会话：因外层已有项目大标题，内部仅显示 agent 类型微标。
+  // 1. 每个会话开头均始终显示 agent 的缩写（AGY、OC、CC）；
+  // 2. 若在置顶/最近等跨项目混合视图中，且属于工程项目，在 agent 缩写后追加显示所属项目微标；
+  // 3. 项目文件夹内部展开的会话已归属于大标题下，仅保留开头的 agent 缩写。
   const projectName = s.project_name || (s.project_path ? getProjectInfo(s.project_path)?.name : "");
   const isProjectSession = Boolean(s.is_project && projectName && projectName !== "未分类");
   const showProjectBadge = showProjectTag && isProjectSession;
 
-  const leadingBadgeHtml = showProjectBadge
-    ? `<span class="px-1.5 py-0.5 text-[9px] font-mono font-medium text-sky-300 bg-sky-950/40 rounded border border-sky-500/30 shrink-0 max-w-[84px] truncate" title="${escapeHtml(
+  const agentBadgeHtml = `<span class="px-1 py-0.5 text-[9px] font-mono font-semibold rounded border shrink-0 ${meta.badgeClass}" title="${escapeHtml(meta.label || meta.short)}">${meta.short}</span>`;
+  const projectBadgeHtml = showProjectBadge
+    ? `<span class="px-1 py-0.5 text-[9px] font-mono font-medium text-sky-300 bg-sky-950/40 rounded border border-sky-500/30 shrink-0 max-w-[72px] truncate" title="${escapeHtml(
         projectName
       )}">${escapeHtml(projectName)}</span>`
-    : `<span class="px-1 py-0.5 text-[9px] font-semibold rounded border shrink-0 ${meta.badgeClass}">
-        ${meta.short}
-      </span>`;
+    : "";
 
   return `
     <div data-session-item="${escapeHtml(s.unified_id)}"
@@ -108,7 +115,8 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
       }">
       <div class="flex flex-col min-w-0 flex-1 justify-center">
         <div class="flex items-center gap-1.5 min-w-0">
-          ${leadingBadgeHtml}
+          ${agentBadgeHtml}
+          ${projectBadgeHtml}
           <span class="text-xs truncate font-medium ${isUnread ? "text-sky-200" : ""}">${
             q ? highlightText(cleanFriendlyTitle(s.title), q) : escapeHtml(cleanFriendlyTitle(s.title))
           }</span>
@@ -195,7 +203,7 @@ export function renderOtherRunningPill() {
       pill.classList.remove("hidden");
       pill.classList.add("md:flex");
 
-      const otherError = pendingAttentionList.filter((s) => s.status === "error").length;
+      const otherError = pendingAttentionList.filter((s) => s.status === "error" && isSessionCompletedUnread(s)).length;
       const otherApproval = pendingAttentionList.filter((s) => s.status === "waiting_approval").length;
       const otherUnread = pendingAttentionList.filter((s) => isSessionCompletedUnread(s)).length;
       const otherRunning = pendingAttentionList.filter(
