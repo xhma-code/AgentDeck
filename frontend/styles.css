@@ -185,6 +185,18 @@ body {
   background: rgba(255, 255, 255, 0.2);
 }
 
+/* 工作中浮层：仅在有内容时预留最小高度并限制重排，减少流式输出时的画面抖动；空状态时不占高 */
+#live-stream-overlay-slot:not(:empty) {
+  min-height: 56px;
+  contain: layout style paint;
+}
+
+.live-working-card {
+  contain: layout style paint;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
 /* 左侧菜单栏极简隐形细滚动条：默认完全透明，悬停时仅浮现 4px 低对比暗色细线 */
 .subtle-scrollbar,
 #session-list-container {

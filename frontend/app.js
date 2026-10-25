@@ -133,7 +133,7 @@ async function initApp() {
         workingPollCounter = 0;
       }
     }
-  }, 1000);
+  }, 500);
 
   const searchInput = document.getElementById("session-search-input");
   if (searchInput) {

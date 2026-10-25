@@ -215,7 +215,10 @@ export function _doRenderLiveStreamOverlay() {
   const liveText = state.streamingBuffer[state.selectedSessionId];
 
   if (!isWorking && !liveText) {
-    if (slot.innerHTML !== "") slot.innerHTML = "";
+    if (slot.innerHTML !== "") {
+      slot.innerHTML = "";
+      delete slot.dataset.liveId;
+    }
     return;
   }
 
@@ -223,8 +226,14 @@ export function _doRenderLiveStreamOverlay() {
   const startMs = state.pendingTurnThinking ? state.pendingTurnThinking[state.selectedSessionId] : null;
   let elapsedStr = "";
   if (startMs) {
-    const elapsedSec = Math.max(1, Math.round((Date.now() - startMs) / 1000));
-    elapsedStr = elapsedSec < 60 ? `${elapsedSec}s` : `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`;
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+    if (elapsedSec < 60) {
+      elapsedStr = `${elapsedSec}s`;
+    } else {
+      const m = Math.floor(elapsedSec / 60);
+      const s = elapsedSec % 60;
+      elapsedStr = `${m}m ${s}s`;
+    }
   }
 
   const streamHtml = liveText
@@ -234,17 +243,47 @@ export function _doRenderLiveStreamOverlay() {
       )}</div>`
     : "";
 
+  // 已存在浮层时仅更新耗时，避免整段重排导致移动端抖动
+  if (slot.dataset.liveId === state.selectedSessionId && slot.querySelector(".live-working-card")) {
+    const elapsedEl = slot.querySelector(".live-working-elapsed");
+    if (elapsedEl) {
+      if (elapsedStr) {
+        elapsedEl.textContent = elapsedStr;
+        elapsedEl.classList.remove("hidden");
+      } else {
+        elapsedEl.classList.add("hidden");
+      }
+    }
+    const streamWrap = slot.querySelector(".live-working-stream");
+    if (streamWrap) {
+      if (streamHtml) {
+        streamWrap.innerHTML = streamHtml;
+        streamWrap.classList.remove("hidden");
+      } else {
+        streamWrap.innerHTML = "";
+        streamWrap.classList.add("hidden");
+      }
+    }
+    if (!state.autoScrollLocked) {
+      scrollToBottom();
+    }
+    updateCollapseStepsPillVisibility();
+    return;
+  }
+
+  slot.dataset.liveId = state.selectedSessionId;
   slot.innerHTML = `
-    <div class="mb-4 rounded-xl bg-zinc-900/60 border border-zinc-800/80 px-3 py-2 text-xs text-zinc-300 shadow-sm transition-all">
+    <div class="live-working-card mb-4 rounded-xl bg-zinc-900/60 border border-zinc-800/80 px-3 py-2 text-xs text-zinc-300 shadow-sm">
       <div class="flex items-center gap-2 font-mono text-[11px] text-sky-400">
         <span class="relative flex h-2 w-2">
           <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
           <span class="relative inline-flex rounded-full h-2 w-2 bg-sky-400"></span>
         </span>
         <span class="tracking-wider font-semibold">Working...</span>
-        ${elapsedStr ? `<span class="text-zinc-600 font-normal">·</span><span class="text-sky-300/80 font-normal font-mono text-[11px]">${elapsedStr}</span>` : ""}
+        <span class="text-zinc-600 font-normal">·</span>
+        <span class="live-working-elapsed text-sky-300/80 font-normal font-mono text-[11px] ${elapsedStr ? "" : "hidden"}">${elapsedStr || ""}</span>
       </div>
-      ${streamHtml}
+      <div class="live-working-stream ${streamHtml ? "" : "hidden"}">${streamHtml || ""}</div>
     </div>
   `;
 
