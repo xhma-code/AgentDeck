@@ -104,23 +104,21 @@ export function renderSidebarStatus() {
     }
   }
 
-  // 无更新时：保持原逻辑，根据连接状态展示（重连中 / 离线），正常在线时隐藏
+  // 无更新时：根据连接状态仅在桌面端展示（重连中 / 离线），手机端已统一在左侧菜单栏右上角展示；正常在线时隐藏
   if (headerIndicator) {
     if (state.wsConnected) {
-      headerIndicator.classList.add("hidden");
+      headerIndicator.className = "hidden";
     } else if (state.wsReconnecting) {
-      headerIndicator.classList.remove("hidden");
       headerIndicator.className =
-        "h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center gap-1.5 text-xs transition active:scale-95 cursor-pointer";
+        "hidden md:flex h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 items-center gap-1.5 text-xs transition active:scale-95 cursor-pointer";
       headerIndicator.title = "正在重新连接服务... 点击尝试重新载入";
       headerIndicator.innerHTML = `
         <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
         <span class="text-[11px]">重连中</span>
       `;
     } else {
-      headerIndicator.classList.remove("hidden");
       headerIndicator.className =
-        "h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-400 flex items-center gap-1.5 text-xs transition active:scale-95 cursor-pointer";
+        "hidden md:flex h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-400 items-center gap-1.5 text-xs transition active:scale-95 cursor-pointer";
       headerIndicator.title = "已离线，点击重新载入";
       headerIndicator.innerHTML = `
         <span class="w-1.5 h-1.5 rounded-full bg-zinc-500"></span>
@@ -411,6 +409,21 @@ export function renderSessionList() {
   });
 
   if (filtered.length === 0) {
+    if (state.serverOffline && (!state.allSessions || state.allSessions.length === 0)) {
+      container.innerHTML = `
+        <div class="p-6 text-center text-zinc-500 text-xs select-none">
+          <div class="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center text-amber-400 mx-auto mb-2.5">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+          </div>
+          <p class="mb-2 font-medium text-zinc-300">服务端离线</p>
+          <button onclick="window.appActions.retryServerConnection()"
+            class="px-3 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 text-xs transition active:scale-95 cursor-pointer">
+            重试连接
+          </button>
+        </div>
+      `;
+      return;
+    }
     if (!state.isAppInitialized && (!state.allSessions || state.allSessions.length === 0)) {
       renderSidebarSkeleton();
       return;

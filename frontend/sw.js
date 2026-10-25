@@ -1,5 +1,5 @@
 // AgentDeck PWA Service Worker — 离线 App Shell 缓存与跨网络自愈支持
-const CACHE_NAME = "agentdeck-shell-20261024_sidebar_noflicker_v1";
+const CACHE_NAME = "agentdeck-shell-20261025_bulletproof_sw_reload_v3";
 
 const APP_SHELL = [
   "/",
@@ -19,6 +19,18 @@ self.addEventListener("install", (event) => {
       return cache.addAll(APP_SHELL).catch(() => {});
     }).then(() => self.skipWaiting())
   );
+});
+
+// 监听主线程直接指令：强制跳过等待与即刻清空缓存
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.action === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
+  if (event.data && event.data.action === "CLEAR_CACHE") {
+    caches.keys().then((keys) => {
+      return Promise.all(keys.map((k) => caches.delete(k)));
+    });
+  }
 });
 
 // 激活时清理旧缓存并立即接管

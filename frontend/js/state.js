@@ -34,6 +34,8 @@ export const state = {
   activeBaseUrl: "", // 动态信道热切换基地址（支持 In-App 无刷新平滑漫游）
   wsConnected: false,
   wsReconnecting: false,
+  serverOffline: false,
+  isRetryingConnection: false,
   lastSeqId: 0,
   systemStatus: null,
   modelsByAgent: DEFAULT_MODELS_BY_AGENT,
@@ -95,6 +97,11 @@ export const state = {
   currentGitStatus: null,
   gitDiffCache: {},
   gitExpandedDiffs: {},
+  gitFilesFilter: "all",
+  currentSessionFiles: null,
+  sessionFilesFilter: "all",
+  sessionFilesExpandedDiffs: {},
+  sessionFilesDiffCache: {},
   currentTokenUsage: null,
   fullOutputStore: {}, // `${unifiedId}_${stepIndex}` -> full string
   persistedQuestionDecisions: (() => {

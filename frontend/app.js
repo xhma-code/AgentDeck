@@ -7,9 +7,12 @@ import { checkAndExchangePairCode, apiFetch } from "./js/api.js";
 import {
   connectWebSocket,
   triggerAutoRoaming,
+  probeChannelHealth,
+  retryServerConnection,
   lastPongReceived,
   wsInstance,
 } from "./js/network.js";
+import { updateFooterVisibility } from "./js/render-messages.js";
 import {
   loadSystemStatus,
   loadWorkspaces,
@@ -43,6 +46,16 @@ import "./js/actions.js";
 
 // --- 初始化入口 ---
 async function initApp() {
+  // 清理一次性更新穿透参数，保持主屏幕独立 URL 洁净
+  try {
+    const currentUrl = new URL(window.location.href);
+    if (currentUrl.searchParams.has("_reload") || currentUrl.searchParams.has("_v")) {
+      currentUrl.searchParams.delete("_reload");
+      currentUrl.searchParams.delete("_v");
+      window.history.replaceState({}, "", currentUrl.toString());
+    }
+  } catch (_) {}
+
   // 读取服务端注入的前端基准版本指纹
   const metaBuild = document.querySelector('meta[name="agentdeck-build"]')?.content;
   if (metaBuild) state.frontendBuild = metaBuild;
@@ -83,17 +96,29 @@ async function initApp() {
   connectWebSocket();
   checkFrontendVersion();
 
+  // 若启动后未能连接到 WebSocket 且未能获取任何会话或系统状态，判定为服务端不可达
+  if (!state.wsConnected && !state.systemStatus && (!state.sessions || state.sessions.length === 0)) {
+    console.warn("[AgentDeck] 冷启动检测到服务端未能建立连通，激活离线诊断视图");
+    state.serverOffline = true;
+  }
+
   // 确保冷启动即使未选择任何会话或首次加载无数据，也能脱离 HTML 初始的静态骨架态
-  if (!state.selectedSessionId) {
+  if (!state.selectedSessionId || state.serverOffline) {
     renderCurrentSessionHeader();
     renderSessionList();
     renderMessagesList();
+    updateFooterVisibility();
   }
 
   // 手机锁屏唤醒或切回主屏幕应用时立即检测一次版本与通道连通性
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       checkFrontendVersion();
+      if (state.serverOffline) {
+        console.info("[AgentDeck] 移动端切回前台发现处于离线态，立即探测连通性...");
+        retryServerConnection();
+        return;
+      }
       const isStale = Date.now() - lastPongReceived > 20000;
       if (!state.wsConnected || isStale || !wsInstance || wsInstance.readyState !== WebSocket.OPEN) {
         console.info("[AgentDeck] 移动端切回前台发现连接断开或心跳逾期，立即加速重连与漫游...");
@@ -102,6 +127,18 @@ async function initApp() {
       }
     }
   });
+
+  // 离线状态智能后台自愈探测（每 5 秒检测一次，电脑端开机/服务启动后无感自动唤醒）
+  setInterval(async () => {
+    if (state.serverOffline && !state.isRetryingConnection && !document.hidden) {
+      const originToCheck = state.activeBaseUrl || window.location.origin;
+      const alive = await probeChannelHealth(originToCheck, 2000);
+      if (alive) {
+        console.info("[AgentDeck] 后台探活发现服务端已恢复在线，执行自动自愈...");
+        retryServerConnection();
+      }
+    }
+  }, 5000);
 
   // 手机网络环境变更监听（Wi-Fi 断开/连接、蜂窝网切换等）
   window.addEventListener("online", () => {

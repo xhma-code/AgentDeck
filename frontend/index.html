@@ -228,9 +228,9 @@
             </div>
           </div>
 
-          <!-- 右侧：Git变更徽标、更新、状态、会话菜单与扫码按钮（Git与...互换位置，手机端Git仅展示紧凑数字徽标） -->
+          <!-- 右侧：Git指示、会话菜单、更新、状态与扫码按钮（Git放在...前面，手机端Git仅展示紧凑数字徽标） -->
           <div class="flex items-center gap-1 shrink-0">
-            <!-- 1. git：工作区 Git 变更指示胶囊（桌面端：图标+Git+数字，手机端：仅展示紧凑数字徽标，排在最左侧） -->
+            <!-- 1. git：工作区/会话 Git 变更指示胶囊（提取到最前面，桌面端：图标+Git+数字，手机端：仅展示紧凑数字徽标） -->
             <button id="git-status-btn" onclick="window.appActions.openGitStatusModal()"
               class="hidden h-8 px-1.5 sm:px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1 active:scale-95 transition cursor-pointer"
               title="查看工作区 Git 状态与变更">
@@ -239,25 +239,7 @@
               <span id="git-changed-badge" class="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-zinc-800 text-zinc-400 border border-zinc-700">0</span>
             </button>
 
-            <!-- 2. 更新：包含更新态（有新代码时显示）与连接状态（重连/离线） -->
-            <button id="header-status-indicator" onclick="window.appActions.handleStatusBtnClick()"
-              class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg text-xs transition active:scale-95 cursor-pointer"
-              title="系统连接与更新状态">
-            </button>
-
-            <!-- 3. 状态：运行中/待审批/完成未看快捷跳板（原 1待查看 1运行中 状态胶囊） -->
-            <button id="other-running-pill" onclick="window.appActions.jumpToRunningSession()"
-              class="hidden md:flex h-8 px-2 rounded-lg border text-xs items-center gap-1 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
-              title="点击快速跳转到活跃或待查看的会话" aria-label="后台活跃与待查看会话快捷切换">
-              <span id="other-running-dot" class="w-1.5 h-1.5 rounded-full shrink-0"></span>
-              <span id="other-running-text" class="text-[11px] font-medium hidden sm:inline"></span>
-              <span id="other-running-count" class="text-[11px] font-mono font-bold sm:hidden"></span>
-            </button>
-
-            <!-- 离线排队命令徽标 -->
-            <span id="offline-queue-badge" class="hidden px-2 py-0.5 rounded-full text-[10px] font-mono font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse">离线排队 (0)</span>
-
-            <!-- 4. 3个点：当前会话操作三点菜单（原位置与 Git 互换，排在后面） -->
+            <!-- 2. 3个点：当前会话操作三点菜单（排在 Git 后面） -->
             <div class="relative">
               <button id="session-options-menu-btn" onclick="window.appActions.toggleSessionMenu(event)"
                 class="w-8 h-8 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-zinc-100 flex items-center justify-center shrink-0 active:scale-95 transition"
@@ -276,11 +258,6 @@
                   <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
                   <span>重命名</span>
                 </button>
-                <button onclick="window.appActions.openGitStatusModal()"
-                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
-                  <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"></path><path d="M12 12v3"></path></svg>
-                  <span>Git 变更</span>
-                </button>
                 <div class="h-px bg-zinc-800/80 my-0.5"></div>
                 <button onclick="window.appActions.deleteCurrentSession()"
                   class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition text-left min-h-[32px]">
@@ -289,6 +266,24 @@
                 </button>
               </div>
             </div>
+
+            <!-- 3. 更新：包含更新态（有新代码时显示）与连接状态（重连/离线） -->
+            <button id="header-status-indicator" onclick="window.appActions.handleStatusBtnClick()"
+              class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg text-xs transition active:scale-95 cursor-pointer"
+              title="系统连接与更新状态">
+            </button>
+
+            <!-- 4. 状态：运行中/待审批/完成未看快捷跳板（原 1待查看 1运行中 状态胶囊） -->
+            <button id="other-running-pill" onclick="window.appActions.jumpToRunningSession()"
+              class="hidden md:flex h-8 px-2 rounded-lg border text-xs items-center gap-1 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+              title="点击快速跳转到活跃或待查看的会话" aria-label="后台活跃与待查看会话快捷切换">
+              <span id="other-running-dot" class="w-1.5 h-1.5 rounded-full shrink-0"></span>
+              <span id="other-running-text" class="text-[11px] font-medium hidden sm:inline"></span>
+              <span id="other-running-count" class="text-[11px] font-mono font-bold sm:hidden"></span>
+            </button>
+
+            <!-- 离线排队命令徽标 -->
+            <span id="offline-queue-badge" class="hidden px-2 py-0.5 rounded-full text-[10px] font-mono font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse">离线排队 (0)</span>
 
             <!-- 5. 扫码：扫码连接按钮 -->
             <button onclick="window.appActions.openQrModal()"
@@ -368,7 +363,7 @@
       <div id="bottom-approval-bar" class="hidden shrink-0 z-20"></div>
 
       <!-- 底部控制舱（模型选择 + 模式选择 + 新对话 + 输入框） -->
-      <footer class="border-t border-white/[0.06] bg-black/95 px-2 sm:px-3 py-1.5 safe-bottom shrink-0">
+      <footer id="chat-footer" class="border-t border-white/[0.06] bg-black/95 px-2 sm:px-3 py-1.5 safe-bottom shrink-0">
         <div class="max-w-5xl mx-auto w-full relative">
           <!-- 斜杠指令与全部 Skills 浮动菜单（在大框正上方弹出） -->
           <div id="slash-popover" class="hidden mb-2 rounded-xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-1 max-h-72 sm:max-h-80 overflow-y-auto subtle-scrollbar"></div>
@@ -764,6 +759,6 @@
       });
     }
   </script>
-  <script type="module" src="/static/app.js?v=20261025_fix_export_v3"></script>
+  <script type="module" src="/static/app.js?v=20261025_git_sync_v7"></script>
 </body>
 </html>

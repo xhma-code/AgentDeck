@@ -123,7 +123,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
         async def get_response(self, path: str, scope):
             response = await super().get_response(path, scope)
             if path.endswith((".js", ".css", ".html", ".json")):
-                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                 response.headers["Pragma"] = "no-cache"
             return response
 

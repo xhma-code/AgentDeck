@@ -160,7 +160,7 @@ export async function loadSystemStatus() {
     renderQrModalContent();
     renderCurrentSessionHeader();
     updateGitStatusBadge();
-    renderAgentsHealthModal();
+      renderAgentsHealthModal();
   } catch (e) {
     console.error("获取系统状态失败:", e);
   }
@@ -361,31 +361,72 @@ export async function checkFrontendVersion() {
   } catch (_) {}
 }
 
-export async function handleStatusBtnClick() {
-  if (state.hasUpdate) {
-    showToast("检测到前端改动，正在载入最新代码...", "info");
+export async function applyAppUpdate() {
+  showToast("正在载入最新代码，请稍候...", "info");
+
+  try {
+    // 1. 通知当前已激活与等待中的 Service Worker 立即跳过等待并清理
+    if ("serviceWorker" in navigator) {
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          if (reg.waiting) {
+            reg.waiting.postMessage({ action: "SKIP_WAITING" });
+          }
+          if (reg.active) {
+            reg.active.postMessage({ action: "CLEAR_CACHE" });
+          }
+          // 彻底注销旧 Service Worker，消除刷新瞬间的异步拦截竞态
+          await reg.unregister().catch(() => {});
+        }
+      } catch (swErr) {
+        console.warn("[AgentDeck] 清理 Service Worker 异常:", swErr);
+      }
+    }
+
+    // 2. 彻底清空所有本地 Cache Storage 存储桶
     if ("caches" in window) {
       try {
         const keys = await caches.keys();
         await Promise.all(keys.map((k) => caches.delete(k)));
-      } catch (_) {}
+      } catch (cacheErr) {
+        console.warn("[AgentDeck] 清理 Cache Storage 异常:", cacheErr);
+      }
     }
+
+    // 3. 同步基准版本指纹
     if (state.remoteBuild) {
       state.frontendBuild = state.remoteBuild;
     }
     state.hasUpdate = false;
-    setTimeout(() => {
+  } catch (err) {
+    console.error("[AgentDeck] 准备前端更新失败:", err);
+  }
+
+  // 4. 携带防缓存唯一时间戳参数重载，迫使手机端 WebView / Safari 彻底击穿磁盘与内存缓存
+  setTimeout(() => {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("_reload", Date.now().toString());
+      if (state.remoteBuild) {
+        url.searchParams.set("_v", state.remoteBuild);
+      }
+      window.location.replace(url.toString());
+    } catch (_) {
       window.location.reload(true);
-    }, 150);
+    }
+  }, 200);
+}
+
+export async function handleStatusBtnClick() {
+  if (state.hasUpdate) {
+    await applyAppUpdate();
     return;
   }
 
   const now = Date.now();
   if (now - (state.lastStatusClickTime || 0) < 2000) {
-    showToast("正在强制重新载入...", "info");
-    setTimeout(() => {
-      window.location.reload(true);
-    }, 100);
+    await applyAppUpdate();
     return;
   }
   state.lastStatusClickTime = now;

@@ -59,9 +59,95 @@ import { isSessionWorking } from "./data.js";
 import { renderLiveStreamOverlay } from "./render-views.js";
 import { formatRelativeTime, getBasename, getDurationStrFromDates, formatDuration } from "./utils.js";
 
+export function updateFooterVisibility() {
+  const footer = document.getElementById("chat-footer");
+  if (!footer) return;
+  if (state.serverOffline && (!state.messages || state.messages.length === 0)) {
+    footer.classList.add("hidden");
+  } else {
+    footer.classList.remove("hidden");
+  }
+}
+
+function renderServerOfflineView() {
+  const isRetrying = state.isRetryingConnection;
+  return `
+    <div class="h-full flex flex-col items-center justify-center p-4 sm:p-6 text-center text-zinc-400 max-w-md mx-auto my-auto select-none animate-fade-in">
+      <div class="relative w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center text-amber-400 mb-3.5 shadow-[0_0_24px_rgba(245,158,11,0.12)]">
+        <svg class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+          <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+          <line x1="6" y1="6" x2="6.01" y2="6"></line>
+          <line x1="6" y1="18" x2="6.01" y2="18"></line>
+          <line x1="13" y1="6" x2="18" y2="6"></line>
+        </svg>
+        <span class="absolute -top-1 -right-1 flex h-3 w-3">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+        </span>
+      </div>
+
+      <div class="text-base font-bold text-zinc-100 mb-1.5 tracking-tight">未连接到 AgentDeck 服务端</div>
+      <p class="text-xs text-zinc-400 max-w-xs mb-5 leading-relaxed">
+        无法与电脑端后台建立连接，请确认服务已启动或检查网络环境
+      </p>
+
+      <div class="w-full p-3.5 rounded-2xl bg-zinc-950/70 border border-zinc-800/80 text-[11px] text-zinc-400 text-left space-y-2.5 mb-5 shadow-sm">
+        <div class="text-[10px] font-semibold text-zinc-500 tracking-wider uppercase">排查建议 / Troubleshooting</div>
+        <div class="flex items-start gap-2.5">
+          <span class="text-xs shrink-0 mt-0.5">🖥️</span>
+          <span class="leading-relaxed"><strong class="text-zinc-200">电脑端服务：</strong>确认宿主机已启动 AgentDeck（终端运行 <code class="text-sky-400 font-mono text-[10px] bg-zinc-900 px-1 py-0.5 rounded">agy deck</code>）</span>
+        </div>
+        <div class="flex items-start gap-2.5">
+          <span class="text-xs shrink-0 mt-0.5">🌐</span>
+          <span class="leading-relaxed"><strong class="text-zinc-200">网络与通道：</strong>确认手机与电脑在同一 Wi-Fi，或 Tailscale / ZeroTier 正常连通</span>
+        </div>
+        <div class="flex items-start gap-2.5">
+          <span class="text-xs shrink-0 mt-0.5">⚡</span>
+          <span class="leading-relaxed"><strong class="text-zinc-200">电脑休眠：</strong>宿主机处于锁屏睡眠时，后台网络连接可能被挂起</span>
+        </div>
+      </div>
+
+      <div class="w-full flex flex-col gap-2.5">
+        <button onclick="window.appActions.retryServerConnection()"
+          ${isRetrying ? "disabled" : ""}
+          class="w-full py-2.5 px-4 rounded-xl font-bold text-xs transition active:scale-95 shadow flex items-center justify-center gap-2 ${
+            isRetrying
+              ? "bg-sky-500/50 text-zinc-950 cursor-wait"
+              : "bg-sky-500 hover:bg-sky-400 text-zinc-950 cursor-pointer"
+          }">
+          ${
+            isRetrying
+              ? `<svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10"></path></svg><span>正在连接服务端...</span>`
+              : `<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg><span>立即重试连接</span>`
+          }
+        </button>
+
+        <button onclick="window.appActions.showPairingGuideModal()"
+          class="w-full py-2 px-3 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white text-xs transition active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer">
+          <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+          <span>重新配对 / 更换连接通道</span>
+        </button>
+      </div>
+
+      <div class="mt-4 flex items-center gap-1.5 text-[11px] text-zinc-500">
+        <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400/80 animate-ping"></span>
+        <span>后台每 5 秒自动检测连通性，服务恢复时将自动载入</span>
+      </div>
+    </div>
+  `;
+}
+
 export function renderMessagesList() {
   const container = document.getElementById("messages-container");
   if (!container) return;
+
+  if (state.serverOffline && (!state.messages || state.messages.length === 0)) {
+    updateFooterVisibility();
+    container.innerHTML = renderServerOfflineView();
+    return;
+  }
+  updateFooterVisibility();
 
   if (state.loadingMessages) {
     container.innerHTML = `

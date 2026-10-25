@@ -62,9 +62,25 @@ export function renderCurrentSessionHeader() {
   const headerLogo = document.getElementById("header-logo-icon");
 
   const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+  const sessionMenuBtn = document.getElementById("session-options-menu-btn");
+  if (sessionMenuBtn) {
+    if (state.serverOffline && (!state.sessions || state.sessions.length === 0)) {
+      sessionMenuBtn.classList.add("opacity-40", "pointer-events-none");
+    } else {
+      sessionMenuBtn.classList.remove("opacity-40", "pointer-events-none");
+    }
+  }
+
   if (!sess) {
     if (titleEl) {
-      if (!state.isAppInitialized && (!state.sessions || state.sessions.length === 0)) {
+      if (state.serverOffline && (!state.sessions || state.sessions.length === 0)) {
+        titleEl.innerHTML = `
+          <div class="flex items-center gap-1.5 min-w-0">
+            <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0"></span>
+            <span class="text-xs sm:text-sm font-medium text-amber-300 truncate">未连接到服务端</span>
+          </div>
+        `;
+      } else if (!state.isAppInitialized && (!state.sessions || state.sessions.length === 0)) {
         titleEl.innerHTML = `
           <div class="flex items-center gap-2 animate-pulse py-1">
             <div class="w-2 h-2 rounded-full bg-zinc-700"></div>

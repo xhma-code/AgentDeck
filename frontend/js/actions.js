@@ -3,7 +3,8 @@
  */
 
 import { state } from "./state.js";
-import { apiFetch, showToast } from "./api.js";
+import { apiFetch, showToast, showPairingGuideModal } from "./api.js";
+import { retryServerConnection } from "./network.js";
 import {
   loadSessions,
   loadSessionMessages,
@@ -186,6 +187,8 @@ window.appActions = {
   setQuestionWriteIn,
 
   // 弹窗动作
+  showPairingGuideModal,
+  retryServerConnection,
   closePairingGuideModal,
   submitPairCodeManual,
   closeQrModal,

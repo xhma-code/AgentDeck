@@ -138,3 +138,52 @@ export async function triggerAutoRoaming(triggerSource = "network", onHotSwapSuc
     isRoamingCheckBusy = false;
   }
 }
+
+export async function retryServerConnection() {
+  if (state.isRetryingConnection) return;
+  state.isRetryingConnection = true;
+
+  const { renderMessagesList, updateFooterVisibility } = await import("./render-messages.js");
+  const { renderCurrentSessionHeader, renderHeaderStatus } = await import("./render.js");
+  const { loadWorkspaces, loadSessions, loadSystemStatus } = await import("./data.js");
+  const { connectWebSocket } = await import("./network.js");
+  const { showToast } = await import("./api.js");
+
+  renderMessagesList();
+  renderCurrentSessionHeader();
+
+  try {
+    const currentOrigin = window.location.origin;
+    let alive = await probeChannelHealth(currentOrigin, 2500);
+
+    if (!alive) {
+      await triggerAutoRoaming("manual_retry");
+      const activeUrl = state.activeBaseUrl || currentOrigin;
+      alive = await probeChannelHealth(activeUrl, 2500);
+    }
+
+    if (alive) {
+      await Promise.all([
+        loadSystemStatus(),
+        loadWorkspaces(),
+        loadSessions(true),
+      ]);
+      connectWebSocket();
+      state.serverOffline = false;
+      showToast("服务端连接成功", "success");
+    } else {
+      state.serverOffline = true;
+      showToast("服务端仍不可达，请检查电脑端服务与网络", "error");
+    }
+  } catch (err) {
+    console.warn("[AgentDeck] 手动重连服务端异常:", err);
+    state.serverOffline = true;
+    showToast("连接失败，请检查网络", "error");
+  } finally {
+    state.isRetryingConnection = false;
+    renderCurrentSessionHeader();
+    renderMessagesList();
+    renderHeaderStatus();
+    updateFooterVisibility();
+  }
+}

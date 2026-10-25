@@ -41,9 +41,10 @@ import {
   hideRoamingBanner,
   probeChannelHealth,
   triggerAutoRoaming as rawTriggerAutoRoaming,
+  retryServerConnection,
 } from "./network-roaming.js";
 
-export { showRoamingBanner, hideRoamingBanner, probeChannelHealth };
+export { showRoamingBanner, hideRoamingBanner, probeChannelHealth, retryServerConnection };
 
 export function triggerAutoRoaming(triggerSource = "network") {
   return rawTriggerAutoRoaming(triggerSource, () => {
@@ -122,7 +123,14 @@ export function connectWebSocket() {
     const wasReconnecting = state.wsReconnecting;
     state.wsConnected = true;
     state.wsReconnecting = false;
+    state.serverOffline = false;
     renderHeaderStatus();
+    import("./render-messages.js").then((m) => {
+      m.updateFooterVisibility();
+      if (!state.selectedSessionId || state.messages.length === 0) {
+        m.renderMessagesList();
+      }
+    }).catch(() => {});
     window._agentDeckActiveWs = wsInstance;
     flushPendingCommands(wsInstance);
     if (wasReconnecting) {
