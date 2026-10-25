@@ -54,16 +54,92 @@ export function renderModeOptionsForAgent(selectEl, agentType, selectedMode = "a
   const isSupported = list.some((m) => m.value === selectedMode);
   const activeMode = isSupported ? selectedMode : (list[0]?.value || "auto");
 
-  selectEl.innerHTML = list
-    .map((m) => {
-      const text = isShort ? m.label : m.fullLabel;
-      const sel = m.value === activeMode ? "selected" : "";
-      return `<option value="${escapeHtml(m.value)}" ${sel}>${escapeHtml(text)}</option>`;
-    })
-    .join("");
-
-  selectEl.value = activeMode;
+  if (selectEl.tagName === "SELECT") {
+    selectEl.innerHTML = list
+      .map((m) => {
+        const text = isShort ? m.label : m.fullLabel;
+        const sel = m.value === activeMode ? "selected" : "";
+        return `<option value="${escapeHtml(m.value)}" ${sel}>${escapeHtml(text)}</option>`;
+      })
+      .join("");
+    selectEl.value = activeMode;
+  } else {
+    selectEl.value = activeMode;
+  }
+  renderModePicker();
   return activeMode;
+}
+
+export function renderModePicker() {
+  const btn = document.getElementById("mode-picker-btn");
+  const iconEl = document.getElementById("mode-picker-icon");
+  const labelEl = document.getElementById("mode-picker-label");
+  const popover = document.getElementById("mode-picker-popover");
+  const hiddenInput = document.getElementById("execution-mode-select");
+  if (!btn || !labelEl) return;
+
+  const sess =
+    state.sessions.find((s) => s.unified_id === state.selectedSessionId) ||
+    state.allSessions.find((s) => s.unified_id === state.selectedSessionId);
+  const agentType = sess?.agent_type || "agy_cli";
+
+  const normalizedType =
+    agentType === "claude"
+      ? "claude_code"
+      : agentType === "antigravity" || agentType === "agy_ide"
+      ? "agy_cli"
+      : agentType || "agy_cli";
+  const modes = MODES_BY_AGENT[normalizedType] || MODES_BY_AGENT.agy_cli;
+
+  const activeMode = sess?.execution_mode || (hiddenInput?.value ? hiddenInput.value : "auto");
+  const curMode = modes.find((m) => m.value === activeMode) || modes[0];
+
+  if (hiddenInput) hiddenInput.value = curMode.value;
+
+  const parts = curMode.label.trim().split(/\s+/);
+  if (parts.length > 1) {
+    if (iconEl) iconEl.textContent = parts[0];
+    if (labelEl) labelEl.textContent = parts.slice(1).join(" ");
+  } else {
+    if (iconEl) iconEl.textContent = "🛡️";
+    if (labelEl) labelEl.textContent = curMode.label;
+  }
+
+  if (!popover) return;
+
+  popover.innerHTML = `
+    <div class="px-3 py-2 text-[10px] text-zinc-400 font-semibold uppercase tracking-wider border-b border-zinc-800 flex items-center justify-between sticky top-0 z-10 select-none" style="background-color: #09090b !important;">
+      <span class="flex items-center gap-1.5 font-medium text-zinc-200">
+        <span class="text-amber-400">🛡️</span>
+        <span>权限模式 (${modes.length})</span>
+      </span>
+    </div>
+    <div class="p-1 space-y-0.5" style="background-color: #09090b !important;">
+      ${modes
+        .map((m) => {
+          const isSelected = m.value === curMode.value;
+          return `
+            <div onclick="window.appActions.selectMode('${escapeJsSingleQuote(m.value)}', event)"
+              class="w-full flex items-center justify-between px-2.5 py-2 text-xs rounded-lg cursor-pointer transition select-none ${
+                isSelected
+                  ? "bg-zinc-800 border border-zinc-700/80 text-white font-medium"
+                  : "hover:bg-zinc-900 border border-transparent text-zinc-300"
+              }">
+              <div class="flex items-center gap-2 min-w-0 flex-1 pr-2">
+                <div class="w-1.5 h-1.5 rounded-full shrink-0 ${
+                  isSelected ? "bg-amber-400 ring-2 ring-amber-400/40" : "bg-zinc-700"
+                }"></div>
+                <span class="truncate font-medium text-zinc-100 ${isSelected ? "text-white font-semibold" : ""}">${escapeHtml(m.fullLabel || m.label)}</span>
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                ${isSelected ? `<span class="text-sky-400 text-xs font-bold shrink-0">✓</span>` : ""}
+              </div>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
 }
 
 export function renderModelPicker() {

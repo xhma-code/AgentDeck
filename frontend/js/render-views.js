@@ -26,11 +26,13 @@ export {
   renderModelOptionsForAgent,
   renderModeOptionsForAgent,
   renderModelPicker,
+  renderModePicker,
 } from "./render-model-picker.js";
 import {
   renderModelOptionsForAgent,
   renderModeOptionsForAgent,
   renderModelPicker,
+  renderModePicker,
 } from "./render-model-picker.js";
 
 export function updatePromptInputPlaceholder(sess) {
@@ -77,6 +79,7 @@ export function renderCurrentSessionHeader() {
     if (headerLogo) headerLogo.classList.remove("has-session-hidden-mobile");
     updatePromptInputPlaceholder(null);
     renderModelPicker();
+    renderModePicker();
     updatePromptActionBtnState();
     return;
   }
@@ -146,6 +149,7 @@ export function renderCurrentSessionHeader() {
     }
   }
   renderModelPicker();
+  renderModePicker();
   updatePromptActionBtnState();
   renderOtherRunningPill();
 }

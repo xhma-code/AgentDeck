@@ -93,6 +93,8 @@ import {
   selectSlashCommand,
   toggleModelPicker,
   selectModel,
+  toggleModePicker,
+  selectMode,
   handlePromptInput,
 } from "./actions-chat.js";
 import {
@@ -124,8 +126,10 @@ import {
   closeAgentsHealthModal,
   refreshAgentsHealth,
   openGitStatusModal,
+  setGitFilesFilter,
   toggleGitFileDiff,
   viewFullGitDiff,
+  updateGitStatusBadge,
 } from "./actions-modals.js";
 
 export {
@@ -173,6 +177,8 @@ window.appActions = {
   selectSlashCommand,
   toggleModelPicker,
   selectModel,
+  toggleModePicker,
+  selectMode,
 
   // 审批与问答
   toggleDenyFeedback,
@@ -195,8 +201,10 @@ window.appActions = {
   closeAgentsHealthModal,
   refreshAgentsHealth,
   openGitStatusModal,
+  setGitFilesFilter,
   toggleGitFileDiff,
   viewFullGitDiff,
+  updateGitStatusBadge,
 
   // 问答动作
   toggleQuestionOption,

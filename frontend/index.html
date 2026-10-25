@@ -228,36 +228,16 @@
             </div>
           </div>
 
-          <!-- 右侧：会话菜单、更新、状态、Git与扫码按钮（顺序：3个点 更新 状态 git 扫码） -->
+          <!-- 右侧：Git变更徽标、更新、状态、会话菜单与扫码按钮（Git与...互换位置，手机端Git仅展示紧凑数字徽标） -->
           <div class="flex items-center gap-1 shrink-0">
-            <!-- 1. 3个点：当前会话操作三点菜单 -->
-            <div class="relative">
-              <button id="session-options-menu-btn" onclick="window.appActions.toggleSessionMenu(event)"
-                class="w-8 h-8 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-zinc-100 flex items-center justify-center shrink-0 active:scale-95 transition"
-                title="会话管理" aria-label="会话管理">
-                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
-              </button>
-              <div id="session-action-menu"
-                class="hidden absolute right-0 top-11 w-28 rounded-xl bg-zinc-950 border border-zinc-800 shadow-2xl p-1 z-50 space-y-0.5 whitespace-nowrap select-none">
-                <button onclick="window.appActions.toggleCurrentPin()"
-                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
-                  <span id="session-menu-pin-icon" class="text-xs">★</span>
-                  <span id="session-menu-pin-text">置顶</span>
-                </button>
-                <button onclick="window.appActions.renameCurrentSession()"
-                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
-                  <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
-                  <span>重命名</span>
-                </button>
-                <div class="h-px bg-zinc-800/80 my-0.5"></div>
-                <button onclick="window.appActions.deleteCurrentSession()"
-                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition text-left min-h-[32px]">
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                  <span>删除</span>
-                </button>
-              </div>
-            </div>
-
+            <!-- 1. git：工作区 Git 变更指示胶囊（桌面端：图标+Git+数字，手机端：仅展示紧凑数字徽标，排在最左侧） -->
+            <button id="git-status-btn" onclick="window.appActions.openGitStatusModal()"
+              class="hidden h-8 px-1.5 sm:px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1 active:scale-95 transition cursor-pointer"
+              title="查看工作区 Git 状态与变更">
+              <svg class="w-3.5 h-3.5 text-zinc-400 hidden sm:inline-block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"></path><path d="M12 12v3"></path></svg>
+              <span class="font-mono text-[11px] text-zinc-300 hidden sm:inline">Git</span>
+              <span id="git-changed-badge" class="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-zinc-800 text-zinc-400 border border-zinc-700">0</span>
+            </button>
 
             <!-- 2. 更新：包含更新态（有新代码时显示）与连接状态（重连/离线） -->
             <button id="header-status-indicator" onclick="window.appActions.handleStatusBtnClick()"
@@ -277,14 +257,38 @@
             <!-- 离线排队命令徽标 -->
             <span id="offline-queue-badge" class="hidden px-2 py-0.5 rounded-full text-[10px] font-mono font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse">离线排队 (0)</span>
 
-            <!-- 4. git：工作区 Git 变更指示胶囊 -->
-            <button id="git-status-btn" onclick="window.appActions.openGitStatusModal()"
-              class="hidden h-8 px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1 active:scale-95 transition"
-              title="查看工作区 Git 状态与变更">
-              <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"></path><path d="M12 12v3"></path></svg>
-              <span class="font-mono text-[11px] text-zinc-300 hidden sm:inline">Git</span>
-              <span id="git-changed-badge" class="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-zinc-800 text-zinc-400 border border-zinc-700">0</span>
-            </button>
+            <!-- 4. 3个点：当前会话操作三点菜单（原位置与 Git 互换，排在后面） -->
+            <div class="relative">
+              <button id="session-options-menu-btn" onclick="window.appActions.toggleSessionMenu(event)"
+                class="w-8 h-8 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-zinc-100 flex items-center justify-center shrink-0 active:scale-95 transition"
+                title="会话管理" aria-label="会话管理">
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
+              </button>
+              <div id="session-action-menu"
+                class="hidden absolute right-0 top-11 w-28 rounded-xl bg-zinc-950 border border-zinc-800 shadow-2xl p-1 z-50 space-y-0.5 whitespace-nowrap select-none">
+                <button onclick="window.appActions.toggleCurrentPin()"
+                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
+                  <span id="session-menu-pin-icon" class="text-xs">★</span>
+                  <span id="session-menu-pin-text">置顶</span>
+                </button>
+                <button onclick="window.appActions.renameCurrentSession()"
+                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
+                  <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
+                  <span>重命名</span>
+                </button>
+                <button onclick="window.appActions.openGitStatusModal()"
+                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-zinc-200 hover:bg-zinc-900 transition text-left min-h-[32px]">
+                  <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"></path><path d="M12 12v3"></path></svg>
+                  <span>Git 变更</span>
+                </button>
+                <div class="h-px bg-zinc-800/80 my-0.5"></div>
+                <button onclick="window.appActions.deleteCurrentSession()"
+                  class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition text-left min-h-[32px]">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                  <span>删除</span>
+                </button>
+              </div>
+            </div>
 
             <!-- 5. 扫码：扫码连接按钮 -->
             <button onclick="window.appActions.openQrModal()"
@@ -403,16 +407,19 @@
                   <div id="model-picker-popover" class="hidden fixed rounded-xl border border-zinc-700 p-1 z-[60] max-h-80 overflow-y-auto subtle-scrollbar bg-zinc-950 shadow-2xl"></div>
                 </div>
 
-                <!-- 执行策略选择器 -->
-                <div class="flex items-center bg-zinc-950/70 hover:bg-zinc-800/80 border border-zinc-800/70 hover:border-zinc-700/80 rounded-lg px-1.5 sm:px-2 h-7 shrink-0 transition">
-                  <select id="execution-mode-select" onchange="window.appActions.changeMode(this)"
-                    class="bg-transparent text-[11px] text-zinc-200 font-medium focus:outline-none cursor-pointer [&>option]:bg-zinc-900 [&>option]:text-zinc-100 py-0.5"
-                    title="选择执行模式（全自动 / 自动改 / 规划 / 审批）">
-                    <option value="auto">⚡ 全自动</option>
-                    <option value="accept_edits">✏️ 自动改</option>
-                    <option value="plan">📋 规划</option>
-                    <option value="ask">🛡️ 审批</option>
-                  </select>
+                <!-- 执行权限与审批策略选择器（与模型选择器保持一致的浮层设计） -->
+                <div class="relative shrink-0" id="mode-picker-container">
+                  <input type="hidden" id="execution-mode-select" value="auto" />
+                  <button type="button" id="mode-picker-btn" onclick="window.appActions.toggleModePicker(event)"
+                    class="flex items-center gap-1 bg-zinc-950/70 hover:bg-zinc-800/80 border border-zinc-800/70 hover:border-zinc-700/80 rounded-lg px-2 sm:px-2.5 h-7 text-[11px] text-zinc-200 font-medium transition active:scale-95 shrink-0"
+                    title="选择执行与审批模式">
+                    <span id="mode-picker-icon" class="text-xs">⚡</span>
+                    <span id="mode-picker-label" class="max-w-[70px] sm:max-w-[120px] truncate">全自动</span>
+                    <svg id="mode-picker-arrow" class="w-2.5 h-2.5 text-zinc-400 shrink-0 ml-0.5 transition-transform duration-200" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5l3 3 3-3"/></svg>
+                  </button>
+
+                  <!-- 向上弹出的 Mode Picker 浮层 -->
+                  <div id="mode-picker-popover" class="hidden fixed rounded-xl border border-zinc-700 p-1 z-[60] max-h-80 overflow-y-auto subtle-scrollbar bg-zinc-950 shadow-2xl"></div>
                 </div>
               </div>
 
@@ -757,6 +764,6 @@
       });
     }
   </script>
-  <script type="module" src="/static/app.js?v=20261025_agent_abbr_v1"></script>
+  <script type="module" src="/static/app.js?v=20261025_fix_export_v3"></script>
 </body>
 </html>

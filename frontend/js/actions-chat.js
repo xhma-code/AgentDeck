@@ -19,7 +19,7 @@ import {
   renderSlashMenu,
 } from "./render.js";
 import { openNewSessionModal } from "./modals.js";
-import { renderModelPicker } from "./render-views.js";
+import { renderModelPicker, renderModePicker } from "./render-views.js";
 import { dispatchCommand } from "./command-queue.js";
 
 export async function handleSendPrompt(customPrompt = null) {
@@ -313,6 +313,13 @@ export function toggleModelPicker(e, forceOpen) {
     if (typeof e.stopPropagation === "function") e.stopPropagation();
     if (typeof e.preventDefault === "function") e.preventDefault();
   }
+  const modePopover = document.getElementById("mode-picker-popover");
+  const modeBtn = document.getElementById("mode-picker-btn");
+  const modeArrow = document.getElementById("mode-picker-arrow");
+  if (modePopover) modePopover.classList.add("hidden");
+  if (modeBtn) modeBtn.classList.remove("border-amber-500/50", "bg-zinc-800");
+  if (modeArrow) modeArrow.classList.remove("rotate-180");
+
   const popover = document.getElementById("model-picker-popover");
   const btn = document.getElementById("model-picker-btn");
   const arrow = document.getElementById("model-picker-arrow");
@@ -355,6 +362,62 @@ export async function selectModel(modelId, e) {
     hiddenSelect.value = modelId;
   }
   await handleModelChange(modelId);
+}
+
+export function toggleModePicker(e, forceOpen) {
+  if (e) {
+    if (typeof e.stopPropagation === "function") e.stopPropagation();
+    if (typeof e.preventDefault === "function") e.preventDefault();
+  }
+  const modelPopover = document.getElementById("model-picker-popover");
+  const modelBtn = document.getElementById("model-picker-btn");
+  const modelArrow = document.getElementById("model-picker-arrow");
+  if (modelPopover) modelPopover.classList.add("hidden");
+  if (modelBtn) modelBtn.classList.remove("border-sky-500/50", "bg-zinc-800");
+  if (modelArrow) modelArrow.classList.remove("rotate-180");
+
+  const popover = document.getElementById("mode-picker-popover");
+  const btn = document.getElementById("mode-picker-btn");
+  const arrow = document.getElementById("mode-picker-arrow");
+  if (!popover || !btn) return;
+  const isHidden = popover.classList.contains("hidden");
+  const open = forceOpen !== undefined ? Boolean(forceOpen) : isHidden;
+  if (open) {
+    renderModePicker();
+    const rect = btn.getBoundingClientRect();
+    const popoverWidth = Math.min(185, window.innerWidth - 16);
+    popover.style.width = `${popoverWidth}px`;
+    popover.style.backgroundColor = "#09090b";
+    popover.style.bottom = `${Math.max(10, window.innerHeight - rect.top + 6)}px`;
+    const maxLeft = window.innerWidth - popoverWidth - 8;
+    const left = Math.max(8, Math.min(rect.left, maxLeft));
+    popover.style.left = `${left}px`;
+
+    popover.classList.remove("hidden");
+    btn.classList.add("border-amber-500/50", "bg-zinc-800");
+    if (arrow) arrow.classList.add("rotate-180");
+  } else {
+    popover.classList.add("hidden");
+    btn.classList.remove("border-amber-500/50", "bg-zinc-800");
+    if (arrow) arrow.classList.remove("rotate-180");
+  }
+}
+
+export async function selectMode(modeValue, e) {
+  if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+  const popover = document.getElementById("mode-picker-popover");
+  if (popover) popover.classList.add("hidden");
+  const btn = document.getElementById("mode-picker-btn");
+  const arrow = document.getElementById("mode-picker-arrow");
+  if (btn) btn.classList.remove("border-amber-500/50", "bg-zinc-800");
+  if (arrow) arrow.classList.remove("rotate-180");
+
+  const hiddenSelect = document.getElementById("execution-mode-select");
+  if (hiddenSelect) {
+    hiddenSelect.value = modeValue;
+  }
+  await handleModeChange(modeValue);
+  renderModePicker();
 }
 
 

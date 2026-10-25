@@ -216,8 +216,8 @@ export function initDrawerSwipeGestures() {
 
 export const NEW_SESSION_AGENTS = [
   { value: "agy_cli", label: "Antigravity (AGY)", dotColor: "bg-purple-400" },
-  { value: "claude_code", label: "Claude Code", dotColor: "bg-amber-400" },
-  { value: "opencode", label: "OpenCode", dotColor: "bg-sky-400" },
+  { value: "claude_code", label: "Claude Code (CC)", dotColor: "bg-amber-400" },
+  { value: "opencode", label: "OpenCode (OC)", dotColor: "bg-sky-400" },
 ];
 
 export function closeNewSessionDropdowns() {

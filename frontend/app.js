@@ -260,6 +260,17 @@ async function initApp() {
       }
     }
 
+    const modePopover = document.getElementById("mode-picker-popover");
+    const modeBtn = document.getElementById("mode-picker-btn");
+    const modeArrow = document.getElementById("mode-picker-arrow");
+    if (modePopover && !modePopover.classList.contains("hidden")) {
+      if (!modePopover.contains(e.target) && !modeBtn?.contains(e.target)) {
+        modePopover.classList.add("hidden");
+        if (modeBtn) modeBtn.classList.remove("border-amber-500/50", "bg-zinc-800");
+        if (modeArrow) modeArrow.classList.remove("rotate-180");
+      }
+    }
+
     const popover = document.getElementById("slash-popover");
     const input = document.getElementById("prompt-input");
     if (popover && input && !popover.contains(e.target) && e.target !== input) {
