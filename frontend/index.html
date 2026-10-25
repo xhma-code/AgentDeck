@@ -363,26 +363,8 @@
       <div id="bottom-approval-bar" class="hidden shrink-0 z-20"></div>
 
       <!-- 底部控制舱（模型选择 + 模式选择 + 新对话 + 输入框） -->
-      <footer id="chat-footer" class="border-t border-white/[0.06] bg-black/95 px-2 sm:px-3 py-1.5 safe-bottom shrink-0 relative z-40">
+      <footer id="chat-footer" class="border-t border-white/[0.06] bg-black/95 px-2 sm:px-3 py-1.5 safe-bottom shrink-0">
         <div class="max-w-5xl mx-auto w-full relative">
-          <!-- 运行中合并状态条：Working... + 执行步骤 合并到输入框上方，避免插入消息流导致输入框被顶走 -->
-          <div id="running-combo-bar" class="hidden mb-1.5 rounded-xl bg-zinc-900/90 border border-zinc-800/80 shadow-lg shadow-black/40 overflow-hidden">
-            <button id="running-combo-toggle" type="button" onclick="window.appActions.toggleRunningCombo()" class="w-full flex items-center justify-between gap-2 px-2.5 py-1 text-left active:bg-zinc-800/60 transition">
-              <div class="flex items-center gap-1.5 min-w-0">
-                <span class="relative flex h-1.5 w-1.5 shrink-0">
-                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
-                  <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-400"></span>
-                </span>
-                <span class="text-[11px] font-semibold text-sky-400 shrink-0">Working...</span>
-                <span id="running-combo-elapsed" class="text-[11px] font-mono text-sky-300/80 shrink-0 hidden"></span>
-                <span class="text-zinc-600 shrink-0">·</span>
-                <span id="running-combo-steps" class="text-[11px] text-zinc-300 truncate">已执行 0 步骤</span>
-              </div>
-              <svg id="running-combo-arrow" class="w-3 h-3 text-zinc-500 transition-transform duration-150 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
-            </button>
-            <div id="running-combo-detail" class="hidden border-t border-zinc-800/70 max-h-44 overflow-y-auto subtle-scrollbar"></div>
-          </div>
-
           <!-- 斜杠指令与全部 Skills 浮动菜单（在大框正上方弹出） -->
           <div id="slash-popover" class="hidden mb-2 rounded-xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-1 max-h-72 sm:max-h-80 overflow-y-auto subtle-scrollbar"></div>
 

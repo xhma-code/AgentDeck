@@ -13,7 +13,6 @@ import {
   pickDefaultSession,
   loadSystemStatus,
   handleStatusBtnClick,
-  isSessionWorking,
 } from "./data.js";
 import {
   renderSessionList,
@@ -503,85 +502,7 @@ window.appActions = {
     scrollToBottom();
   },
   toggleRunningCombo() {
-    const bar = document.getElementById("running-combo-bar");
-    const detail = document.getElementById("running-combo-detail");
-    const arrow = document.getElementById("running-combo-arrow");
-    if (!bar || !detail) return;
-    if (detail.classList.contains("hidden")) {
-      detail.classList.remove("hidden");
-      if (arrow) arrow.classList.add("rotate-180");
-    } else {
-      detail.classList.add("hidden");
-      if (arrow) arrow.classList.remove("rotate-180");
-    }
-  },
-
-  renderRunningComboBar() {
-    const bar = document.getElementById("running-combo-bar");
-    const elapsedEl = document.getElementById("running-combo-elapsed");
-    const stepsEl = document.getElementById("running-combo-steps");
-    const detail = document.getElementById("running-combo-detail");
-    if (!bar || !stepsEl) return;
-
-    const isWorking = isSessionWorking(state.selectedSessionId);
-    if (!isWorking || !state.selectedSessionId) {
-      bar.classList.add("hidden");
-      if (detail) {
-        detail.classList.add("hidden");
-        detail.innerHTML = "";
-      }
-      const arrow = document.getElementById("running-combo-arrow");
-      if (arrow) arrow.classList.remove("rotate-180");
-      return;
-    }
-
-    const startMs = state.pendingTurnThinking ? state.pendingTurnThinking[state.selectedSessionId] : null;
-    if (elapsedEl) {
-      if (startMs) {
-        const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
-        let elapsedStr = "";
-        if (elapsedSec < 60) {
-          elapsedStr = `${elapsedSec}s`;
-        } else {
-          const m = Math.floor(elapsedSec / 60);
-          const s = elapsedSec % 60;
-          elapsedStr = `${m}m ${String(s).padStart(2, "0")}s`;
-        }
-        elapsedEl.textContent = elapsedStr;
-        elapsedEl.classList.remove("hidden");
-      } else {
-        elapsedEl.classList.add("hidden");
-      }
-    }
-
-    const turns = state.turnsMap ? Object.values(state.turnsMap) : [];
-    const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
-    let stepsCount = 0;
-    if (lastTurn) {
-      if (Array.isArray(lastTurn.processRecords)) {
-        stepsCount = lastTurn.processRecords.length;
-      } else if (Array.isArray(lastTurn.primarySteps)) {
-        stepsCount = lastTurn.primarySteps.length;
-      }
-    }
-    stepsEl.textContent = `已执行 ${stepsCount} 步骤`;
-
-    if (detail && lastTurn) {
-      try {
-        const html = renderTurnProcessBar(lastTurn);
-        if (html && html.trim()) {
-          detail.innerHTML = `<div class="px-2 py-1">${html}</div>`;
-        } else {
-          detail.innerHTML = "";
-        }
-      } catch (e) {
-        detail.innerHTML = "";
-      }
-    } else if (detail) {
-      detail.innerHTML = "";
-    }
-
-    bar.classList.remove("hidden");
+    // 已移至消息流展示，保留空方法避免调用报错
   },
   scrollToCurrentPrompt,
   toggleStickyPromptExpanded,

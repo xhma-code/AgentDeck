@@ -241,15 +241,89 @@ export function _doRenderLiveStreamOverlay() {
     return;
   }
 
-  // 工作中状态已合并到输入框上方的运行条，这里仅可选展示极简流式文本
-  if (liveText && isWorking) {
+  // Agent 工作中：在消息流底部显示「闪电脉冲 + x 个执行步骤 · 耗时」
+  if (isWorking && state.selectedSessionId) {
+    const turns = state.turnsMap ? Object.values(state.turnsMap) : [];
+    const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+
+    let startMs = null;
+    if (state.pendingTurnThinking && state.pendingTurnThinking[state.selectedSessionId]) {
+      startMs = state.pendingTurnThinking[state.selectedSessionId];
+    }
+    if (!startMs && lastTurn) {
+      startMs =
+        lastTurn.started_at ||
+        lastTurn.start_at ||
+        lastTurn.startTime ||
+        lastTurn.start_time ||
+        lastTurn.created_at ||
+        lastTurn.createdAt ||
+        lastTurn.timestamp ||
+        lastTurn.time_start;
+    }
+    if (typeof startMs === "number" && startMs > 0 && startMs < 1000000000000) {
+      startMs = startMs * 1000;
+    }
+
+    let elapsedStr = "";
+    if (startMs && typeof startMs === "number") {
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      if (elapsedSec < 60) {
+        elapsedStr = `${elapsedSec}s`;
+      } else {
+        const m = Math.floor(elapsedSec / 60);
+        const s = elapsedSec % 60;
+        elapsedStr = `${m}m ${String(s).padStart(2, "0")}s`;
+      }
+    }
+
+    let stepsCount = 0;
+    if (lastTurn) {
+      if (Array.isArray(lastTurn.processRecords)) {
+        stepsCount = lastTurn.processRecords.length;
+      } else if (Array.isArray(lastTurn.primarySteps)) {
+        stepsCount = lastTurn.primarySteps.length;
+      } else if (Array.isArray(lastTurn.steps)) {
+        stepsCount = lastTurn.steps.length;
+      }
+    }
+
+    const streamHtml = liveText
+      ? `<div class="mt-2 text-xs text-zinc-200 border-t border-zinc-800/60 pt-2">${renderMarkdownHtml(
+          liveText.slice(-2000),
+          "live_stream"
+        )}</div>`
+      : "";
+
+    slot.dataset.liveId = state.selectedSessionId;
+    slot.innerHTML = `
+      <div class="live-working-card mb-3 rounded-xl bg-zinc-900/60 border border-zinc-800/80 px-2.5 py-1.5 text-xs text-zinc-300 shadow-sm">
+        <div class="flex items-center gap-1.5 font-mono text-[11px]">
+          <span class="relative flex h-1.5 w-1.5 shrink-0">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-400"></span>
+          </span>
+          <span class="live-working-row text-zinc-200">${stepsCount} 个执行步骤${elapsedStr ? ` · ${elapsedStr}` : ""}</span>
+        </div>
+        ${streamHtml}
+      </div>
+    `;
+
+    if (!state.autoScrollLocked) {
+      scrollToBottom();
+    }
+    updateCollapseStepsPillVisibility();
+    return;
+  }
+
+  if (liveText) {
     const streamHtml = `<div class="text-xs text-zinc-200">${renderMarkdownHtml(
       liveText.slice(-1500),
       "live_stream"
     )}</div>`;
     if (slot.dataset.liveId !== state.selectedSessionId || !slot.querySelector(".live-working-stream")) {
       slot.dataset.liveId = state.selectedSessionId;
-      slot.innerHTML = `<div class="live-working-stream mb-1 px-1">${streamHtml}</div>`;
+      slot.innerHTML = `<div class="live-working-stream mb-2 px-1">${streamHtml}</div>`;
     } else {
       const streamWrap = slot.querySelector(".live-working-stream");
       if (streamWrap) {
@@ -266,6 +340,7 @@ export function _doRenderLiveStreamOverlay() {
   if (slot.innerHTML !== "") {
     slot.innerHTML = "";
     delete slot.dataset.liveId;
+    delete slot.dataset.liveKey;
   }
   if (!state.autoScrollLocked) {
     scrollToBottom();

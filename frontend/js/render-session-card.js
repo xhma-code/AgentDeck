@@ -23,6 +23,14 @@ import {
   getProjectInfo,
 } from "./session-helper.js";
 
+import { loadSessionMessages } from "./data-messages.js";
+
+const preloadedSessionIds = new Set();
+if (typeof window !== "undefined") {
+  window.__agentdeckPreloadedSessionIds = preloadedSessionIds;
+  window.loadSessionMessages = loadSessionMessages;
+}
+
 export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = null) {
   const meta = AGENT_META[s.agent_type] || AGENT_META.claude_code;
   const isSelected = s.unified_id === state.selectedSessionId;
@@ -104,6 +112,7 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
       data-session-id="${escapeHtml(s.unified_id)}"
       draggable="false"
       ondragstart="event.preventDefault(); return false;"
+      onmouseenter="(function(el,id){ try{ if(preloadedSessionIds){ if(preloadedSessionIds.has(id)) return; preloadedSessionIds.add(id); } }catch(e){} try{ var st=window.state||{}; if(st.sessionMessagesCache&&st.sessionMessagesCache[id]) return; if(typeof loadSessionMessages==='function'){ loadSessionMessages(id,{silent:true,limit:30}); } }catch(e){} })(this, '${escapeHtml(s.unified_id)}')"
       onclick="window.appActions.selectSession('${escapeHtml(s.unified_id)}')"
       style="-webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; touch-action: pan-y; -webkit-tap-highlight-color: transparent;"
       class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-colors duration-150 flex items-center justify-between gap-2 ${

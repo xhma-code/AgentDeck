@@ -68,6 +68,7 @@ export async function selectSession(unifiedId) {
 
   // 自动展开当前选中会话所在的项目分组
   const sess = state.allSessions.find((s) => s.unified_id === unifiedId);
+  const prevSess = prevId ? state.allSessions.find((s) => s.unified_id === prevId) : null;
   let needFullSidebarRender = wasUnread || wasRetained;
   if (sess && sess.project_path) {
     const pKey = getProjectInfo(sess.project_path).key;
@@ -80,25 +81,56 @@ export async function selectSession(unifiedId) {
   updateDrawerVisibility();
   const sessionListContainer = document.getElementById("session-list-container");
   const isListEmpty = !sessionListContainer || sessionListContainer.children.length === 0;
-  if (needFullSidebarRender || isListEmpty) {
+  if (isListEmpty) {
+    needFullSidebarRender = true;
+  }
+  // 收紧：同一已展开项目分组内切换且无未读/保留态时，仅更新高亮，避免全量重渲染
+  if (!needFullSidebarRender && prevSess && sess && prevSess !== sess) {
+    const prevPKey = prevSess.project_path ? getProjectInfo(prevSess.project_path).key : "";
+    const currPKey = sess.project_path ? getProjectInfo(sess.project_path).key : "";
+    if (prevPKey && currPKey && prevPKey === currPKey && state.expandedProjects[currPKey]) {
+      needFullSidebarRender = false;
+    }
+  }
+  if (needFullSidebarRender) {
     renderSessionList();
   } else {
     updateSelectedSessionHighlight(prevId, unifiedId);
   }
-  renderCurrentSessionHeader();
-  renderApprovalBanners();
-  renderOtherRunningPill();
-  updateGitStatusBadge();
-  renderLiveStreamOverlay();
 
+  // 消息优先：先更新头部骨架并准备消息区，非关键 UI 延迟渲染
+  renderCurrentSessionHeader();
+
+  const runDeferredUi = () => {
+    renderApprovalBanners();
+    renderOtherRunningPill();
+    updateGitStatusBadge();
+    renderLiveStreamOverlay();
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(runDeferredUi);
+  } else {
+    setTimeout(runDeferredUi, 0);
+  }
+
+  // 非关键：延迟加载 workflows，避免阻塞首屏消息
   if (sess && sess.project_path) {
-    apiFetch(`/api/v1/workflows?project_path=${encodeURIComponent(sess.project_path)}`)
-      .then((res) => {
-        if (res && res.ok && Array.isArray(res.workflows)) {
-          state.workflows = res.workflows;
-        }
-      })
-      .catch(() => {});
+    const loadWorkflows = () => {
+      apiFetch(`/api/v1/workflows?project_path=${encodeURIComponent(sess.project_path)}`)
+        .then((res) => {
+          if (res && res.ok && Array.isArray(res.workflows)) {
+            state.workflows = res.workflows;
+          }
+        })
+        .catch(() => {});
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(loadWorkflows, { timeout: 1500 });
+    } else if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => setTimeout(loadWorkflows, 0));
+    } else {
+      setTimeout(loadWorkflows, 0);
+    }
   }
 
   const mountCachedOrLoad = async () => {
@@ -108,6 +140,7 @@ export async function selectSession(unifiedId) {
       state.hasMoreMessages = false;
       state.totalMessagesCount = state.messages.length;
       state.currentTokenUsage = null;
+      state.loadingMessages = false;
       renderMessagesList();
       renderLiveStreamOverlay();
       loadSessionMessages(unifiedId, { silent: true });
@@ -129,7 +162,9 @@ export async function selectSession(unifiedId) {
     } else {
       state.currentTokenUsage = null;
       renderTokenUsage();
-      await loadSessionMessages(unifiedId, { silent: false });
+      state.loadingMessages = true;
+      renderMessagesList();
+      await loadSessionMessages(unifiedId, { silent: false, limit: 20 });
     }
   };
 

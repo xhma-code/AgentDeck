@@ -161,9 +161,6 @@ async function initApp() {
     if (state.selectedSessionId) {
       if (isSessionWorking(state.selectedSessionId)) {
         renderLiveStreamOverlay();
-        if (typeof window.appActions?.renderRunningComboBar === "function") {
-          window.appActions.renderRunningComboBar();
-        }
         // 活跃执行态自愈收敛巡检：每 2 秒静默核实一次当前会话的最新完成态，消除外部会话完成后的同步滞后
         workingPollCounter++;
         if (workingPollCounter % 2 === 0) {
@@ -171,13 +168,6 @@ async function initApp() {
         }
       } else {
         workingPollCounter = 0;
-        if (typeof window.appActions?.renderRunningComboBar === "function") {
-          window.appActions.renderRunningComboBar();
-        }
-      }
-    } else {
-      if (typeof window.appActions?.renderRunningComboBar === "function") {
-        window.appActions.renderRunningComboBar();
       }
     }
   }, 500);

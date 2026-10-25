@@ -187,18 +187,11 @@ body {
 
 /* 工作中浮层：仅在有内容时预留最小高度并限制重排，减少流式输出时的画面抖动；空状态时不占高 */
 #live-stream-overlay-slot:not(:empty) {
-  min-height: 32px;
+  min-height: 40px;
   contain: layout style paint;
 }
 
 .live-working-card {
-  contain: layout style paint;
-  transform: translateZ(0);
-  backface-visibility: hidden;
-}
-
-/* 运行中合并状态条：固定在输入框上方，不参与消息流布局，避免遮挡输入框 */
-#running-combo-bar {
   contain: layout style paint;
   transform: translateZ(0);
   backface-visibility: hidden;
