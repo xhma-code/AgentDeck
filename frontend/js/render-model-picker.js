@@ -9,7 +9,8 @@ import { getModelContextLimit } from "./data.js";
 
 export function renderModelOptionsForAgent(selectEl, agentType, selectedModelId = "") {
   if (!selectEl) return;
-  const list = state.modelsByAgent[agentType];
+  const normAgent = (agentType === "antigravity" || agentType === "agy_ide") ? "agy_cli" : agentType;
+  const list = state.modelsByAgent[agentType] || state.modelsByAgent[normAgent];
   const models =
     Array.isArray(list) && list.length > 0
       ? list
@@ -44,7 +45,7 @@ export function renderModelOptionsForAgent(selectEl, agentType, selectedModelId 
 
 export function renderModeOptionsForAgent(selectEl, agentType, selectedMode = "ask", isShort = false) {
   if (!selectEl) return "ask";
-  const normalizedType = agentType === "claude" ? "claude_code" : (agentType || "agy_cli");
+  const normalizedType = (agentType === "claude") ? "claude_code" : ((agentType === "antigravity" || agentType === "agy_ide") ? "agy_cli" : (agentType || "agy_cli"));
   const list = MODES_BY_AGENT[normalizedType] || MODES_BY_AGENT.agy_cli;
 
   const isSupported = list.some((m) => m.value === selectedMode);

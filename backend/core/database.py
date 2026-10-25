@@ -132,6 +132,7 @@ class MetaDatabase:
             ).fetchone()
 
             if existing:
+                upd_raw = raw_session_id if (raw_session_id and raw_session_id.strip()) else existing["raw_session_id"]
                 upd_parent = parent_unified_id if parent_unified_id is not None else existing["parent_unified_id"]
                 upd_path = project_path if project_path is not None else existing["project_path"]
                 upd_title = title.strip() if (title is not None and title.strip()) else existing["title"]
@@ -142,11 +143,11 @@ class MetaDatabase:
                 conn.execute(
                     """
                     UPDATE t_unified_session_meta
-                    SET parent_unified_id = ?, project_path = ?, title = ?,
+                    SET raw_session_id = ?, parent_unified_id = ?, project_path = ?, title = ?,
                         is_pinned = ?, execution_mode = ?, model_name = ?, updated_at = ?
                     WHERE unified_id = ?
                     """,
-                    (upd_parent, upd_path, upd_title, upd_pin, upd_mode, upd_model, now, unified_id),
+                    (upd_raw, upd_parent, upd_path, upd_title, upd_pin, upd_mode, upd_model, now, unified_id),
                 )
             else:
                 conn.execute(
@@ -168,6 +169,15 @@ class MetaDatabase:
                 (unified_id,),
             ).fetchone()
             return dict(row) if row else {}
+
+    def update_raw_session_id(self, unified_id: str, new_raw_id: str) -> None:
+        """更新会话关联的底层真实 raw_session_id（如 Antigravity CLI 首轮动态回填）。"""
+        now = utc_now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE t_unified_session_meta SET raw_session_id = ?, updated_at = ? WHERE unified_id = ?",
+                (new_raw_id, now, unified_id),
+            )
 
     def _upsert_session_viewed_time(
         self, conn: sqlite3.Connection, unified_id: str, viewed_at_iso: str, only_if_newer: bool = False

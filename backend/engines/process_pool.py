@@ -227,10 +227,16 @@ class AgentOrchestrator:
         model_name: Optional[str] = None,
         execution_mode: Optional[str] = None,
     ) -> tuple[str, dict[str, Any]]:
-        """深模块：一站式创建并初始化新会话（规范化ID、模式、持久化与冷启动提示调度）。"""
-        real_agent = agent_type if agent_type != "agy_ide" else "agy_cli"
+        """深模块：一站式创建并初始化新会话（状态感知路由：IDE 活跃走 IDE，未打开平滑切 CLI）。"""
+        # 网页端新建会话：Antigravity 统一创建由 CLI 驱动的独立会话
+        # （IDE 桌面端只支持接管/直连桌面端自身已创建的活动会话，不支持通过 RPC 凭空注入未初始化的会话）
+        if agent_type in ("antigravity", "agy_ide", "agy_cli"):
+            real_agent = "agy_cli"
+        else:
+            real_agent = agent_type
+
         workdir = project_path.strip() or str(PROJECT_ROOT)
-        final_title = title.strip() or (initial_prompt.strip()[:50] if initial_prompt else f"新建 {real_agent} 会话")
+        final_title = title.strip() or (initial_prompt.strip()[:50] if initial_prompt else "新建会话")
 
         raw_id = ""
         adapter = self.adapters.get(real_agent)

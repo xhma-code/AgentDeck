@@ -480,9 +480,28 @@ class AntigravityAdapter(BaseAgentAdapter):
             prompt,
             "--output-format",
             "stream-json",
-            "--conversation",
-            raw_session_id,
         ])
+        # 仅当会话在本地磁盘已实际存在（非首轮新建会话）时才传入 --conversation
+        # 若向未初始化的新会话传入 --conversation，agy CLI 将报警 warning: conversation not found
+        session_exists = False
+        if raw_session_id:
+            conv_file = self.conversations_dir / f"{raw_session_id}.db"
+            brain_dir = self.brain_dir / raw_session_id
+            if conv_file.exists() or brain_dir.exists():
+                session_exists = True
+            elif self.summary_db_path.exists():
+                try:
+                    rows = safe_query_external_sqlite(
+                        self.summary_db_path,
+                        "SELECT 1 FROM conversation_summaries WHERE conversation_id = ? LIMIT 1",
+                        (raw_session_id,),
+                    )
+                    session_exists = bool(rows)
+                except Exception:
+                    session_exists = False
+
+        if session_exists:
+            cmd.extend(["--conversation", raw_session_id])
         if clean_model:
             cmd.extend(["--model", clean_model])
         if execution_mode == "plan":

@@ -9,12 +9,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional
 
-from backend.adapters.antigravity_adapter import fork_ide_session_to_cli
 from backend.adapters.base import (
     BaseAgentAdapter,
     ExecutionMode,
@@ -25,6 +25,29 @@ from backend.core.database import PROJECT_ROOT, MetaDatabase, utc_now_iso
 from backend.core.logger import log_structured_error, logger
 from backend.engines.approval import PendingApproval
 from backend.engines.process_utils import TurnContext, drain_subprocess_stderr
+
+
+def get_system_proxy_env() -> dict[str, str]:
+    """若当前系统未显式配置 HTTP_PROXY，自动尝试读取 Windows 注册表代理设置。"""
+    env = os.environ.copy()
+    if env.get("HTTP_PROXY") or env.get("http_proxy"):
+        return env
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            reg = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
+            key = winreg.OpenKey(reg, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+            server, _ = winreg.QueryValueEx(key, "ProxyServer")
+            if server:
+                proxy_url = f"http://{server}" if not str(server).startswith("http") else str(server)
+                env["HTTP_PROXY"] = proxy_url
+                env["HTTPS_PROXY"] = proxy_url
+                env["http_proxy"] = proxy_url
+                env["https_proxy"] = proxy_url
+        except Exception:
+            pass
+    return env
 
 
 class StreamRunner:
@@ -106,19 +129,6 @@ class StreamRunner:
             raise ValueError(f"未知的 Agent 类型: {agent_type}")
 
         actual_unified_id, actual_raw_id, actual_agent_type = unified_id, raw_id, agent_type
-        if agent_type == "agy_ide" and auto_fork_ide:
-            forked = fork_ide_session_to_cli(
-                ide_root=getattr(adapter, "root_dir", Path(os.path.expanduser("~/.gemini/antigravity"))),
-                ide_raw_session_id=raw_id,
-                meta_db=target_db,
-            )
-            if forked.get("ok"):
-                actual_unified_id, actual_agent_type, actual_raw_id = (
-                    forked["cli_unified_id"],
-                    "agy_cli",
-                    forked["cli_raw_session_id"],
-                )
-                adapter = self.adapters.get(actual_agent_type)
 
         norm_mode = target_norm(actual_agent_type, execution_mode) if target_norm else "ask"
         workdir = project_path or str(PROJECT_ROOT)
@@ -165,14 +175,13 @@ class StreamRunner:
                     return {
                         "ok": False,
                         "unified_id": actual_unified_id,
-                        "error": "未能在运行中的 Antigravity IDE 实例中找到该会话，请确保桌面端已打开对应工程。",
+                        "error": "Antigravity IDE 实例未响应或未持有该会话，请确保桌面端当前已打开该会话。",
                     }
             except Exception as exc:
-                logger.error("通过 Language Server 下发指令失败: %s", exc)
                 return {
                     "ok": False,
                     "unified_id": actual_unified_id,
-                    "error": f"连接 Antigravity IDE 语言服务异常: {exc}",
+                    "error": f"连接 Antigravity IDE 异常: {exc}",
                 }
 
         if hasattr(adapter, "try_direct_dispatch"):
@@ -226,32 +235,61 @@ class StreamRunner:
     async def watch_direct_turn_progress(
         self, unified_id: str, agent_type: str, raw_session_id: str
     ) -> None:
-        """为通过原生直连通道（如 LS Connect-RPC）派发的任务提供进度与完成状态同步。"""
+        """为通过原生直连通道派发的任务提供精确的进度流与完成感知。"""
         adapter = self.adapters.get(agent_type)
         if not adapter:
             return
         try:
             initial_items, _, _ = adapter.get_session_messages_page(raw_session_id, limit=5)
             last_step = initial_items[-1].step_index if initial_items else 0
-            idle_count = 0
-            for _ in range(80):
+            has_seen_active = False
+            consecutive_inactive = 0
+
+            # 轮询上限：最长支持 15 分钟 (600 * 1.5s = 900s) 的复杂开发任务
+            for _ in range(600):
                 await asyncio.sleep(1.5)
                 if hasattr(adapter, "invalidate_cache"):
                     adapter.invalidate_cache()
+
+                # 1. 优先使用 adapter 原生精准活跃状态探测
+                is_active = False
+                if hasattr(adapter, "is_external_session_active"):
+                    try:
+                        is_active = bool(adapter.is_external_session_active(raw_session_id))
+                    except Exception:
+                        is_active = False
+
+                if is_active:
+                    has_seen_active = True
+                    consecutive_inactive = 0
+                else:
+                    if has_seen_active:
+                        consecutive_inactive += 1
+
+                # 2. 检查是否有新步骤或消息更新
                 curr_items, _, _ = adapter.get_session_messages_page(raw_session_id, limit=5)
                 curr_step = curr_items[-1].step_index if curr_items else 0
                 if curr_step > last_step:
                     last_step = curr_step
-                    idle_count = 0
                     await self.broadcast_event(
                         "STREAM_DELTA",
                         {"unified_id": unified_id, "delta_type": "step_updated", "step_index": curr_step},
                     )
-                else:
-                    idle_count += 1
-                    if last_step > (initial_items[-1].step_index if initial_items else 0) and idle_count >= 4:
+
+                # 3. 退出判定：
+                # 情况 A：若曾明确探测到活跃态，当前已连续 2 次（3s）转入非活跃态 -> 确认任务执行完毕！
+                if has_seen_active and consecutive_inactive >= 2:
+                    break
+
+                # 情况 B：若未感知到活跃标记（如轮询间隔穿透），但检测到新步骤且已连续 12s 稳定无变动
+                if not is_active and last_step > (initial_items[-1].step_index if initial_items else 0):
+                    consecutive_inactive += 1
+                    if consecutive_inactive >= 8:  # 8 次 * 1.5s = 12s 静默
                         break
 
+            # 最终完成时，强制刷新一次缓存并广播完成
+            if hasattr(adapter, "invalidate_cache"):
+                adapter.invalidate_cache()
             await self.broadcast_event(
                 "SESSION_TURN_FINISHED",
                 {"unified_id": unified_id, "via_direct_dispatch": True},
@@ -315,6 +353,7 @@ class StreamRunner:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=ctx.workdir,
+                    env=get_system_proxy_env(),
                 )
                 self.active_processes[unified_id] = proc
                 self.process_last_active[unified_id] = time.time()
@@ -392,7 +431,19 @@ class StreamRunner:
         if not isinstance(event, dict):
             return
 
-        ev_type = str(event.get("type") or "")
+        ev_type = str(event.get("type") or event.get("event") or "")
+
+        # Antigravity CLI 首轮动态回填真实 conversation_id
+        if ctx.agent_type == "agy_cli":
+            real_cid = event.get("conversation_id")
+            if real_cid and real_cid != ctx.raw_session_id:
+                ctx.raw_session_id = real_cid
+                if self.meta_db and hasattr(self.meta_db, "update_raw_session_id"):
+                    try:
+                        self.meta_db.update_raw_session_id(ctx.unified_id, real_cid)
+                    except Exception as db_exc:
+                        logger.debug("动态回填真实会话ID异常: %s", db_exc)
+
         await self.broadcast_event(
             "STREAM_JSON_FRAME",
             {"unified_id": unified_id, "agent_type": ctx.agent_type, "frame": event},

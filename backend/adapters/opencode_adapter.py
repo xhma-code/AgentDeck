@@ -189,12 +189,14 @@ class OpenCodeAdapter(BaseAgentAdapter):
 
     @classmethod
     def is_meaningful_storage_change(cls, path_str: str, filename: str) -> bool:
-        """多态判定变动是否属于 OpenCode 核心存储。"""
+        """多态判定变动是否属于 OpenCode 核心存储（涵盖 SQLite 主库与 WAL 日志文件）。"""
         s = path_str.lower().replace("\\", "/")
         n = filename.lower()
         if "opencode" not in s:
             return False
-        return n.endswith((".json", ".jsonl", ".sqlite", ".db"))
+        return n.startswith("opencode.db") or n.endswith(
+            (".json", ".jsonl", ".sqlite", ".db", "-wal", "-shm")
+        )
 
     def get_session(self, raw_session_id: str) -> Optional[UnifiedSession]:
         """按 ID 精确定位单个 OpenCode 会话摘要。"""
