@@ -122,7 +122,13 @@ async def get_session_messages(
 
     detail = orchestrator.get_session_detail(
         unified_id, limit=limit, before_step=before_step, since_step=since_step
-    )
+    ) or {
+        "unified_id": unified_id,
+        "messages": [],
+        "total_count": 0,
+        "has_more": False,
+        "pending_approval": None,
+    }
     msg_etag = orchestrator.get_session_messages_etag(
         detail,
         unified_id=unified_id,

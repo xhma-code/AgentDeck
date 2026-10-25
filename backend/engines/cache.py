@@ -148,8 +148,10 @@ class EtagNegotiator:
         return etag_res
 
     @staticmethod
-    def extract_session_detail_fingerprint(detail: dict[str, Any]) -> str:
+    def extract_session_detail_fingerprint(detail: Optional[dict[str, Any]]) -> str:
         """内聚解析会话详情对象的尾部状态与内容指纹，消除跨层深层探测。"""
+        if not detail or not isinstance(detail, dict):
+            return "0-0-0-0-0--0-0-0"
         msgs = detail.get("messages", [])
         last_step = msgs[-1].get("step_index", 0) if msgs else 0
         is_running = 1 if detail.get("is_running") else 0

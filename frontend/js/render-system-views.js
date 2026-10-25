@@ -75,7 +75,7 @@ export function renderQrModalContent() {
   }
 
   const { pair_url, lan_pair_url, zt_pair_url, channels } = state.systemStatus;
-  const orderWeight = { wifi: 1, tailscale: 2, zerotier: 3 };
+  const orderWeight = { tailscale: 1, wifi: 2, zerotier: 3 };
   const channelList = (channels || []).slice().sort((a, b) => (orderWeight[a.type] || 9) - (orderWeight[b.type] || 9));
 
   if (!state.selectedQrNet || !channelList.some((c) => c.type === state.selectedQrNet)) {

@@ -280,6 +280,10 @@ def aggregate_all_sessions(
     merged.sort(key=_session_sort_key, reverse=True)
     return merged
 
+_DETAIL_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_DETAIL_CACHE_TTL = 2.0
+
+
 def fetch_session_detail(
     unified_id: str,
     adapters: dict[str, BaseAgentAdapter],
@@ -300,7 +304,19 @@ def fetch_session_detail(
             "has_more": False,
             "pending_approval": None,
         }
+    import time
+
     actual_unified_id = meta_db.resolve_unified_id(unified_id) if hasattr(meta_db, "resolve_unified_id") else unified_id
+    cache_key = f"{actual_unified_id}|{limit}|{before_step}|{since_step}"
+    is_active_now_check = is_session_active_fn(unified_id) or is_session_active_fn(actual_unified_id)
+    pa_now = pending_approvals.get(unified_id) or pending_approvals.get(actual_unified_id)
+    if not is_active_now_check and before_step is None and since_step is None and pa_now is None:
+        cached = _DETAIL_CACHE.get(cache_key)
+        if cached:
+            ts, val = cached
+            if time.monotonic() - ts < _DETAIL_CACHE_TTL:
+                return val
+
     agent_type, raw_id = actual_unified_id.split(":", 1)
     overrides = meta_db.get_session_overrides().get(actual_unified_id) or meta_db.get_session_overrides().get(unified_id, {})
     actual_raw_id = overrides.get("raw_session_id") or raw_id
@@ -319,15 +335,47 @@ def fetch_session_detail(
                 for idx, it in enumerate(items)
             ]
 
-    pa = pending_approvals.get(unified_id) or pending_approvals.get(actual_unified_id)
+    pa = pa_now
     deleted_ids = meta_db.get_deleted_session_ids()
-    session_actual_model = ""
-    if adapter and hasattr(adapter, "get_session_model"):
-        try:
-            session_actual_model = adapter.get_session_model(actual_raw_id) or ""
-        except Exception as exc:
-            logger.debug(f"获取会话 {actual_raw_id[:8]} 真实模型异常: {exc}")
     default_mid = resolve_default_model_fn(agent_type)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    session_actual_model_res = [""]
+    ext_active_res = [False]
+
+    def _get_model():
+        if adapter and hasattr(adapter, "get_session_model"):
+            try:
+                return adapter.get_session_model(actual_raw_id) or ""
+            except Exception as exc:
+                logger.debug(f"获取会话 {actual_raw_id[:8]} 真实模型异常: {exc}")
+        return ""
+
+    def _check_external_active():
+        if is_active_now_check and adapter:
+            return True
+        if not adapter:
+            return False
+        try:
+            if hasattr(adapter, "is_external_session_active"):
+                return bool(adapter.is_external_session_active(actual_raw_id))
+            for s in adapter.list_sessions(limit=50):
+                if s.raw_session_id == actual_raw_id:
+                    if s.status in ("running", "desktop_active"):
+                        return True
+                    break
+        except Exception as exc:
+            logger.error("检查外部会话活跃态失败: 会话ID=%s, 异常=%s", raw_id[:8], exc)
+        return False
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_model = ex.submit(_get_model)
+        f_ext = ex.submit(_check_external_active)
+        session_actual_model_res[0] = f_model.result()
+        ext_active_res[0] = f_ext.result()
+
+    session_actual_model = session_actual_model_res[0]
     chosen_model = overrides.get("model_name") or session_actual_model or default_mid
 
     if adapter and hasattr(adapter, "get_available_models_with_quota"):
@@ -338,25 +386,14 @@ def fetch_session_detail(
                 chosen_model = default_mid
         except Exception:
             pass
+
     token_usage = (
         adapter.get_session_token_usage(actual_raw_id, model_name=chosen_model)
         if adapter
         else SessionTokenUsage(context_limit=200_000).to_dict()
     )
 
-    is_active = is_session_active_fn(unified_id) or is_session_active_fn(actual_unified_id)
-    if not is_active and adapter:
-        try:
-            if hasattr(adapter, "is_external_session_active"):
-                is_active = adapter.is_external_session_active(actual_raw_id)
-            else:
-                for s in adapter.list_sessions(limit=50):
-                    if s.raw_session_id == actual_raw_id:
-                        if s.status in ("running", "desktop_active"):
-                            is_active = True
-                        break
-        except Exception as exc:
-            logger.error("检查外部会话活跃态失败: 会话ID=%s, 异常=%s", raw_id[:8], exc)
+    is_active = is_active_now_check or ext_active_res[0]
     if not is_active and messages:
         last_msg = messages[-1]
         if last_msg.get("status") == "RUNNING":
@@ -369,7 +406,7 @@ def fetch_session_detail(
             ):
                 is_active = True
 
-    return {
+    result = {
         "unified_id": actual_unified_id,
         "original_unified_id": unified_id,
         "agent_type": agent_type,
@@ -384,6 +421,15 @@ def fetch_session_detail(
         "has_more": has_more,
         "messages": messages,
     }
+    if not is_active and before_step is None and since_step is None and pa is None:
+        _DETAIL_CACHE[cache_key] = (time.monotonic(), result)
+        if len(_DETAIL_CACHE) > 50:
+            try:
+                _DETAIL_CACHE.pop(next(iter(_DETAIL_CACHE)))
+            except Exception:
+                pass
+    return result
+
 
 def fetch_full_step_output(
     unified_id: str,

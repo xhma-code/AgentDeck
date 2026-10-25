@@ -103,7 +103,7 @@ async def get_local_qr_svg(
         host_for_qr = ts_ip
     else:
         # 近场扫码默认策略：若物理局域网 Wi-Fi IP 可用，优先使用局域网直连，避免手机未配置虚拟专网时扫码卡死
-        host_for_qr = lan_ip or ts_ip or zt_ip or "127.0.0.1"
+        host_for_qr = ts_ip or zt_ip or lan_ip or "127.0.0.1"
 
     pair_url = f"http://{host_for_qr}:{port}/?pair_code={auth_mgr.bootstrap_pair_code}"
     if pair_url in _qr_svg_cache:
