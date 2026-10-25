@@ -40,6 +40,16 @@ class ToolApprovalDecisionRequest(BaseModel):
     feedback: str = Field(default="", description="拒绝或补充指导意见")
 
 
+class SwitchSessionModeRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    execution_mode: Optional[str] = Field(default=None, description="选定切换的执行/权限模式 (plan/ask/accept_edits/auto)")
+    mode: Optional[str] = Field(default=None, description="兼容简写模式参数")
+
+    @property
+    def target_mode(self) -> str:
+        return (self.execution_mode or self.mode or "").strip()
+
+
 class SwitchSessionModelRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
     model_name: str = Field(..., description="选定切换的模型名称")

@@ -131,18 +131,26 @@ export async function handleAbortCurrentSession() {
 export async function handleModeChange(newMode) {
   if (!state.selectedSessionId) return;
   try {
-    await apiFetch(
+    const res = await apiFetch(
       `/api/v1/sessions/${encodeURIComponent(state.selectedSessionId)}/mode`,
       {
         method: "POST",
         body: JSON.stringify({ execution_mode: newMode }),
       }
     );
-    const s = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
-    if (s) s.execution_mode = newMode;
-    showToast(`模式已切换: ${newMode}`, "success");
+    const finalMode = (res && res.execution_mode) || newMode;
+    const s =
+      state.sessions.find((item) => item.unified_id === state.selectedSessionId) ||
+      state.allSessions.find((item) => item.unified_id === state.selectedSessionId);
+    if (s) s.execution_mode = finalMode;
+    const hiddenSelect = document.getElementById("execution-mode-select");
+    if (hiddenSelect) {
+      hiddenSelect.value = finalMode;
+    }
+    renderModePicker();
+    showToast(`模式已切换: ${finalMode}`, "success");
   } catch (e) {
-    showToast("模式切换失败", "error");
+    console.error("模式切换失败:", e);
   }
 }
 

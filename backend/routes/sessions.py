@@ -22,6 +22,7 @@ from backend.routes.schemas import (
     CreateSessionRequest,
     SendPromptRequest,
     SessionMetaUpdateRequest,
+    SwitchSessionModeRequest,
     SwitchSessionModelRequest,
     ToolApprovalDecisionRequest,
     MarkAllViewedRequest,
@@ -179,6 +180,37 @@ async def switch_session_model(
     orchestrator.bump_version()
     logger.info(f"已成功持久化会话模型切换: {unified_id} -> {clean_model}")
     return {"ok": True, "unified_id": unified_id, "model_name": clean_model, "meta": updated}
+
+
+@router.post("/{unified_id:path}/mode")
+async def switch_session_mode(
+    unified_id: str,
+    req: SwitchSessionModeRequest,
+    request: Request,
+    _auth: bool = Depends(verify_request_auth),
+) -> dict[str, Any]:
+    """切换指定会话选定的执行权限模式并持久化到本地元数据库。"""
+    target_mode = req.target_mode
+    if not target_mode:
+        raise HTTPException(status_code=400, detail="权限模式不能为空")
+
+    meta_db = get_meta_db(request)
+    orchestrator = get_orchestrator(request)
+
+    if ":" not in unified_id:
+        raise HTTPException(status_code=400, detail="会话 ID 格式非法")
+    agent_type, raw_id = unified_id.split(":", 1)
+
+    normalized_mode = orchestrator.normalize_execution_mode(agent_type, target_mode)
+    updated = meta_db.upsert_session_meta(
+        unified_id=unified_id,
+        agent_type=agent_type,
+        raw_session_id=raw_id,
+        execution_mode=normalized_mode,
+    )
+    orchestrator.bump_version()
+    logger.info(f"已成功持久化会话权限模式切换: {unified_id} -> {normalized_mode}")
+    return {"ok": True, "unified_id": unified_id, "execution_mode": normalized_mode, "meta": updated}
 
 
 @router.patch("/{unified_id:path}/meta")
