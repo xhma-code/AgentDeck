@@ -469,9 +469,12 @@ class OpenCodeAdapter(BaseAgentAdapter):
             with sqlite3.connect(str(self.db_path), timeout=3.0) as conn:
                 if self._check_has_session_v2():
                     conn.execute("DELETE FROM session_v2 WHERE id = ?", (raw_session_id,))
+                    if self._check_has_table("session_message"):
+                        conn.execute("DELETE FROM session_message WHERE session_id = ?", (raw_session_id,))
                 else:
                     conn.execute("DELETE FROM session WHERE id = ?", (raw_session_id,))
-                conn.execute("DELETE FROM message WHERE session_id = ?", (raw_session_id,))
+                if self._check_has_table("message"):
+                    conn.execute("DELETE FROM message WHERE session_id = ?", (raw_session_id,))
                 conn.commit()
             return True
         except Exception as exc:
@@ -677,7 +680,6 @@ class OpenCodeAdapter(BaseAgentAdapter):
                             "label": label,
                             "tag": tag,
                             "is_recommended": is_def,
-                            "quota": 1.0,
                             "context_limit": ctx_limit,
                         })
                     if cli_models:
@@ -696,5 +698,5 @@ class OpenCodeAdapter(BaseAgentAdapter):
         return fallback
 
     def get_available_models_with_quota(self) -> list[dict[str, Any]]:
-        """获取带配额的可用模型列表（免费模型标称 100% 配额）。"""
+        """获取可用模型列表（OpenCode 模型无独立配额数据，直接返回可用清单）。"""
         return self.get_available_models()

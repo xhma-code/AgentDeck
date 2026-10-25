@@ -442,7 +442,6 @@ class OpenCodeHttpBridge:
                         "label": name,
                         "tag": tag,
                         "is_recommended": is_default,
-                        "quota": 1.0,
                         "context_limit": ctx_limit,
                     })
 

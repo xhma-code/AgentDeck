@@ -26,11 +26,11 @@ export function renderModelOptionsForAgent(selectEl, agentType, selectedModelId 
   if (selectEl.tagName === "SELECT") {
     selectEl.innerHTML = models
       .map((m) => {
-        const quotaVal = typeof m.quota === "number" ? m.quota : 1.0;
-        const pct = Math.round(quotaVal * 100);
+        const hasQuota = typeof m.quota === "number" && !isNaN(m.quota);
+        const pct = hasQuota ? Math.round(m.quota * 100) : null;
         const tagPart = m.tag ? ` · ${m.tag}` : "";
         const defaultPart = m.is_default ? " (默认)" : "";
-        const quotaPart = ` · ${pct}%`;
+        const quotaPart = hasQuota ? ` · ${pct}%` : "";
         const sel = m.id === activeId ? "selected" : "";
         return `<option value="${escapeHtml(m.id)}" ${sel}>${escapeHtml(
           m.label + tagPart + defaultPart + quotaPart
@@ -111,23 +111,32 @@ export function renderModelPicker() {
         <span class="text-sky-400">🧠</span>
         <span>可用模型 (${models.length})</span>
       </span>
-      <span class="text-[10px] text-zinc-400 font-mono">余量</span>
+      ${models.some((m) => typeof m.quota === "number" && !isNaN(m.quota)) ? '<span class="text-[10px] text-zinc-400 font-mono">余量</span>' : ''}
     </div>
     <div class="p-1 space-y-0.5" style="background-color: #09090b !important;">
       ${models
         .map((m) => {
           const isSelected = m.id === activeId;
-          const quotaVal = typeof m.quota === "number" ? m.quota : 1.0;
-          const pct = Math.round(quotaVal * 100);
+          const hasQuota = typeof m.quota === "number" && !isNaN(m.quota);
+          const pct = hasQuota ? Math.round(m.quota * 100) : null;
 
-          let barColorCls = "bg-emerald-400";
-          let textColorCls = "text-emerald-400";
-          if (pct <= 20) {
-            barColorCls = "bg-rose-500";
-            textColorCls = "text-rose-400";
-          } else if (pct <= 50) {
-            barColorCls = "bg-amber-400";
-            textColorCls = "text-amber-400";
+          let quotaBarHtml = "";
+          if (hasQuota) {
+            let barColorCls = "bg-emerald-400";
+            let textColorCls = "text-emerald-400";
+            if (pct <= 20) {
+              barColorCls = "bg-rose-500";
+              textColorCls = "text-rose-400";
+            } else if (pct <= 50) {
+              barColorCls = "bg-amber-400";
+              textColorCls = "text-amber-400";
+            }
+            quotaBarHtml = `
+                <div class="w-10 sm:w-12 h-1.5 rounded-full bg-zinc-800 overflow-hidden shrink-0">
+                  <div class="h-full rounded-full transition-all duration-300 ${barColorCls}" style="width: ${pct}%"></div>
+                </div>
+                <span class="text-[11px] font-mono font-medium ${textColorCls} w-8 text-right shrink-0">${pct}%</span>
+            `;
           }
 
           return `
@@ -156,10 +165,7 @@ export function renderModelPicker() {
                     ? `<span class="text-[9px] px-1 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0" title="电脑端当前默认模型">默认</span>`
                     : ""
                 }
-                <div class="w-10 sm:w-12 h-1.5 rounded-full bg-zinc-800 overflow-hidden shrink-0">
-                  <div class="h-full rounded-full transition-all duration-300 ${barColorCls}" style="width: ${pct}%"></div>
-                </div>
-                <span class="text-[11px] font-mono font-medium ${textColorCls} w-8 text-right shrink-0">${pct}%</span>
+                ${quotaBarHtml}
               </div>
             </div>
           `;
