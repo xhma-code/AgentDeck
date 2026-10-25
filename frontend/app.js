@@ -282,6 +282,16 @@ async function initApp() {
     promptInput.addEventListener("input", () => {
       window.appActions.handlePromptInput();
     });
+
+    promptInput.addEventListener("focus", () => {
+      // 手机端软键盘弹出时，确保底部输入舱处于可视区域内，杜绝视口错位
+      setTimeout(() => {
+        const footer = document.getElementById("chat-footer");
+        if (footer && typeof footer.scrollIntoView === "function") {
+          footer.scrollIntoView({ block: "nearest" });
+        }
+      }, 150);
+    });
   }
 
   // 点击外部收起弹出菜单

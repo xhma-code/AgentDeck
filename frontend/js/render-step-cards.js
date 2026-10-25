@@ -7,10 +7,12 @@ import {
   escapeHtml,
   escapeJsSingleQuote,
   extractToolDuration,
+  formatDuration,
   getBasename,
   icons,
 } from "./utils.js";
 import { renderMarkdownHtml } from "./markdown.js";
+import { isSessionWorking } from "./session-helper.js";
 
 function hasMeaningfulOutput(output) {
   if (!output) return false;
@@ -22,7 +24,53 @@ function hasMeaningfulOutput(output) {
   return stripped.length > 0;
 }
 
-export function renderTurnProcessBar(turn) {
+export function getTurnRunningStartTime(turn, sessionId) {
+  let startMs = null;
+  if (sessionId && state.pendingTurnThinking && state.pendingTurnThinking[sessionId]) {
+    startMs = state.pendingTurnThinking[sessionId];
+  }
+  if (!startMs && turn) {
+    const rawCandidates = [
+      turn.started_at,
+      turn.start_at,
+      turn.startTime,
+      turn.start_time,
+      turn.processRecords && turn.processRecords[0] && turn.processRecords[0].created_at,
+      turn.primarySteps && turn.primarySteps[0] && turn.primarySteps[0].created_at,
+      turn.createdAt,
+      turn.created_at,
+    ];
+    for (const raw of rawCandidates) {
+      if (!raw) continue;
+      if (typeof raw === "number") {
+        startMs = raw < 1000000000000 ? raw * 1000 : raw;
+        break;
+      }
+      if (typeof raw === "string") {
+        const parsed = new Date(raw).getTime();
+        if (!isNaN(parsed) && parsed > 0) {
+          startMs = parsed;
+          break;
+        }
+      }
+    }
+  }
+  return startMs;
+}
+
+export function updateRunningTurnDuration() {
+  const el = document.getElementById("running-turn-duration");
+  if (!el || !el.dataset.startMs) return;
+  const startMs = Number(el.dataset.startMs);
+  if (!startMs || isNaN(startMs) || startMs <= 0) return;
+  const elapsedMs = Math.max(0, Date.now() - startMs);
+  const formatted = elapsedMs < 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : formatDuration(elapsedMs);
+  if (formatted && el.textContent !== formatted) {
+    el.textContent = formatted;
+  }
+}
+
+export function renderTurnProcessBar(turn, isRunningOverride) {
   const {
     turnKey,
     processRecords,
@@ -35,6 +83,15 @@ export function renderTurnProcessBar(turn) {
 
   if (!processRecords || processRecords.length === 0) return "";
   state.turnsMap[turnKey] = turn;
+
+  const isSessionRunning = Boolean(
+    state.selectedSessionId && isSessionWorking(state.selectedSessionId)
+  );
+  const isRunning =
+    typeof isRunningOverride === "boolean"
+      ? isRunningOverride
+      : Boolean(turn.isRunning && isSessionRunning);
+  turn.isRunning = isRunning;
 
   const isExpanded = !!state.expandedTurns[turnKey] || !!state.turnThinkingExpanded[turnKey];
   const totalActions =
@@ -334,22 +391,46 @@ export function renderTurnProcessBar(turn) {
       </div>`
     : "";
 
+  let displayDuration = durationStr;
+  let runningStartMs = null;
+
+  if (isRunning) {
+    runningStartMs = getTurnRunningStartTime(turn, state.selectedSessionId);
+    if (runningStartMs) {
+      const elapsedMs = Math.max(0, Date.now() - runningStartMs);
+      displayDuration = elapsedMs < 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : formatDuration(elapsedMs);
+    }
+  }
+
   return `
     <div id="turn-process-wrap-${escapeHtml(turnKey)}" class="mb-2 rounded-xl bg-zinc-900/50 hover:bg-zinc-900/70 border border-zinc-800/80 px-2.5 sm:px-3 py-1 transition-colors">
-      <div onclick="window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}')"
-        class="cursor-pointer select-none min-h-[34px] flex items-center justify-between gap-1.5 sm:gap-2 active:opacity-75">
+      <div role="button" tabindex="0" aria-expanded="${isExpanded ? "true" : "false"}"
+        onclick="window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}')"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}');}"
+        class="cursor-pointer select-none min-h-[34px] flex items-center justify-between gap-1.5 sm:gap-2 active:opacity-75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/50 rounded-lg px-1 -mx-1">
         <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
           <span class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5 shrink-0">
-            <svg class="w-3.5 h-3.5 text-sky-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            ${
+              isRunning
+                ? `<span class="relative flex h-2.5 w-2.5 shrink-0 items-center justify-center mr-0.5" title="执行中">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.8)]"></span>
+                  </span>`
+                : `<svg class="w-3.5 h-3.5 text-sky-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`
+            }
             <span class="whitespace-nowrap">${totalActions} 个执行步骤</span>
           </span>
           <div class="flex items-center gap-1 min-w-0 overflow-hidden">
             ${badges.join("")}
           </div>
           ${
-            durationStr
+            isRunning && runningStartMs
+              ? `<span class="text-zinc-500 font-normal shrink-0">·</span><span id="running-turn-duration" data-start-ms="${runningStartMs}" class="text-[11px] font-mono text-sky-400 font-medium shrink-0">${escapeHtml(
+                  displayDuration || "1s"
+                )}</span>`
+              : displayDuration
               ? `<span class="text-zinc-500 font-normal shrink-0">·</span><span class="text-[11px] font-mono text-zinc-400 font-normal shrink-0">${escapeHtml(
-                  durationStr
+                  displayDuration
                 )}</span>`
               : ""
           }

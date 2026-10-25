@@ -296,7 +296,11 @@ export function renderMessagesList() {
       }
 
       // Assistant Turn（沉浸式全宽文档流版式，无突兀分割线）
-      const processBarHtml = renderTurnProcessBar(t);
+      const isLastTurn = turns.indexOf(t) === turns.length - 1;
+      const isWorking = isSessionWorking(state.selectedSessionId);
+      const isCurrentRunning = isWorking && isLastTurn;
+      t.isRunning = isCurrentRunning;
+      const processBarHtml = renderTurnProcessBar(t, isCurrentRunning);
       const mdBodyHtml = t.primarySteps
         .map((ps) => renderMarkdownHtml(ps.content, `${t.turnKey}_s${ps.step_index}`))
         .join('<div class="my-3"></div>');
@@ -311,7 +315,6 @@ export function renderMessagesList() {
       }
 
       const mdCardsHtml = renderMdDocQuickCards(t.mdFiles);
-      const isLastTurn = turns.indexOf(t) === turns.length - 1;
       const questionsCardHtml =
         t.questions && t.questions.length > 0 && isLastTurn
           ? renderInteractiveQuestionsCard(t, isLastTurn)
@@ -352,18 +355,17 @@ export function renderMessagesList() {
 export function scrollToBottom(smooth = false) {
   const container = document.getElementById("messages-container");
   if (!container) return;
-  const doScroll = () => {
-    const bottomAnchor = document.getElementById("messages-bottom-anchor");
-    if (bottomAnchor && typeof bottomAnchor.scrollIntoView === "function") {
-      bottomAnchor.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
-    } else {
-      container.scrollTop = container.scrollHeight;
-    }
-  };
-  doScroll();
-  requestAnimationFrame(() => {
-    doScroll();
-  });
+  // 若用户正在输入框聚焦输入，严禁强制滚屏打断用户视口与软键盘输入状态
+  const promptInput = document.getElementById("prompt-input");
+  if (promptInput && document.activeElement === promptInput) {
+    return;
+  }
+  const targetTop = container.scrollHeight - container.clientHeight;
+  if (smooth && typeof container.scrollTo === "function") {
+    container.scrollTo({ top: targetTop, behavior: "smooth" });
+  } else {
+    container.scrollTop = container.scrollHeight;
+  }
   const jumpBtn = document.getElementById("scroll-bottom-pill");
   if (jumpBtn) jumpBtn.classList.add("hidden");
 }
