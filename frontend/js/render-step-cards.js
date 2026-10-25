@@ -81,9 +81,6 @@ export function renderTurnProcessBar(turn, isRunningOverride) {
     durationStr,
   } = turn;
 
-  if (!processRecords || processRecords.length === 0) return "";
-  state.turnsMap[turnKey] = turn;
-
   const isSessionRunning = Boolean(
     state.selectedSessionId && isSessionWorking(state.selectedSessionId)
   );
@@ -92,6 +89,9 @@ export function renderTurnProcessBar(turn, isRunningOverride) {
       ? isRunningOverride
       : Boolean(turn.isRunning && isSessionRunning);
   turn.isRunning = isRunning;
+
+  if ((!processRecords || processRecords.length === 0) && !isRunning) return "";
+  state.turnsMap[turnKey] = turn;
 
   const isExpanded = !!state.expandedTurns[turnKey] || !!state.turnThinkingExpanded[turnKey];
   const totalActions =
@@ -402,23 +402,26 @@ export function renderTurnProcessBar(turn, isRunningOverride) {
     }
   }
 
+  const labelText = totalActions > 0 ? `${totalActions} 个执行步骤` : "正在思考与执行...";
+
   return `
-    <div id="turn-process-wrap-${escapeHtml(turnKey)}" class="mb-2 rounded-xl bg-zinc-900/50 hover:bg-zinc-900/70 border border-zinc-800/80 px-2.5 sm:px-3 py-1 transition-colors">
+    <div id="turn-process-wrap-${escapeHtml(turnKey)}" class="mb-2 rounded-xl bg-zinc-900/50 hover:bg-zinc-900/70 border border-zinc-800/80 px-3 sm:px-3.5 py-1 transition-colors">
       <div role="button" tabindex="0" aria-expanded="${isExpanded ? "true" : "false"}"
         onclick="window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}')"
         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.appActions.toggleTurnSteps('${escapeJsSingleQuote(turnKey)}');}"
-        class="cursor-pointer select-none min-h-[34px] flex items-center justify-between gap-1.5 sm:gap-2 active:opacity-75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/50 rounded-lg px-1 -mx-1">
-        <div class="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+        class="cursor-pointer select-none min-h-[34px] flex items-center justify-between gap-1.5 sm:gap-2 active:opacity-75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500/50 rounded-lg px-0.5">
+        <div class="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
           <span class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5 shrink-0">
             ${
               isRunning
-                ? `<span class="relative flex h-2.5 w-2.5 shrink-0 items-center justify-center mr-0.5" title="执行中">
-                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
-                    <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.8)]"></span>
+                ? `<span class="relative inline-flex items-center justify-center shrink-0 w-3.5 h-3.5 mr-0.5 overflow-visible" title="执行中">
+                    <svg class="lightning-wave-a absolute inset-0 w-3.5 h-3.5 text-sky-400 fill-sky-400" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                    <svg class="lightning-wave-b absolute inset-0 w-3.5 h-3.5 text-sky-400 fill-sky-400" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                    <svg class="lightning-glow-center relative w-3.5 h-3.5 text-sky-400 fill-sky-400" viewBox="0 0 24 24" stroke="currentColor" stroke-width="0.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                   </span>`
                 : `<svg class="w-3.5 h-3.5 text-sky-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`
             }
-            <span class="whitespace-nowrap">${totalActions} 个执行步骤</span>
+            <span class="whitespace-nowrap">${labelText}</span>
           </span>
           <div class="flex items-center gap-1 min-w-0 overflow-hidden">
             ${badges.join("")}
@@ -455,17 +458,17 @@ import { saveToBoundedStore } from "./utils.js";
 export function renderMdDocQuickCards(mdFiles) {
   if (!mdFiles || mdFiles.length === 0) return "";
   return `
-    <div class="mt-2.5 flex flex-wrap gap-1.5">
+    <div class="mt-2.5 flex flex-wrap gap-1.5 max-w-full">
       ${mdFiles
         .map(
           (doc) => `
             <button type="button"
               onclick="window.appActions.openFilePreview('${escapeJsSingleQuote(doc.path)}')"
-              class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-sky-500/12 hover:bg-sky-500/20 border border-sky-500/35 text-left transition active:scale-95">
-              <span class="text-base">📄</span>
-              <div class="min-w-0">
-                <div class="text-xs font-semibold text-sky-300 truncate">${escapeHtml(doc.name)}</div>
-                <div class="text-[10px] text-zinc-400">点击全屏阅读 Markdown 文档</div>
+              class="flex items-start gap-2 px-3 py-1.5 rounded-xl bg-sky-500/12 hover:bg-sky-500/20 border border-sky-500/35 text-left transition active:scale-95 max-w-full">
+              <span class="text-base shrink-0 mt-0.5">📄</span>
+              <div class="min-w-0 flex-1">
+                <div class="text-xs font-semibold text-sky-300 break-all whitespace-normal leading-snug">${escapeHtml(doc.name)}</div>
+                <div class="text-[10px] text-zinc-400 mt-0.5">点击全屏阅读 Markdown 文档</div>
               </div>
             </button>
           `

@@ -297,7 +297,6 @@ export function renderMessagesList() {
 
       // Assistant Turn（沉浸式全宽文档流版式，无突兀分割线）
       const isLastTurn = turns.indexOf(t) === turns.length - 1;
-      const isWorking = isSessionWorking(state.selectedSessionId);
       const isCurrentRunning = isWorking && isLastTurn;
       t.isRunning = isCurrentRunning;
       const processBarHtml = renderTurnProcessBar(t, isCurrentRunning);
@@ -321,7 +320,7 @@ export function renderMessagesList() {
           : "";
 
       return `
-        <article class="mb-6">
+        <article class="mb-6 max-w-full min-w-0">
           ${processBarHtml}
           ${
             mdBodyHtml || fallbackStatusHtml
@@ -338,10 +337,35 @@ export function renderMessagesList() {
     })
     .join("");
 
+  // 若会话正处于运行中，但后端尚未落盘第一个 assistant 步骤（如刚下发指令），立即呈现瞬时运行状态条
+  let pendingAssistantHtml = "";
+  if (isWorking && (!lastTurn || lastTurn.type === "user")) {
+    const pendingTurn = {
+      type: "assistant_turn",
+      turnKey: `pending_${state.selectedSessionId}`,
+      processRecords: [],
+      thinkingCount: 0,
+      toolCount: 0,
+      editedFiles: [],
+      mdFiles: [],
+      hasHighRisk: false,
+      isRunning: true,
+      isPendingInitial: true,
+      createdAt: new Date().toISOString(),
+      started_at: (state.pendingTurnThinking && state.pendingTurnThinking[state.selectedSessionId]) || Date.now(),
+    };
+    pendingAssistantHtml = `
+      <article class="mb-6">
+        ${renderTurnProcessBar(pendingTurn, true)}
+      </article>
+    `;
+  }
+
   container.innerHTML =
     `<div class="max-w-5xl mx-auto">` +
     olderBannerHtml +
     html +
+    pendingAssistantHtml +
     `<div id="live-stream-overlay-slot"></div><div id="messages-bottom-anchor"></div></div>`;
   renderLiveStreamOverlay();
 

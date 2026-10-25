@@ -54,6 +54,12 @@
   box-shadow: 0 0 8px var(--accent-amber, #f59e0b);
 }
 
+html,
+body {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
@@ -168,6 +174,7 @@ body {
 
 /* 网页最右侧的主视口消息滚动条（#messages-container）：黑色底色 + 低调微光细滑块，告别突兀白条 */
 #messages-container {
+  overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.08) #000000;
 }
@@ -578,19 +585,26 @@ details:not([open]) > summary .toggle-arrow-closed {
 /* 本地文件点击预览胶囊链接 */
 .md-file-chip {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 0.25rem;
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  text-align: left;
+  line-height: 1.4;
   font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.78rem;
   background: rgba(14, 165, 233, 0.14);
   color: #38bdf8;
   border: 1px solid rgba(56, 189, 248, 0.35);
-  padding: 0.08rem 0.45rem;
+  padding: 0.12rem 0.45rem;
   border-radius: 0.4rem;
   cursor: pointer;
   transition: var(--transition-fast);
   text-decoration: none;
   vertical-align: baseline;
+  box-sizing: border-box;
 }
 
 .md-file-chip:hover,
@@ -834,10 +848,14 @@ details:not([open]) > summary .toggle-arrow-closed {
 
 /* 移动端执行步骤详情扁平化与抗挤压优化 */
 @media (max-width: 640px) {
+  /* 手机端输入舱移除顶部浅色分割线，保持纯净深色沉浸底色 */
+  #chat-footer {
+    border-top: none !important;
+  }
   /* 减少展开步骤的内边距损耗，让出横向可视宽度给代码与文本 */
   [id^="turn-process-wrap-"] {
-    padding-left: 0.5rem;
-    padding-right: 0.5rem;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
   }
   .read-tool-chips-row {
     gap: 0.2rem;
@@ -988,4 +1006,50 @@ details:not([open]) > summary .toggle-arrow-closed {
 #new-session-model-dropdown > div,
 #new-session-workspace-dropdown > div {
   touch-action: manipulation;
+}
+
+/* ==========================================================================
+   闪电连续能量脉冲动效（双重交错波纹 + 呼吸发光，消除断续感）
+   ========================================================================== */
+@keyframes lightning-glow-flow {
+  0%, 100% {
+    transform: scale(0.96);
+    filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.6)) brightness(1);
+  }
+  50% {
+    transform: scale(1.06);
+    filter: drop-shadow(0 0 8px rgba(56, 189, 248, 1)) drop-shadow(0 0 14px rgba(56, 189, 248, 0.5)) brightness(1.25);
+  }
+}
+
+@keyframes lightning-continuous-ripple {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.75;
+  }
+  60% {
+    opacity: 0.35;
+  }
+  100% {
+    transform: scale(1.85);
+    opacity: 0;
+  }
+}
+
+.lightning-glow-center {
+  animation: lightning-glow-flow 1.5s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.lightning-wave-a {
+  animation: lightning-continuous-ripple 1.5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  transform-origin: center;
+  pointer-events: none;
+}
+
+.lightning-wave-b {
+  animation: lightning-continuous-ripple 1.5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  animation-delay: 0.75s;
+  transform-origin: center;
+  pointer-events: none;
 }
