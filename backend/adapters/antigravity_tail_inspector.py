@@ -104,7 +104,7 @@ def inspect_transcript_tail_status(tp: Path) -> tuple[bool, str]:
         return True, "running"
 
     # 5. 异常或额度超限终态判定
-    if status == "ERROR" or is_quota_or_rate_limit_error(content):
+    if status == "ERROR":
         return False, "error"
 
     # 6. 兜底状态：如果已明确完成且超过短过渡期，平滑退火为 idle

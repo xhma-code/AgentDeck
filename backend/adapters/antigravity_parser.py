@@ -215,8 +215,8 @@ def parse_agy_step_dict(
             )
 
         final_content = clean_denied_tool_instruction(content_raw.strip())
-        is_quota = is_quota_or_rate_limit_error(final_content)
-        if is_quota or status == "ERROR":
+        if status == "ERROR":
+            is_quota = is_quota_or_rate_limit_error(final_content)
             if not final_content.startswith("> [!"):
                 final_content = build_error_alert_markdown("Antigravity", final_content, is_quota=is_quota)
         msg_item = UnifiedMessageItem(

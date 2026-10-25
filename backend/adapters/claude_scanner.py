@@ -124,8 +124,6 @@ def parse_claude_session_file(
                         if rec_type == "user" and not title:
                             title = text[:60]
                         preview = text[:160]
-                        if rec_type == "assistant" and is_quota_or_rate_limit_error(text):
-                            last_is_error = True
     except Exception as exc:
         log_structured_error(
             problem=f"解析 Claude Code 会话摘要异常 ({fpath.name})",

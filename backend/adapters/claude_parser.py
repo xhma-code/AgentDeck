@@ -278,9 +278,6 @@ def parse_claude_record_dict(
 
         if text_parts or thinking_parts or tool_calls or parsed_questions:
             content_str = "\n\n".join(text_parts)
-            is_quota = is_quota_or_rate_limit_error(content_str)
-            if is_quota and not content_str.startswith("> [!"):
-                content_str = build_error_alert_markdown("Claude Code", content_str, is_quota=True)
             step_idx_container[0] += 1
             cur_step = step_idx_container[0]
             items.append(
