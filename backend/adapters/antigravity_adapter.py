@@ -428,36 +428,56 @@ class AntigravityAdapter(BaseAgentAdapter):
             return raw_bytes
 
     def delete_session(self, raw_session_id: str) -> bool:
-        """彻底物理删除 Antigravity 会话：标记 killed 并清理 brain 目录与会话数据库。"""
+        """彻底物理删除 Antigravity 会话：Language Server RPC 内存删除 + 磁盘与库表清理。"""
         import sqlite3
         success = False
-        if self.summary_db_path.exists():
-            try:
-                with sqlite3.connect(str(self.summary_db_path), timeout=3.0) as conn:
-                    conn.execute(
-                        "UPDATE conversation_summaries SET killed = 1 WHERE conversation_id = ?",
-                        (raw_session_id,),
-                    )
-                    conn.commit()
-                success = True
-            except Exception as exc:
-                logger.warning(f"更新 Antigravity 会话 {raw_session_id} killed 状态失败: {exc}")
 
-        session_brain = self.brain_dir / raw_session_id
-        if session_brain.exists() and session_brain.is_dir():
-            try:
-                shutil.rmtree(session_brain, ignore_errors=True)
-                success = True
-            except Exception as exc:
-                logger.warning(f"删除 Antigravity brain 目录 {session_brain} 失败: {exc}")
+        # 1. 优先通过运行中的 Language Server Connect-RPC 原生在客户端与内存中彻底消除
+        try:
+            if hasattr(self, "ls_bridge"):
+                ls_deleted = self.ls_bridge.delete_cascade(raw_session_id)
+                if ls_deleted:
+                    success = True
+        except Exception as ls_exc:
+            logger.debug(f"通过 Language Server 删除会话异常: {ls_exc}")
 
-        conv_db = self.conversations_dir / f"{raw_session_id}.db"
-        if conv_db.exists():
-            try:
-                conv_db.unlink(missing_ok=True)
-                success = True
-            except Exception as exc:
-                logger.warning(f"删除 Antigravity 会话数据库 {conv_db} 失败: {exc}")
+        # 2. 清理 conversation_summaries.db（支持双目录）
+        alt_root = (
+            Path(os.path.expanduser("~/.gemini/antigravity"))
+            if "antigravity-cli" in str(self.root_dir).lower()
+            else Path(os.path.expanduser("~/.gemini/antigravity-cli"))
+        )
+        for s_db in [self.summary_db_path, alt_root / "conversation_summaries.db"]:
+            if s_db.exists():
+                try:
+                    with sqlite3.connect(str(s_db), timeout=3.0) as conn:
+                        conn.execute(
+                            "DELETE FROM conversation_summaries WHERE conversation_id = ?",
+                            (raw_session_id,),
+                        )
+                        conn.commit()
+                    success = True
+                except Exception as exc:
+                    logger.warning(f"清理 Antigravity 摘要库 {s_db} 异常: {exc}")
+
+        # 3. 清理本地 brain 目录与会话数据库（支持双目录）
+        for b_dir in [self.brain_dir, alt_root / "brain"]:
+            session_brain = b_dir / raw_session_id
+            if session_brain.exists() and session_brain.is_dir():
+                try:
+                    shutil.rmtree(session_brain, ignore_errors=True)
+                    success = True
+                except Exception as exc:
+                    logger.warning(f"删除 Antigravity brain 目录 {session_brain} 失败: {exc}")
+
+        for c_dir in [self.conversations_dir, alt_root / "conversations"]:
+            conv_db = c_dir / f"{raw_session_id}.db"
+            if conv_db.exists():
+                try:
+                    conv_db.unlink(missing_ok=True)
+                    success = True
+                except Exception as exc:
+                    logger.warning(f"删除 Antigravity 会话数据库 {conv_db} 失败: {exc}")
 
         self.invalidate_cache()
         return success

@@ -385,14 +385,20 @@ class AgentOrchestrator:
         if not unified_id or ":" not in unified_id:
             return False
 
-        agent_type, raw_id = unified_id.split(":", 1)
+        target_uid = (
+            self.meta_db.resolve_unified_id(unified_id)
+            if hasattr(self.meta_db, "resolve_unified_id")
+            else unified_id
+        )
+        agent_type, raw_id = target_uid.split(":", 1)
 
         # 1. 若当前会话活跃执行中，先安全中止
-        if self.is_session_active(unified_id):
-            try:
-                await self.abort_session(unified_id, reason="会话已被用户删除")
-            except Exception as abort_exc:
-                logger.warning(f"中止待删除会话 {unified_id} 异常: {abort_exc}")
+        for uid in set([unified_id, target_uid]):
+            if self.is_session_active(uid):
+                try:
+                    await self.abort_session(uid, reason="会话已被用户删除")
+                except Exception as abort_exc:
+                    logger.warning(f"中止待删除会话 {uid} 异常: {abort_exc}")
 
         # 2. 委托对应适配器执行底层物理清理（文件与库表）
         adapter = self.adapters.get(agent_type)
@@ -400,10 +406,12 @@ class AgentOrchestrator:
             try:
                 adapter.delete_session(raw_id)
             except Exception as adp_exc:
-                logger.warning(f"适配器物理删除会话 {unified_id} 异常: {adp_exc}")
+                logger.warning(f"适配器物理删除会话 {target_uid} 异常: {adp_exc}")
 
         # 3. 内部数据库写入墓碑软删除标记，彻底隔绝重新抓取
         self.meta_db.mark_session_deleted(unified_id)
+        if target_uid != unified_id:
+            self.meta_db.mark_session_deleted(target_uid)
 
         # 4. 递增状态版本号并失效适配器短效缓存
         self.bump_version()
@@ -414,7 +422,10 @@ class AgentOrchestrator:
                 pass
 
         # 5. 全网广播 SESSION_DELETED 事件
-        await self.broadcast_event("SESSION_DELETED", {"unified_id": unified_id})
+        await self.broadcast_event(
+            "SESSION_DELETED",
+            {"unified_id": unified_id, "actual_unified_id": target_uid},
+        )
         return True
 
     async def send_prompt_to_session(

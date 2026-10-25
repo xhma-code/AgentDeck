@@ -546,3 +546,29 @@ class AntigravityLanguageServerBridge:
                     )
                     return True
         return False
+
+    def delete_cascade(self, cascade_id: str) -> bool:
+        """通过 Connect-RPC DeleteCascadeTrajectory 原生在 IDE 与 Language Server 内存中彻底删除会话。"""
+        candidates = self._scan_ls_processes()
+        deleted_any = False
+        payload = {"cascadeId": cascade_id}
+        for pid, token in candidates:
+            ports = self._find_listening_ports(pid)
+            for port in ports:
+                scheme = self._probe_connect_port(port, token)
+                if not scheme:
+                    continue
+                ok, _ = self._raw_post(
+                    scheme=scheme,
+                    port=port,
+                    csrf_token=token,
+                    method="DeleteCascadeTrajectory",
+                    body=payload,
+                    timeout=2.0,
+                )
+                if ok:
+                    logger.info(
+                        f"已通过 Language Server (PID={pid}, Port={port}) Connect-RPC 原生删除会话: {cascade_id[:8]}"
+                    )
+                    deleted_any = True
+        return deleted_any

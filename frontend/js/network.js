@@ -9,6 +9,8 @@ import {
   loadSessions,
   loadSessionMessages,
   loadSystemStatus,
+  pickDefaultSession,
+  selectSession,
 } from "./data.js";
 import {
   renderApprovalBanners,
@@ -18,6 +20,7 @@ import {
   renderLiveStreamOverlay,
   renderOtherRunningPill,
   renderQrModalContent,
+  renderMessagesList,
 } from "./render.js";
 
 import {
@@ -336,7 +339,40 @@ export function handleRealtimeEvent(envelope) {
     return;
   }
 
-  if (type === "SESSION_UPDATED" || type === "SESSION_CREATED" || type === "SESSION_DELETED") {
+  if (type === "SESSION_DELETED") {
+    const deletedIds = [payload?.unified_id, payload?.actual_unified_id].filter(Boolean);
+    for (const did of deletedIds) {
+      delete state.pendingTurnThinking[did];
+      delete state.streamingBuffer[did];
+      delete state.optimisticMessages[did];
+      if (state.retainedActiveSessionIds) {
+        state.retainedActiveSessionIds.delete(did);
+      }
+      state.sessions = (state.sessions || []).filter((s) => s.unified_id !== did);
+      state.allSessions = (state.allSessions || []).filter((s) => s.unified_id !== did);
+    }
+    if (deletedIds.includes(state.selectedSessionId)) {
+      const nextSess = pickDefaultSession(state.sessions);
+      state.selectedSessionId = nextSess?.unified_id || null;
+      renderSessionList();
+      renderCurrentSessionHeader();
+      if (state.selectedSessionId) {
+        selectSession(state.selectedSessionId);
+      } else {
+        try {
+          history.replaceState(null, "", window.location.pathname + window.location.search);
+        } catch (_) {}
+        state.messages = [];
+        renderMessagesList();
+      }
+    } else {
+      renderSessionList();
+    }
+    loadSessions(true);
+    return;
+  }
+
+  if (type === "SESSION_UPDATED" || type === "SESSION_CREATED") {
     if (type === "SESSION_UPDATED" && payload && payload.unified_id) {
       const uid = payload.unified_id;
       const match = (state.allSessions || state.sessions).find((s) => s.unified_id === uid);
