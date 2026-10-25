@@ -203,19 +203,19 @@ def parse_session_message_rows(
                 if items and items[-1].role == "assistant":
                     if not items[-1].content and not items[-1].tool_calls:
                         items[-1].content = alert_text
-                    elif "模型使用额度已耗尽" in items[-1].content or "OpenCode 会话异常中断" in items[-1].content:
+                        continue
+                    if "模型使用额度已耗尽" in items[-1].content or "OpenCode 会话异常中断" in items[-1].content:
                         # 前序步骤已包含同源中断警告，避免重复追加冗余卡片
                         continue
-                else:
-                    items.append(
-                        UnifiedMessageItem(
-                            item_id=f"{raw_session_id}:msg:{mid}",
-                            step_index=idx,
-                            role="assistant",
-                            created_at=created_at,
-                            content=alert_text,
-                        )
+                items.append(
+                    UnifiedMessageItem(
+                        item_id=f"{raw_session_id}:msg:{mid}",
+                        step_index=idx,
+                        role="assistant",
+                        created_at=created_at,
+                        content=alert_text,
                     )
+                )
 
     return items
 

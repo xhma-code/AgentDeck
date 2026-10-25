@@ -433,7 +433,7 @@ def merge_agy_models_catalog(
                 "id": norm_id,
                 "label": lbl,
                 "tag": str(c.get("tag") or ""),
-                "quota": c.get("quota", 1.0),
+                "quota": c.get("quota"),
                 "reset_time": c.get("reset_time"),
                 "is_recommended": bool(c.get("is_recommended")),
                 "is_default": is_def,
@@ -455,7 +455,7 @@ def merge_agy_models_catalog(
     fallback: list[dict[str, Any]] = []
     for bm in base_models:
         item = dict(bm)
-        item["quota"] = 1.0
+        item["quota"] = None
         if item["id"] == default_mid:
             item["is_default"] = True
         fallback.append(item)

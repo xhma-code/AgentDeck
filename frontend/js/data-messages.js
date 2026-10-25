@@ -58,6 +58,21 @@ export async function loadSessionMessages(unifiedId, options = false) {
     if (data && data.not_modified) {
       return;
     }
+    if (data && data.unified_id && data.unified_id !== unifiedId) {
+      const realUid = data.unified_id;
+      if (state.selectedSessionId === unifiedId) {
+        state.selectedSessionId = realUid;
+      }
+      if (state.optimisticMessages[unifiedId]) {
+        state.optimisticMessages[realUid] = state.optimisticMessages[unifiedId];
+        delete state.optimisticMessages[unifiedId];
+      }
+      if (state.pendingTurnThinking[unifiedId]) {
+        state.pendingTurnThinking[realUid] = state.pendingTurnThinking[unifiedId];
+        delete state.pendingTurnThinking[unifiedId];
+      }
+      unifiedId = realUid;
+    }
     if (data && data._etag) {
       state.sessionMessagesETag = state.sessionMessagesETag || {};
       state.sessionMessagesETag[unifiedId] = data._etag;
@@ -181,7 +196,7 @@ export async function loadSessionMessages(unifiedId, options = false) {
             inc.role === "user" &&
             String(inc.content || "").trim() === String(opt.content || "").trim()
         );
-        if (!found) {
+        if (!found && (!incoming.length || data.is_running)) {
           stillPending.push(opt);
         }
       }
@@ -243,8 +258,10 @@ export async function loadSessionMessages(unifiedId, options = false) {
 
       // 检测当前会话最后一条消息是否为额度耗尽警告，进行即时轻提醒（支持四大 Agent）
       const lastMsg = mergedMessages[mergedMessages.length - 1];
-      const curSess = state.sessions.find((s) => s.unified_id === unifiedId);
-      const agentLabel = (AGENT_META[curSess?.agent_type] || AGENT_META.claude_code).label;
+      const curSess = (state.allSessions || state.sessions || []).find((s) => s.unified_id === unifiedId);
+      const agentType = curSess?.agent_type || (unifiedId || "").split(":")[0];
+      const agentLabel = AGENT_META[agentType]?.label || "Agent";
+
       const isQuotaAlert =
         lastMsg &&
         typeof lastMsg.content === "string" &&

@@ -442,7 +442,7 @@ class AntigravityLanguageServerBridge:
                 )
                 qi = m.get("quotaInfo") or {}
                 rem_frac = qi.get("remainingFraction")
-                quota = float(rem_frac) if rem_frac is not None else 1.0
+                quota = round(max(0.0, min(1.0, float(rem_frac))), 4) if rem_frac is not None else None
 
                 results.append(
                     {
@@ -450,7 +450,7 @@ class AntigravityLanguageServerBridge:
                         "modelId": mid,
                         "tag": str(m.get("tagTitle") or ""),
                         "is_recommended": bool(m.get("isRecommended")),
-                        "quota": round(max(0.0, min(1.0, quota)), 4),
+                        "quota": quota,
                         "reset_time": qi.get("resetTime"),
                     }
                 )

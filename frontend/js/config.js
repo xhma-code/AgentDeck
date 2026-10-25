@@ -2,23 +2,25 @@
  * AgentDeck 配置与静态元数据定义
  */
 
+const DEFAULT_AGY_MODELS = [
+  { id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)", tag: "New", is_recommended: true, is_default: true },
+  { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", tag: "New", is_recommended: true },
+  { id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)", tag: "New", is_recommended: true },
+  { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡", is_recommended: true },
+  { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速", is_recommended: false },
+  { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快", is_recommended: true },
+  { id: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)", tag: "New", is_recommended: true },
+  { id: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)", tag: "New", is_recommended: true },
+  { id: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)", tag: "深度", is_recommended: true },
+  { id: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)", tag: "New", is_recommended: true },
+  { id: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)", tag: "New", is_recommended: true },
+  { id: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)", tag: "推荐", is_recommended: true },
+  { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "Notice", is_recommended: true },
+];
+
 export const DEFAULT_MODELS_BY_AGENT = {
-  agy_cli: [
-    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡", is_recommended: true, is_default: true },
-    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速", is_recommended: false },
-    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快", is_recommended: false },
-    { id: "claude-sonnet-4-6-thinking", label: "Claude Sonnet 4.6 (Thinking)", tag: "Notice", is_recommended: true },
-    { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", tag: "Notice", is_recommended: true },
-    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "Notice", is_recommended: true },
-  ],
-  agy_ide: [
-    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)", tag: "均衡", is_recommended: true, is_default: true },
-    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", tag: "极速", is_recommended: false },
-    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", tag: "超快", is_recommended: false },
-    { id: "claude-sonnet-4-6-thinking", label: "Claude Sonnet 4.6 (Thinking)", tag: "Notice", is_recommended: true },
-    { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)", tag: "Notice", is_recommended: true },
-    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", tag: "Notice", is_recommended: true },
-  ],
+  agy_cli: DEFAULT_AGY_MODELS.map((m) => ({ ...m })),
+  agy_ide: DEFAULT_AGY_MODELS.map((m) => ({ ...m })),
   claude_code: [
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", tag: "默认" },
     { id: "claude-opus-4-7", label: "Claude Opus 4.7", tag: "深度" },
