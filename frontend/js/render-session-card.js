@@ -32,7 +32,14 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
   // 运行/等待审批/活跃/完成未看状态判定：优先在右侧显示对应状态徽标
   const isWorking = typeof isSessionWorking === "function" ? isSessionWorking(s.unified_id) : false;
   let statusDotHtml = null;
-  if (s.status === "waiting_approval") {
+  if (s.status === "error") {
+    statusDotHtml = `
+      <span class="relative flex h-2 w-2" title="会话中断 / 额度耗尽" aria-label="异常中断">
+        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+        <span class="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+      </span>
+    `;
+  } else if (s.status === "waiting_approval") {
     statusDotHtml = `
       <span class="relative flex h-2 w-2" title="等待审批" aria-label="等待审批">
         <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
@@ -188,6 +195,7 @@ export function renderOtherRunningPill() {
       pill.classList.remove("hidden");
       pill.classList.add("md:flex");
 
+      const otherError = pendingAttentionList.filter((s) => s.status === "error").length;
       const otherApproval = pendingAttentionList.filter((s) => s.status === "waiting_approval").length;
       const otherUnread = pendingAttentionList.filter((s) => isSessionCompletedUnread(s)).length;
       const otherRunning = pendingAttentionList.filter(
@@ -197,7 +205,10 @@ export function renderOtherRunningPill() {
       let dotColorClass = "bg-emerald-400 animate-pulse";
       let pillColorClass = "border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300";
 
-      if (otherApproval > 0) {
+      if (otherError > 0) {
+        dotColorClass = "bg-rose-400 animate-ping";
+        pillColorClass = "border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300";
+      } else if (otherApproval > 0) {
         dotColorClass = "bg-amber-400 animate-ping";
         pillColorClass = "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300";
       } else if (otherUnread > 0 && otherRunning === 0) {
@@ -206,6 +217,7 @@ export function renderOtherRunningPill() {
       }
 
       const descParts = [];
+      if (otherError > 0) descParts.push(`${otherError} 中断`);
       if (otherApproval > 0) descParts.push(`${otherApproval} 待审批`);
       if (otherUnread > 0) descParts.push(`${otherUnread} 待查看`);
       if (otherRunning > 0) descParts.push(`${otherRunning} 运行中`);

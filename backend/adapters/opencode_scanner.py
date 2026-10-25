@@ -27,6 +27,8 @@ from backend.adapters.opencode_parser import (
 from backend.core.database import safe_query_external_sqlite
 from backend.core.logger import log_structured_error, logger
 
+_logged_error_sids: set[str] = set()
+
 
 def parse_opencode_model_field(raw_model: Any) -> str:
     """安全解析 OpenCode SQLite 会话表中 model 字段（支持 JSON 字典字符串与普通字符串）。"""
@@ -269,8 +271,14 @@ def query_opencode_sessions(
         elif has_v2:
             t_updated = int(r.get("time_updated") or 0)
             t_idle = int(r.get("time_idle") or 0) if r.get("time_idle") is not None else 0
+            idle_outcome = str(r.get("idle_outcome") or "")
             if (t_idle == 0 or t_updated > t_idle) and (now_ms - t_updated < 45000):
                 status = "running"
+            elif idle_outcome == "failed":
+                status = "error"
+                if sid not in _logged_error_sids:
+                    _logged_error_sids.add(sid)
+                    logger.warning(f"OpenCode 会话检测到异常中断/额度耗尽: sid={sid[:8]}, idle_outcome={idle_outcome}")
             else:
                 status = "idle"
         else:

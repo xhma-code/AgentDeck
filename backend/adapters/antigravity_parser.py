@@ -29,6 +29,8 @@ from backend.adapters.models import (
     UnifiedToolCall,
 )
 from backend.adapters.tool_utils import (
+    build_error_alert_markdown,
+    is_quota_or_rate_limit_error,
     classify_tool_risk,
     count_diff_lines,
     extract_interactive_questions,
@@ -213,6 +215,10 @@ def parse_agy_step_dict(
             )
 
         final_content = clean_denied_tool_instruction(content_raw.strip())
+        is_quota = is_quota_or_rate_limit_error(final_content)
+        if is_quota or status == "ERROR":
+            if not final_content.startswith("> [!"):
+                final_content = build_error_alert_markdown("Antigravity", final_content, is_quota=is_quota)
         msg_item = UnifiedMessageItem(
             item_id=f"{raw_session_id}:step:{step_index}",
             step_index=step_index,

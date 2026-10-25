@@ -38,6 +38,40 @@ def ms_to_iso(ts_ms: Any) -> str:
         return utc_now_iso()
 
 
+def format_opencode_error_alert(err_data: Any, outcome: str = "failed") -> str:
+    """提取并格式化 OpenCode 异常/额度耗尽错误为标准 GitHub 风格警示 Markdown。"""
+    err_dict = err_data if isinstance(err_data, dict) else {}
+    err_type = str(err_dict.get("type") or "")
+    err_msg = str(err_dict.get("message") or "")
+    status_code = err_dict.get("status")
+
+    # 识别免费额度耗尽与速率限制 (429 / provider.free-limit / FreeUsageLimitError 等)
+    is_quota_exceeded = (
+        "free-limit" in err_type.lower()
+        or "freeusagelimit" in str(err_dict).lower()
+        or status_code == 429
+        or "limit reached" in err_msg.lower()
+        or "quota" in err_msg.lower()
+    )
+
+    if is_quota_exceeded:
+        body = err_msg or "Free usage limit reached. 当前模型的免费使用额度已达上限，会话已被中止。"
+        return (
+            "> [!WARNING]\n"
+            "> **模型使用额度已耗尽 (Free usage limit reached / 429)**\n>\n"
+            f"> {body}\n>\n"
+            "> 💡 **解决建议**：请在 OpenCode 切换其他可用模型，或配置自定义 Provider / API Key 继续使用。"
+        )
+
+    # 其他执行异常（超时、中断、认证失败等）
+    detail = err_msg or (f"执行状态: {outcome}" if outcome else "未知异常中断")
+    return (
+        "> [!CAUTION]\n"
+        "> **OpenCode 会话异常中断**\n>\n"
+        f"> {detail}"
+    )
+
+
 def build_opencode_unified_tool_call(
     tool_id: str,
     tool_name: str,
@@ -145,17 +179,43 @@ def parse_session_message_rows(
                         )
                     )
 
+            content_str = "\n\n".join(text_chunks).strip()
+            thinking_str = "\n\n".join(thinking_chunks).strip()
+            if not content_str and not thinking_str and not tool_calls and data.get("error"):
+                content_str = format_opencode_error_alert(data.get("error"))
+
             items.append(
                 UnifiedMessageItem(
                     item_id=f"{raw_session_id}:msg:{mid}",
                     step_index=idx,
                     role="assistant",
                     created_at=created_at,
-                    content="\n\n".join(text_chunks).strip(),
-                    thinking="\n\n".join(thinking_chunks).strip(),
+                    content=content_str,
+                    thinking=thinking_str,
                     tool_calls=tool_calls,
                 )
             )
+        elif mtype == "idle":
+            outcome = str(data.get("outcome") or "")
+            err_data = data.get("error")
+            if outcome == "failed" or err_data:
+                alert_text = format_opencode_error_alert(err_data, outcome)
+                if items and items[-1].role == "assistant":
+                    if not items[-1].content and not items[-1].tool_calls:
+                        items[-1].content = alert_text
+                    elif "模型使用额度已耗尽" in items[-1].content or "OpenCode 会话异常中断" in items[-1].content:
+                        # 前序步骤已包含同源中断警告，避免重复追加冗余卡片
+                        continue
+                else:
+                    items.append(
+                        UnifiedMessageItem(
+                            item_id=f"{raw_session_id}:msg:{mid}",
+                            step_index=idx,
+                            role="assistant",
+                            created_at=created_at,
+                            content=alert_text,
+                        )
+                    )
 
     return items
 

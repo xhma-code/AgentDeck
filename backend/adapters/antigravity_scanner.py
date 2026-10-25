@@ -28,6 +28,8 @@ from backend.adapters.base import (
 from backend.core.database import safe_query_external_sqlite, utc_now_iso
 from backend.core.logger import log_structured_error, logger
 
+_logged_agy_error_sids: set[str] = set()
+
 
 def query_session_model(
     summary_db_path: Path,
@@ -160,7 +162,13 @@ def query_antigravity_sessions(
                     try:
                         is_active, s_status = inspect_transcript_tail_status(tp)
                         if not is_active:
-                            status = "desktop_active" if has_active_sub else "idle"
+                            if s_status == "error":
+                                status = "error"
+                                if cid not in _logged_agy_error_sids:
+                                    _logged_agy_error_sids.add(cid)
+                                    logger.warning(f"Antigravity 会话检测到异常中断/额度耗尽: sid={cid[:8]}")
+                            else:
+                                status = "desktop_active" if has_active_sub else "idle"
                         elif agent_type != "agy_ide":
                             status = s_status
                     except OSError:
@@ -243,7 +251,7 @@ def query_antigravity_sessions(
                     st = tp.stat()
                     up_iso = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
                     is_active, s_status = inspect_transcript_tail_status(tp)
-                    status = s_status if is_active else "idle"
+                    status = s_status if (is_active or s_status == "error") else "idle"
                 except OSError:
                     up_iso = now_iso
                     status = "idle"
@@ -647,7 +655,13 @@ def query_antigravity_single_session(
                     try:
                         is_active, s_status = inspect_transcript_tail_status(tp)
                         if not is_active:
-                            status = "desktop_active" if has_active_sub else "idle"
+                            if s_status == "error":
+                                status = "error"
+                                if cid not in _logged_agy_error_sids:
+                                    _logged_agy_error_sids.add(cid)
+                                    logger.warning(f"Antigravity 会话检测到异常中断/额度耗尽: sid={cid[:8]}")
+                            else:
+                                status = "desktop_active" if has_active_sub else "idle"
                         elif agent_type != "agy_ide":
                             status = s_status
                     except OSError:

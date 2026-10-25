@@ -361,3 +361,46 @@ def extract_snippet(text: str, query: str, max_context: int = 25) -> str:
     if end < len(clean):
         res = res + "..."
     return res
+
+def is_quota_or_rate_limit_error(text: str) -> bool:
+    """判定是否属于模型额度耗尽、用量受限或 429 速率限制错误。"""
+    if not text:
+        return False
+    lower = str(text).lower()
+    quota_keywords = (
+        "free-limit",
+        "freeusagelimit",
+        "quota",
+        "insufficient_quota",
+        "exceeded your current quota",
+        "out of credits",
+        "credit balance is too low",
+        "rate limit",
+        "rate_limit",
+        "resourceexhausted",
+        "429",
+        "too many requests",
+        "usage limit reached",
+        "capacity exceeded",
+        "exhausted your capacity",
+    )
+    return any(k in lower for k in quota_keywords)
+
+
+def build_error_alert_markdown(agent_label: str, error_msg: str, is_quota: bool = False) -> str:
+    """统一生成跨 Agent 标准 GitHub 风格警示 Markdown 消息。"""
+    if is_quota:
+        body = error_msg or f"{agent_label} 当前模型的免费额度或调用频率已达上限，会话已被中止。"
+        return (
+            f"> [!WARNING]\n"
+            f"> **{agent_label} 模型使用额度已耗尽 (Quota Exceeded / 429)**\n>\n"
+            f"> {body}\n>\n"
+            f"> 💡 **解决建议**：请在 {agent_label} 中切换其他可用模型，或配置自定义 Provider / API Key 继续使用。"
+        )
+    body = error_msg or f"{agent_label} 会话执行异常并中断。"
+    return (
+        f"> [!CAUTION]\n"
+        f"> **{agent_label} 会话异常中断**\n>\n"
+        f"> {body}"
+    )
+

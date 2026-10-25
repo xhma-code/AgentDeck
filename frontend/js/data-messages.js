@@ -1,10 +1,11 @@
+import { AGENT_META } from "./config.js";
 /**
  * AgentDeck 会话消息增量拉取、分页加载与内存缓存就地合并器
  */
 
 import { state } from "./state.js";
 import { computeMessagesSig } from "./utils.js";
-import { apiFetch } from "./api.js";
+import { apiFetch, showToast } from "./api.js";
 import {
   renderSessionList,
   renderCurrentSessionHeader,
@@ -238,6 +239,25 @@ export async function loadSessionMessages(unifiedId, options = false) {
       } else {
         renderLiveStreamOverlay();
         renderCurrentSessionHeader();
+      }
+
+      // 检测当前会话最后一条消息是否为额度耗尽警告，进行即时轻提醒（支持四大 Agent）
+      const lastMsg = mergedMessages[mergedMessages.length - 1];
+      const curSess = state.sessions.find((s) => s.unified_id === unifiedId);
+      const agentLabel = (AGENT_META[curSess?.agent_type] || AGENT_META.claude_code).label;
+      const isQuotaAlert =
+        lastMsg &&
+        typeof lastMsg.content === "string" &&
+        (lastMsg.content.includes("模型使用额度已耗尽") ||
+          lastMsg.content.includes("Quota Exceeded") ||
+          lastMsg.content.includes("Free usage limit reached"));
+
+      if (isQuotaAlert) {
+        if (!window._notifiedQuotaSessionIds) window._notifiedQuotaSessionIds = new Set();
+        if (!window._notifiedQuotaSessionIds.has(unifiedId)) {
+          window._notifiedQuotaSessionIds.add(unifiedId);
+          showToast(`${agentLabel} 模型额度已耗尽，会话已中止`, "error");
+        }
       }
     }
   } catch (e) {

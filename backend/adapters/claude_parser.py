@@ -22,6 +22,7 @@ from backend.adapters.base import (
     truncate_tool_output,
 )
 from backend.core.logger import log_structured_error, logger
+from backend.adapters.tool_utils import build_error_alert_markdown, is_quota_or_rate_limit_error
 
 COMMAND_NAME_RE = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.DOTALL)
 COMMAND_ARGS_RE = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.DOTALL)
@@ -120,6 +121,31 @@ def parse_claude_record_dict(
         return False
 
     rec_type = rec.get("type")
+    created_at = str(rec.get("timestamp") or "")
+
+    # 捕获 Claude Code 顶层错误记录
+    if rec_type == "error" or rec.get("error"):
+        err_data = rec.get("error") or rec.get("message") or {}
+        if isinstance(err_data, dict):
+            err_msg = str(err_data.get("message") or err_data.get("error") or "")
+        else:
+            err_msg = str(err_data)
+        is_quota = is_quota_or_rate_limit_error(err_msg)
+        alert_md = build_error_alert_markdown("Claude Code", err_msg, is_quota=is_quota)
+        step_idx_container[0] += 1
+        cur_step = step_idx_container[0]
+        items.append(
+            UnifiedMessageItem(
+                item_id=f"{raw_session_id}:step:{cur_step}",
+                step_index=cur_step,
+                role="assistant",
+                created_at=created_at,
+                content=alert_md,
+                status="ERROR",
+            )
+        )
+        return True
+
     if rec_type not in ("user", "assistant"):
         return False
 
@@ -251,6 +277,10 @@ def parse_claude_record_dict(
                     tool_id_map[tid] = tc_obj
 
         if text_parts or thinking_parts or tool_calls or parsed_questions:
+            content_str = "\n\n".join(text_parts)
+            is_quota = is_quota_or_rate_limit_error(content_str)
+            if is_quota and not content_str.startswith("> [!"):
+                content_str = build_error_alert_markdown("Claude Code", content_str, is_quota=True)
             step_idx_container[0] += 1
             cur_step = step_idx_container[0]
             items.append(
@@ -259,7 +289,7 @@ def parse_claude_record_dict(
                     step_index=cur_step,
                     role="assistant",
                     created_at=created_at,
-                    content="\n\n".join(text_parts),
+                    content=content_str,
                     thinking="\n\n".join(thinking_parts),
                     tool_calls=tool_calls,
                     questions=parsed_questions,

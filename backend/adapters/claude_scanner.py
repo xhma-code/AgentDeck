@@ -30,6 +30,9 @@ from backend.adapters.base import (
 from backend.adapters.claude_parser import extract_record_plain_text, parse_claude_record_dict
 from backend.core.database import utc_now_iso
 from backend.core.logger import log_structured_error, logger
+from backend.adapters.tool_utils import is_quota_or_rate_limit_error
+
+_logged_cc_error_sids: set[str] = set()
 
 
 def detect_active_claude_sessions(sessions_dir: Path) -> dict[str, str]:
@@ -92,6 +95,7 @@ def parse_claude_session_file(
     cwd = ""
     step_count = 0
     last_ts = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+    last_is_error = False
 
     try:
         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
@@ -110,13 +114,18 @@ def parse_claude_session_file(
                 if rec.get("timestamp"):
                     last_ts = str(rec.get("timestamp"))
 
-                if rec_type in ("user", "assistant"):
+                if rec_type == "error" or rec.get("error"):
+                    last_is_error = True
+                elif rec_type in ("user", "assistant"):
+                    last_is_error = False
                     step_count += 1
                     text = re.sub(r"\s+", " ", extract_record_plain_text(rec)).strip()
                     if text:
                         if rec_type == "user" and not title:
                             title = text[:60]
                         preview = text[:160]
+                        if rec_type == "assistant" and is_quota_or_rate_limit_error(text):
+                            last_is_error = True
     except Exception as exc:
         log_structured_error(
             problem=f"解析 Claude Code 会话摘要异常 ({fpath.name})",
@@ -137,7 +146,15 @@ def parse_claude_session_file(
     if is_transient_probe_session(title=title, preview=preview):
         return None
 
-    st_str = active_map.get(sid, "idle")
+    st_str = active_map.get(sid, "")
+    if not st_str:
+        if last_is_error:
+            st_str = "error"
+            if sid not in _logged_cc_error_sids:
+                _logged_cc_error_sids.add(sid)
+                logger.warning(f"Claude Code 会话检测到异常中断/额度耗尽: sid={sid[:8]}")
+        else:
+            st_str = "idle"
     p_path = decode_workspace_uri(cwd)
     is_proj, norm_p, p_name = evaluate_project_dir(p_path)
 

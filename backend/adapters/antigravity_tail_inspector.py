@@ -10,6 +10,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Optional
+from backend.adapters.tool_utils import is_quota_or_rate_limit_error
 
 RECENT_ACTIVE_WINDOW_SECONDS: float = 60.0
 EXTENDED_ACTIVE_WINDOW_SECONDS: float = 300.0
@@ -102,7 +103,11 @@ def inspect_transcript_tail_status(tp: Path) -> tuple[bool, str]:
     if is_tool_intermediate_step and age < ACTIVE_LEASE_SECONDS:
         return True, "running"
 
-    # 5. 兜底状态：如果已明确完成且超过短过渡期，平滑退火为 idle
+    # 5. 异常或额度超限终态判定
+    if status == "ERROR" or is_quota_or_rate_limit_error(content):
+        return False, "error"
+
+    # 6. 兜底状态：如果已明确完成且超过短过渡期，平滑退火为 idle
     if status == "DONE":
         return False, "idle"
 

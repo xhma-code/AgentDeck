@@ -18,6 +18,7 @@ export function isSessionStatusActive(s) {
 }
 
 export const SESSION_PRIORITY = Object.freeze({
+  ERROR: 4,
   WAITING_APPROVAL: 3,
   COMPLETED_UNREAD: 2,
   ACTIVE: 1,
@@ -28,6 +29,7 @@ export const SESSION_PRIORITY = Object.freeze({
 export function getSessionPriorityWeight(s) {
   if (!s) return SESSION_PRIORITY.DEFAULT;
   const st = String(s.status || "").toLowerCase();
+  if (st === "error") return SESSION_PRIORITY.ERROR;
   if (st === "waiting_approval") return SESSION_PRIORITY.WAITING_APPROVAL;
   if (isSessionCompletedUnread(s)) return SESSION_PRIORITY.COMPLETED_UNREAD;
   if (
@@ -111,13 +113,103 @@ export function pickDefaultSession(sessionList) {
 }
 
 export function getProjectInfo(rawPath) {
-  const clean = String(rawPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  let clean = String(rawPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
   if (!clean) {
     return { key: "", name: "未分类", path: "" };
+  }
+  if (clean.length >= 2 && clean[1] === ":") {
+    clean = clean[0].toLowerCase() + clean.slice(1);
   }
   const parts = clean.split("/").filter(Boolean);
   const name = parts[parts.length - 1] || clean;
   return { key: clean.toLowerCase(), name, path: clean };
+}
+
+/**
+ * 汇总去重所有工程项目，并严格按照「活跃项目优先」排序：
+ * 1. 包含运行中 / 待审批会话的项目排在最前
+ * 2. 其次按最新活动更新时间（updated_at / last_used_at）倒序
+ * 3. 对话数较多的项目排在前面
+ */
+export function getAggregatedProjects(sessions = [], workspaces = []) {
+  const projectMap = new Map();
+
+  for (const ws of workspaces) {
+    if (!ws || !ws.workspace_path) continue;
+    const info = getProjectInfo(ws.workspace_path);
+    if (!info.key) continue;
+    if (!projectMap.has(info.key)) {
+      projectMap.set(info.key, {
+        key: info.key,
+        name: ws.workspace_name || info.name,
+        path: info.path,
+        sessions: [],
+        lastUsedAt: ws.last_used_at || "",
+        isHidden: !!ws.is_hidden,
+        hasActiveSession: false,
+        latestUpdatedAt: ws.last_used_at || "",
+      });
+    } else {
+      const existing = projectMap.get(info.key);
+      if (ws.workspace_name && (!existing.name || existing.name === info.name)) {
+        existing.name = ws.workspace_name;
+      }
+      if (ws.last_used_at && ws.last_used_at > existing.lastUsedAt) {
+        existing.lastUsedAt = ws.last_used_at;
+      }
+    }
+  }
+
+  for (const s of sessions) {
+    if (!s || !s.is_project || isSubagentSession(s) || !s.project_path) continue;
+    const info = getProjectInfo(s.project_path);
+    if (!info.key) continue;
+    if (!projectMap.has(info.key)) {
+      projectMap.set(info.key, {
+        key: info.key,
+        name: s.project_name || info.name,
+        path: info.path,
+        sessions: [],
+        lastUsedAt: s.updated_at || "",
+        isHidden: false,
+        hasActiveSession: false,
+        latestUpdatedAt: s.updated_at || "",
+      });
+    }
+    const proj = projectMap.get(info.key);
+    proj.sessions.push(s);
+    if (s.project_name && (!proj.name || proj.name === info.name)) {
+      proj.name = s.project_name;
+    }
+    const isActive = isSessionStatusActive(s) || s.status === "waiting_approval";
+    if (isActive) {
+      proj.hasActiveSession = true;
+    }
+    if (s.updated_at && (!proj.latestUpdatedAt || s.updated_at > proj.latestUpdatedAt)) {
+      proj.latestUpdatedAt = s.updated_at;
+    }
+  }
+
+  const list = Array.from(projectMap.values());
+  list.sort((a, b) => {
+    // 优先级 1：当前正在工作/待审批的活跃项目优先
+    if (a.hasActiveSession !== b.hasActiveSession) {
+      return a.hasActiveSession ? -1 : 1;
+    }
+    // 优先级 2：最新活跃时间倒序
+    const timeA = a.latestUpdatedAt || a.lastUsedAt || "";
+    const timeB = b.latestUpdatedAt || b.lastUsedAt || "";
+    if (timeA !== timeB) {
+      return timeA > timeB ? -1 : 1;
+    }
+    // 优先级 3：会话数降序
+    if (a.sessions.length !== b.sessions.length) {
+      return b.sessions.length - a.sessions.length;
+    }
+    return a.name.localeCompare(b.name, "zh-CN");
+  });
+
+  return list;
 }
 
 export function getModelContextLimit(modelId) {
