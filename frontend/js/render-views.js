@@ -2,7 +2,6 @@ import { apiFetch } from "./api.js";
 /**
  * AgentDeck 控制面板、Git 审查模态框、二维码与状态胶囊渲染器
  */
-
 import {
   MODES_BY_AGENT,
   DEFAULT_MODELS_BY_AGENT,
@@ -242,46 +241,19 @@ export function _doRenderLiveStreamOverlay() {
     return;
   }
 
-  // Agent 工作中，在对话区域显示 Working... 与实时耗时及生成流（RAF 帧对齐渲染）
-  const startMs = state.pendingTurnThinking ? state.pendingTurnThinking[state.selectedSessionId] : null;
-  let elapsedStr = "";
-  if (startMs) {
-    const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
-    if (elapsedSec < 60) {
-      elapsedStr = `${elapsedSec}s`;
+  // 工作中状态已合并到输入框上方的运行条，这里仅可选展示极简流式文本
+  if (liveText && isWorking) {
+    const streamHtml = `<div class="text-xs text-zinc-200">${renderMarkdownHtml(
+      liveText.slice(-1500),
+      "live_stream"
+    )}</div>`;
+    if (slot.dataset.liveId !== state.selectedSessionId || !slot.querySelector(".live-working-stream")) {
+      slot.dataset.liveId = state.selectedSessionId;
+      slot.innerHTML = `<div class="live-working-stream mb-1 px-1">${streamHtml}</div>`;
     } else {
-      const m = Math.floor(elapsedSec / 60);
-      const s = elapsedSec % 60;
-      elapsedStr = `${m}m ${String(s).padStart(2, "0")}s`;
-    }
-  }
-
-  const streamHtml = liveText
-    ? `<div class="mt-2 text-xs text-zinc-200 border-t border-zinc-800/60 pt-2">${renderMarkdownHtml(
-        liveText.slice(-3000),
-        "live_stream"
-      )}</div>`
-    : "";
-
-  // 已存在浮层时仅更新耗时，避免整段重排导致移动端抖动
-  if (slot.dataset.liveId === state.selectedSessionId && slot.querySelector(".live-working-card")) {
-    const elapsedEl = slot.querySelector(".live-working-elapsed");
-    if (elapsedEl) {
-      if (elapsedStr) {
-        elapsedEl.textContent = elapsedStr;
-        elapsedEl.classList.remove("hidden");
-      } else {
-        elapsedEl.classList.add("hidden");
-      }
-    }
-    const streamWrap = slot.querySelector(".live-working-stream");
-    if (streamWrap) {
-      if (streamHtml) {
+      const streamWrap = slot.querySelector(".live-working-stream");
+      if (streamWrap) {
         streamWrap.innerHTML = streamHtml;
-        streamWrap.classList.remove("hidden");
-      } else {
-        streamWrap.innerHTML = "";
-        streamWrap.classList.add("hidden");
       }
     }
     if (!state.autoScrollLocked) {
@@ -291,22 +263,10 @@ export function _doRenderLiveStreamOverlay() {
     return;
   }
 
-  slot.dataset.liveId = state.selectedSessionId;
-  slot.innerHTML = `
-    <div class="live-working-card mb-4 rounded-xl bg-zinc-900/60 border border-zinc-800/80 px-3 py-2 text-xs text-zinc-300 shadow-sm">
-      <div class="flex items-center gap-2 font-mono text-[11px] text-sky-400">
-        <span class="relative flex h-2 w-2">
-          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
-          <span class="relative inline-flex rounded-full h-2 w-2 bg-sky-400"></span>
-        </span>
-        <span class="tracking-wider font-semibold">Working...</span>
-        <span class="text-zinc-600 font-normal">·</span>
-        <span class="live-working-elapsed text-sky-300/80 font-normal font-mono text-[11px] ${elapsedStr ? "" : "hidden"}">${elapsedStr || ""}</span>
-      </div>
-      <div class="live-working-stream ${streamHtml ? "" : "hidden"}">${streamHtml || ""}</div>
-    </div>
-  `;
-
+  if (slot.innerHTML !== "") {
+    slot.innerHTML = "";
+    delete slot.dataset.liveId;
+  }
   if (!state.autoScrollLocked) {
     scrollToBottom();
   }

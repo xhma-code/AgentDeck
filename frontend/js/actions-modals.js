@@ -118,10 +118,52 @@ export async function openFilePreview(rawPath) {
   }
 }
 
+// 模态框多级视图导航历史栈（支持汇总Diff、全屏Diff等多层视图逐级返回）
+let modalViewStack = [];
+
+export function clearModalViewStack() {
+  modalViewStack = [];
+}
+
 export function closeDocModal() {
+  modalViewStack = [];
   const modal = document.getElementById("doc-preview-modal");
   if (modal) modal.classList.add("hidden");
+  const copyBtn = document.getElementById("doc-preview-copy-btn");
+  if (copyBtn) {
+    copyBtn.classList.add("hidden");
+    copyBtn.classList.remove("flex");
+  }
   document.body.style.overflow = "";
+}
+
+export function navigateBackDocModal() {
+  if (modalViewStack.length > 0) {
+    const prev = modalViewStack.pop();
+    if (prev && prev.type === "git_status") {
+      // 逐级返回 Git 状态列表页面
+      const copyBtn = document.getElementById("doc-preview-copy-btn");
+      if (copyBtn) {
+        copyBtn.classList.add("hidden");
+        copyBtn.classList.remove("flex");
+      }
+      const titleEl = document.getElementById("doc-preview-title");
+      if (titleEl) titleEl.textContent = `🌿 Git 变更与提交状态`;
+      const sess =
+        (state.allSessions || []).find((s) => s.unified_id === state.selectedSessionId) ||
+        (state.sessions || []).find((s) => s.unified_id === state.selectedSessionId);
+      const pathEl = document.getElementById("doc-preview-path");
+      if (pathEl) pathEl.textContent = sess?.project_path || "";
+      if (state.currentGitStatus) {
+        renderGitStatusBody(state.currentGitStatus);
+      } else {
+        openGitStatusModal();
+      }
+      return;
+    }
+  }
+  // 历史栈已空，直接退出模态框回到会话页面
+  closeDocModal();
 }
 
 export function openDiffFullscreen(diffText, filePath = "", options = {}) {
@@ -130,6 +172,12 @@ export function openDiffFullscreen(diffText, filePath = "", options = {}) {
   const pathEl = document.getElementById("doc-preview-path");
   const bodyEl = document.getElementById("doc-preview-body");
   if (!modal || !bodyEl) return;
+
+  if (modal.classList.contains("hidden")) {
+    modalViewStack = [];
+  } else {
+    modalViewStack.push({ type: "git_status" });
+  }
 
   state.currentDocRawContent = diffText || "";
   const bName = filePath ? getBasename(filePath) : "代码变更 Diff";
@@ -199,13 +247,16 @@ export function closeAgentsHealthModal() {}
 export async function refreshAgentsHealth() {}
 
 export async function openGitStatusModal() {
+  modalViewStack = [];
   const modal = document.getElementById("doc-preview-modal");
   const titleEl = document.getElementById("doc-preview-title");
   const pathEl = document.getElementById("doc-preview-path");
   const bodyEl = document.getElementById("doc-preview-body");
   if (!modal || !bodyEl) return;
 
-  const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+  const sess =
+    (state.allSessions || []).find((s) => s.unified_id === state.selectedSessionId) ||
+    (state.sessions || []).find((s) => s.unified_id === state.selectedSessionId);
   const pPath = sess?.project_path || "";
   if (!pPath) {
     showToast("当前会话无关联工程目录", "info");
@@ -294,29 +345,59 @@ export async function toggleGitFileDiff(relPath) {
 }
 
 export async function viewFullGitDiff() {
-  const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+  const sess =
+    (state.allSessions || []).find((s) => s.unified_id === state.selectedSessionId) ||
+    (state.sessions || []).find((s) => s.unified_id === state.selectedSessionId);
   const bodyEl = document.getElementById("doc-preview-body");
-  if (!bodyEl || !sess?.project_path) return;
-  bodyEl.innerHTML = `<div class="p-4 text-xs text-sky-400">正在生成全量 Unified Diff...</div>`;
+  const titleEl = document.getElementById("doc-preview-title");
+  if (!bodyEl || !sess?.project_path) {
+    showToast("当前会话无关联工程目录", "info");
+    return;
+  }
+
+  // 压入上一级视图（Git 变更与提交状态列表），实现逐级返回
+  modalViewStack.push({ type: "git_status" });
+
+  if (titleEl) titleEl.textContent = `🌿 汇总 Diff`;
+  bodyEl.innerHTML = `<div class="p-4 text-xs text-sky-400">正在生成汇总 Diff...</div>`;
   try {
     const res = await apiFetch(
       `/api/v1/git/diff?project_path=${encodeURIComponent(sess.project_path)}`
     );
-    state.currentDocRawContent = res.diff || "";
-    const rawDiff = res.diff || "";
-    const lines = rawDiff.split("\n");
+    let rawDiff = res.diff || "";
+    // 若工作区未提交 diff 为空，但当前有修改记录，汇总会话中的 diff 预览
+    if (!rawDiff && state.currentGitStatus?.files) {
+      const parts = [];
+      for (const f of state.currentGitStatus.files) {
+        if (f.diff_preview) {
+          parts.push(`diff --git a/${f.path} b/${f.path}\n--- a/${f.path}\n+++ b/${f.path}\n${f.diff_preview}`);
+        }
+      }
+      if (parts.length > 0) {
+        rawDiff = parts.join("\n\n");
+      }
+    }
+
+    state.currentDocRawContent = rawDiff;
+    const copyBtn = document.getElementById("doc-preview-copy-btn");
+    if (copyBtn && rawDiff) {
+      copyBtn.classList.remove("hidden");
+      copyBtn.classList.add("flex");
+    }
+
+    const lines = rawDiff ? rawDiff.split("\n") : [];
     const isHuge = lines.length > 400;
     const displayDiff = isHuge && !state.expandHugeFullDiff ? lines.slice(0, 400).join("\n") : rawDiff;
 
     bodyEl.innerHTML = `
       <div class="space-y-2">
-        <div class="flex items-center justify-between pb-2 border-b border-zinc-800">
-          <span class="text-xs text-zinc-400">全局未提交修改 Diff ${
+        <div class="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+          <span class="text-xs text-zinc-400">汇总 Diff ${
             res.is_truncated ? "（已截断展示前 48KB）" : ""
           }</span>
-          <button onclick="window.appActions.openGitStatusModal()" class="text-xs text-sky-400 hover:underline">返回文件列表</button>
+          <button onclick="window.appActions.navigateBackDocModal()" class="text-xs text-sky-400 hover:underline">返回文件列表</button>
         </div>
-        ${renderUnifiedDiffHtml(displayDiff || "无未提交代码改动")}
+        ${renderUnifiedDiffHtml(displayDiff || "无代码修改差异")}
         ${
           isHuge && !state.expandHugeFullDiff
             ? `<div class="p-3 text-center bg-zinc-900/60 rounded-xl border border-zinc-800 text-xs text-zinc-400">
@@ -330,7 +411,7 @@ export async function viewFullGitDiff() {
       </div>
     `;
   } catch (e) {
-    bodyEl.innerHTML = `<div class="p-4 text-xs text-rose-400">加载失败</div>`;
+    bodyEl.innerHTML = `<div class="p-4 text-xs text-rose-400">加载汇总 Diff 失败</div>`;
   }
 }
 
@@ -355,4 +436,5 @@ export const modalActions = {
   toggleGitFileDiff,
   viewFullGitDiff,
   updateGitStatusBadge,
+  navigateBackDocModal,
 };

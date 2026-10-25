@@ -363,8 +363,26 @@
       <div id="bottom-approval-bar" class="hidden shrink-0 z-20"></div>
 
       <!-- 底部控制舱（模型选择 + 模式选择 + 新对话 + 输入框） -->
-      <footer id="chat-footer" class="border-t border-white/[0.06] bg-black/95 px-2 sm:px-3 py-1.5 safe-bottom shrink-0">
+      <footer id="chat-footer" class="border-t border-white/[0.06] bg-black/95 px-2 sm:px-3 py-1.5 safe-bottom shrink-0 relative z-40">
         <div class="max-w-5xl mx-auto w-full relative">
+          <!-- 运行中合并状态条：Working... + 执行步骤 合并到输入框上方，避免插入消息流导致输入框被顶走 -->
+          <div id="running-combo-bar" class="hidden mb-1.5 rounded-xl bg-zinc-900/90 border border-zinc-800/80 shadow-lg shadow-black/40 overflow-hidden">
+            <button id="running-combo-toggle" type="button" onclick="window.appActions.toggleRunningCombo()" class="w-full flex items-center justify-between gap-2 px-2.5 py-1 text-left active:bg-zinc-800/60 transition">
+              <div class="flex items-center gap-1.5 min-w-0">
+                <span class="relative flex h-1.5 w-1.5 shrink-0">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-400"></span>
+                </span>
+                <span class="text-[11px] font-semibold text-sky-400 shrink-0">Working...</span>
+                <span id="running-combo-elapsed" class="text-[11px] font-mono text-sky-300/80 shrink-0 hidden"></span>
+                <span class="text-zinc-600 shrink-0">·</span>
+                <span id="running-combo-steps" class="text-[11px] text-zinc-300 truncate">已执行 0 步骤</span>
+              </div>
+              <svg id="running-combo-arrow" class="w-3 h-3 text-zinc-500 transition-transform duration-150 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div id="running-combo-detail" class="hidden border-t border-zinc-800/70 max-h-44 overflow-y-auto subtle-scrollbar"></div>
+          </div>
+
           <!-- 斜杠指令与全部 Skills 浮动菜单（在大框正上方弹出） -->
           <div id="slash-popover" class="hidden mb-2 rounded-xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-1 max-h-72 sm:max-h-80 overflow-y-auto subtle-scrollbar"></div>
 
@@ -655,31 +673,35 @@
   <!-- 模态框 3：本地 Markdown / 文档全屏阅读抽屉 -->
   <div id="doc-preview-modal" role="dialog" aria-modal="true" aria-labelledby="doc-preview-title"
     class="hidden fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex flex-col">
-    <div class="modal-header-safe border-b border-zinc-800 bg-zinc-950 px-3 sm:px-5 flex items-center justify-between gap-2 shrink-0">
-      <div class="flex items-center gap-2 min-w-0 flex-1">
-        <button onclick="window.appActions.closeDocModal()"
-          class="w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-200 flex items-center justify-center shrink-0 active:scale-95 hover:bg-zinc-800 transition"
-          aria-label="返回">
-          <svg class="w-4 h-4 text-zinc-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-        </button>
-        <div class="min-w-0 flex-1">
-          <div id="doc-preview-title" class="text-xs sm:text-sm font-bold text-zinc-100 truncate">文档阅读</div>
-          <div id="doc-preview-path" class="text-[10px] font-mono text-zinc-400 truncate hidden sm:block"></div>
+    <!-- 顶部导航栏：与会话主页面 header 保持绝对一致的高度 (safe-top + h-12)、背景与下分割线，杜绝切换割裂感 -->
+    <header class="safe-top border-b border-white/[0.06] bg-black/90 backdrop-blur shrink-0 z-30">
+      <div class="h-12 px-2 sm:px-3 flex items-center justify-between gap-1.5">
+        <div class="flex items-center gap-1.5 min-w-0 flex-1">
+          <button onclick="window.appActions.navigateBackDocModal()"
+            class="w-9 h-9 min-w-[36px] min-h-[36px] sm:w-8 sm:h-8 sm:min-w-0 sm:min-h-0 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-200 flex items-center justify-center shrink-0 active:scale-95 hover:bg-zinc-800 transition"
+            aria-label="返回">
+            <svg class="w-4 h-4 text-zinc-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          </button>
+          <div class="min-w-0 flex-1">
+            <div id="doc-preview-title" class="text-xs sm:text-sm font-bold text-zinc-100 truncate">🌿 Git 变更与提交状态</div>
+            <div id="doc-preview-path" class="text-[10px] font-mono text-zinc-400 truncate hidden sm:block"></div>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="doc-preview-copy-btn" onclick="window.appActions.copyCurrentDocContent(this)"
+            class="hidden h-8 px-2 sm:px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 flex items-center justify-center gap-1 active:scale-95 transition whitespace-nowrap shrink-0 min-w-max">
+            <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <span class="hidden sm:inline whitespace-nowrap shrink-0">复制全文</span>
+            <span class="sm:hidden whitespace-nowrap shrink-0">复制</span>
+          </button>
+          <!-- 手机端关闭按钮去掉（与左上角返回重叠），仅在电脑端保留 -->
+          <button id="doc-preview-close-btn" onclick="window.appActions.closeDocModal()"
+            class="hidden sm:inline-flex h-8 px-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 items-center justify-center active:scale-95 transition">
+            关闭
+          </button>
         </div>
       </div>
-      <div class="flex items-center gap-1.5 shrink-0">
-        <button id="doc-preview-copy-btn" onclick="window.appActions.copyCurrentDocContent(this)"
-          class="h-8 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-200 flex items-center justify-center gap-1 active:scale-95 transition min-w-[58px] sm:min-w-[80px]">
-          <svg class="w-3.5 h-3.5 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-          <span class="hidden sm:inline">复制全文</span>
-          <span class="sm:hidden">复制</span>
-        </button>
-        <button onclick="window.appActions.closeDocModal()"
-          class="h-8 px-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-200 active:scale-95 transition">
-          关闭
-        </button>
-      </div>
-    </div>
+    </header>
     <div id="doc-preview-body" class="flex-1 overflow-y-auto px-2 sm:px-4 pt-1 pb-6 max-w-5xl w-full mx-auto safe-bottom"></div>
   </div>
 
@@ -759,6 +781,6 @@
       });
     }
   </script>
-  <script type="module" src="/static/app.js?v=20261025_git_sync_v13"></script>
+  <script type="module" src="/static/app.js?v=20261025_git_sync_v15"></script>
 </body>
 </html>

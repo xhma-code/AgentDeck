@@ -71,6 +71,7 @@ export function initDrawerSwipeGestures() {
     const modalIds = [
       "new-session-modal",
       "qr-modal",
+      "doc-preview-modal",
       "git-status-modal",
       "token-usage-modal",
       "rename-modal",
@@ -207,6 +208,125 @@ export function initDrawerSwipeGestures() {
         }
       } else if (state.drawerOpen && deltaX < 0) {
         window.appActions.toggleDrawer(false);
+      }
+    },
+    { passive: true }
+  );
+
+  // 绑定全屏阅读/Git变更弹窗右滑返回手势（与底层侧边栏抽屉互斥隔离）
+  initDocPreviewSwipeBack();
+}
+
+/**
+ * 手机端 Git 变更与文档弹窗向右滑动返回手势支持
+ * 保证右滑平滑退出回到会话页面，绝不与底层侧边栏滑动重叠
+ */
+export function initDocPreviewSwipeBack() {
+  const modal = document.getElementById("doc-preview-modal");
+  if (!modal || modal._swipeBackBound) return;
+  modal._swipeBackBound = true;
+
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let touchStartTime = 0;
+  let isScrollingVertical = false;
+  let isGestureLocked = false;
+  let isIgnoredTarget = false;
+
+  const isHorizontalScrollable = (el) => {
+    let cur = el;
+    while (cur && cur !== modal) {
+      if (
+        cur.classList?.contains("overflow-x-auto") ||
+        cur.classList?.contains("unified-diff-box") ||
+        cur.classList?.contains("no-scrollbar")
+      ) {
+        if (cur.scrollWidth > cur.clientWidth + 5) {
+          return true;
+        }
+      }
+      cur = cur.parentElement;
+    }
+    return false;
+  };
+
+  modal.addEventListener(
+    "touchstart",
+    (e) => {
+      if (window.innerWidth >= 768 || e.touches.length !== 1) {
+        isIgnoredTarget = true;
+        return;
+      }
+      if (modal.classList.contains("hidden")) {
+        isIgnoredTarget = true;
+        return;
+      }
+
+      const touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      touchStartTime = Date.now();
+      isScrollingVertical = false;
+      isGestureLocked = false;
+
+      // 如果手指落在横向滚动的 diff 区内部且不在最左边缘（> 48px），忽略返回手势保证横划代码体验
+      if (touchStartX > 48 && isHorizontalScrollable(e.target)) {
+        isIgnoredTarget = true;
+      } else {
+        isIgnoredTarget = false;
+      }
+    },
+    { passive: true }
+  );
+
+  modal.addEventListener(
+    "touchmove",
+    (e) => {
+      if (isIgnoredTarget || e.touches.length !== 1) return;
+
+      const touch = e.touches[0];
+      const deltaX = touch.clientX - touchStartX;
+      const deltaY = touch.clientY - touchStartY;
+
+      if (!isGestureLocked) {
+        const absX = Math.abs(deltaX);
+        const absY = Math.abs(deltaY);
+        if (absX > 8 || absY > 8) {
+          isScrollingVertical = absY >= absX;
+          isGestureLocked = true;
+        }
+      }
+    },
+    { passive: true }
+  );
+
+  modal.addEventListener(
+    "touchend",
+    (e) => {
+      if (isIgnoredTarget || isScrollingVertical) return;
+      const touch = e.changedTouches[0];
+      if (!touch) return;
+
+      const deltaX = touch.clientX - touchStartX;
+      const deltaY = touch.clientY - touchStartY;
+      const absX = Math.abs(deltaX);
+      const absY = Math.abs(deltaY);
+      const deltaTime = Date.now() - touchStartTime;
+
+      if (absX <= absY * 1.2) return;
+
+      const isQuickSwipe = deltaTime < 350 && absX >= 40;
+      const isLongSwipe = absX >= 75;
+
+      // 向右滑动触发返回上一页（支持多级视图逐级返回）
+      if (deltaX > 0 && (isQuickSwipe || isLongSwipe)) {
+        if (window.appActions && typeof window.appActions.navigateBackDocModal === "function") {
+          window.appActions.navigateBackDocModal();
+        } else if (window.appActions && typeof window.appActions.closeDocModal === "function") {
+          window.appActions.closeDocModal();
+        } else {
+          modal.classList.add("hidden");
+        }
       }
     },
     { passive: true }

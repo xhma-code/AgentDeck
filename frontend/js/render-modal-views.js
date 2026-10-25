@@ -363,10 +363,11 @@ export function renderGitStatusBody(data) {
               }
             </div>
             ${
-              uncommittedFiles.length > 0
+              allFiles.length > 0
                 ? `<button onclick="window.appActions.viewFullGitDiff()"
-                    class="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-sky-300 text-xs transition active:scale-95 shrink-0">
-                    查看全量 Diff
+                    class="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-sky-300 text-xs transition active:scale-95 shrink-0"
+                    title="查看汇总修改 Diff">
+                    查看汇总 Diff
                   </button>`
                 : ""
             }
