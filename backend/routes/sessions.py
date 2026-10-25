@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -136,6 +137,18 @@ async def get_session_messages(
         content={"ok": True, **detail},
         headers={"ETag": msg_etag, "Cache-Control": "no-cache"},
     )
+
+
+@router.get("/{unified_id:path}/modified-files")
+async def get_session_modified_files(
+    unified_id: str,
+    request: Request,
+    _auth: bool = Depends(verify_request_auth),
+) -> dict[str, Any]:
+    """获取指定会话实际修改的文件汇总列表及 Git 提交状态。"""
+    orchestrator = get_orchestrator(request)
+    return await asyncio.to_thread(orchestrator.get_session_modified_files, unified_id)
+
 
 
 @router.post("/{unified_id:path}/model")

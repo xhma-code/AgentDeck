@@ -228,19 +228,10 @@
             </div>
           </div>
 
-          <!-- 右侧：Git指示、会话菜单、更新、状态与扫码按钮（Git放在...前面，手机端Git仅展示紧凑数字徽标） -->
+          <!-- 右侧：按钮群。电脑端严格顺序：... -> 更新 -> 待查看运行 -> git -> 扫码；手机端：git数字与三点菜单...位置互换 (git在首位，...在其后) -->
           <div class="flex items-center gap-1 shrink-0">
-            <!-- 1. git：工作区/会话 Git 变更指示胶囊（提取到最前面，桌面端：图标+Git+数字，手机端：仅展示紧凑数字徽标） -->
-            <button id="git-status-btn" onclick="window.appActions.openGitStatusModal()"
-              class="hidden h-8 px-1.5 sm:px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1 active:scale-95 transition cursor-pointer"
-              title="查看工作区 Git 状态与变更">
-              <svg class="w-3.5 h-3.5 text-zinc-400 hidden sm:inline-block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"></path><path d="M12 12v3"></path></svg>
-              <span class="font-mono text-[11px] text-zinc-300 hidden sm:inline">Git</span>
-              <span id="git-changed-badge" class="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-zinc-800 text-zinc-400 border border-zinc-700">0</span>
-            </button>
-
-            <!-- 2. 3个点：当前会话操作三点菜单（排在 Git 后面） -->
-            <div class="relative">
+            <!-- 1. 3个点：当前会话操作三点菜单（电脑端第1位：sm:order-1；手机端互换排在Git后：order-2） -->
+            <div class="relative order-2 sm:order-1">
               <button id="session-options-menu-btn" onclick="window.appActions.toggleSessionMenu(event)"
                 class="w-8 h-8 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-zinc-100 flex items-center justify-center shrink-0 active:scale-95 transition"
                 title="会话管理" aria-label="会话管理">
@@ -267,15 +258,15 @@
               </div>
             </div>
 
-            <!-- 3. 更新：包含更新态（有新代码时显示）与连接状态（重连/离线） -->
+            <!-- 2. 更新：包含更新态（有新代码时显示）与连接状态（重连/离线）（电脑端第2位：sm:order-2；手机端：order-3） -->
             <button id="header-status-indicator" onclick="window.appActions.handleStatusBtnClick()"
-              class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg text-xs transition active:scale-95 cursor-pointer"
+              class="hidden h-10 min-h-[40px] sm:h-8 sm:min-h-0 px-2.5 rounded-lg text-xs transition active:scale-95 cursor-pointer order-3 sm:order-2"
               title="系统连接与更新状态">
             </button>
 
-            <!-- 4. 状态：运行中/待审批/完成未看快捷跳板（原 1待查看 1运行中 状态胶囊） -->
+            <!-- 3. 待查看运行：运行中/待审批/完成未看快捷跳板（电脑端第3位：sm:order-3；手机端隐藏：hidden md:flex） -->
             <button id="other-running-pill" onclick="window.appActions.jumpToRunningSession()"
-              class="hidden md:flex h-8 px-2 rounded-lg border text-xs items-center gap-1 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none"
+              class="hidden md:flex h-8 px-2 rounded-lg border text-xs items-center gap-1 active:scale-95 transition cursor-pointer select-none focus-visible:ring-1 focus-visible:ring-sky-500 focus:outline-none order-4 sm:order-3"
               title="点击快速跳转到活跃或待查看的会话" aria-label="后台活跃与待查看会话快捷切换">
               <span id="other-running-dot" class="w-1.5 h-1.5 rounded-full shrink-0"></span>
               <span id="other-running-text" class="text-[11px] font-medium hidden sm:inline"></span>
@@ -283,11 +274,20 @@
             </button>
 
             <!-- 离线排队命令徽标 -->
-            <span id="offline-queue-badge" class="hidden px-2 py-0.5 rounded-full text-[10px] font-mono font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse">离线排队 (0)</span>
+            <span id="offline-queue-badge" class="hidden px-2 py-0.5 rounded-full text-[10px] font-mono font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse order-4 sm:order-3">离线排队 (0)</span>
 
-            <!-- 5. 扫码：扫码连接按钮 -->
+            <!-- 4. git：工作区/会话 Git 变更指示胶囊（手机端互换排在首位：order-1；电脑端第4位：sm:order-4） -->
+            <button id="git-status-btn" onclick="window.appActions.openGitStatusModal()"
+              class="hidden h-8 px-1.5 sm:px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center justify-center gap-1 active:scale-95 transition cursor-pointer order-1 sm:order-4"
+              title="查看工作区 Git 状态与变更">
+              <svg class="w-3.5 h-3.5 text-zinc-400 hidden sm:inline-block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"></path><path d="M12 12v3"></path></svg>
+              <span class="font-mono text-[11px] text-zinc-300 hidden sm:inline">Git</span>
+              <span id="git-changed-badge" class="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-zinc-800 text-zinc-400 border border-zinc-700">0</span>
+            </button>
+
+            <!-- 5. 扫码：扫码连接按钮（电脑端第5位：sm:order-5；手机端隐藏：hidden md:flex） -->
             <button onclick="window.appActions.openQrModal()"
-              class="hidden md:flex h-8 px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1 active:scale-95 transition"
+              class="hidden md:flex h-8 px-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 items-center gap-1 active:scale-95 transition order-5 sm:order-5"
               title="扫码连接">
               <div id="network-status-badge" class="flex items-center gap-1">
                 <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
@@ -664,7 +664,7 @@
         </button>
         <div class="min-w-0 flex-1">
           <div id="doc-preview-title" class="text-xs sm:text-sm font-bold text-zinc-100 truncate">文档阅读</div>
-          <div id="doc-preview-path" class="text-[10px] font-mono text-zinc-400 truncate"></div>
+          <div id="doc-preview-path" class="text-[10px] font-mono text-zinc-400 truncate hidden sm:block"></div>
         </div>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
@@ -759,6 +759,6 @@
       });
     }
   </script>
-  <script type="module" src="/static/app.js?v=20261025_git_sync_v7"></script>
+  <script type="module" src="/static/app.js?v=20261025_git_sync_v13"></script>
 </body>
 </html>

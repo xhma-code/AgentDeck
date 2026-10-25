@@ -9,6 +9,7 @@ from backend.adapters.tool_utils import extract_snippet
 
 import copy
 import os
+import re
 import shutil
 import sqlite3
 import sys

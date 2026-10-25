@@ -240,13 +240,9 @@ body {
 }
 
 /* 手机端移动屏幕适配：
-   1. 选择好对话后，隐藏顶栏会话名称前的系统图标
-   2. 彻底隐藏右上角的 Git 状态与变更显示（仅在桌面网页端保留） */
+   选择好对话后，隐藏顶栏会话名称前的系统图标（Git 按钮在手机端保留紧凑数字徽标） */
 @media (max-width: 767.98px) {
   #header-logo-icon.has-session-hidden-mobile {
-    display: none !important;
-  }
-  #git-status-btn {
     display: none !important;
   }
 }

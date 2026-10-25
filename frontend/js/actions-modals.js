@@ -13,7 +13,8 @@ import {
 } from "./utils.js";
 import { renderMarkdownHtml } from "./markdown.js";
 import { renderUnifiedDiffHtml } from "./diff-viewer.js";
-import { renderGitStatusBody } from "./render-modal-views.js";
+import { renderGitStatusBody, updateGitStatusBadge } from "./render-modal-views.js";
+export { updateGitStatusBadge };
 import { renderTokenUsage, stopQrExpireCountdown } from "./render-system-views.js";
 import { renderAgentsHealthModal } from "./render-status-badges.js";
 import { loadSystemStatus, loadWorkspaces, loadSessions } from "./data.js";
@@ -78,6 +79,9 @@ export async function openFilePreview(rawPath) {
   const pathEl = document.getElementById("doc-preview-path");
   const bodyEl = document.getElementById("doc-preview-body");
   if (!modal || !bodyEl) return;
+
+  const copyBtn = document.getElementById("doc-preview-copy-btn");
+  if (copyBtn) copyBtn.classList.remove("hidden");
 
   modal.classList.remove("hidden");
   if (titleEl) titleEl.textContent = `📄 ${getBasename(rawPath)}`;
@@ -208,8 +212,11 @@ export async function openGitStatusModal() {
     return;
   }
 
+  const copyBtn = document.getElementById("doc-preview-copy-btn");
+  if (copyBtn) copyBtn.classList.add("hidden");
+
   modal.classList.remove("hidden");
-  if (titleEl) titleEl.textContent = `🌿 Git 工作区变更`;
+  if (titleEl) titleEl.textContent = `🌿 Git 变更与提交状态`;
   if (pathEl) pathEl.textContent = `${pPath}`;
   bodyEl.innerHTML = `
     <div class="space-y-3 py-4">
@@ -219,7 +226,15 @@ export async function openGitStatusModal() {
   `;
 
   try {
-    const data = await apiFetch(`/api/v1/git/status?project_path=${encodeURIComponent(pPath)}`);
+    let data = null;
+    if (sess?.unified_id) {
+      try {
+        data = await apiFetch(`/api/v1/sessions/${encodeURIComponent(sess.unified_id)}/modified-files`);
+      } catch (_) {}
+    }
+    if (!data || !data.ok) {
+      data = await apiFetch(`/api/v1/git/status?project_path=${encodeURIComponent(pPath)}`);
+    }
     state.currentGitStatus = data;
     renderGitStatusBody(data);
   } catch (err) {
@@ -228,6 +243,13 @@ export async function openGitStatusModal() {
         获取 Git 状态失败：${escapeHtml(err.message || String(err))}
       </div>
     `;
+  }
+}
+
+export function setGitFilesFilter(filter) {
+  state.gitFilesFilter = filter;
+  if (state.currentGitStatus) {
+    renderGitStatusBody(state.currentGitStatus);
   }
 }
 
@@ -246,19 +268,29 @@ export async function toggleGitFileDiff(relPath) {
     return;
   }
 
-  container.innerHTML = `<div class="p-2 text-xs text-sky-400">正在加载 Diff...</div>`;
+  const fObj = state.currentGitStatus?.files?.find((f) => f.path === relPath);
   const sess = state.sessions.find((s) => s.unified_id === state.selectedSessionId);
+  const pPath = state.currentGitStatus?.project_path || sess?.project_path || "";
+
+  container.innerHTML = `<div class="p-2 text-xs text-sky-400">正在加载 Diff...</div>`;
   try {
     const res = await apiFetch(
-      `/api/v1/git/diff?project_path=${encodeURIComponent(
-        sess?.project_path || ""
-      )}&file_path=${encodeURIComponent(relPath)}`
+      `/api/v1/git/diff?project_path=${encodeURIComponent(pPath)}&file_path=${encodeURIComponent(relPath)}`
     );
-    state.gitDiffCache[relPath] = res.diff || "无文本变更";
-    container.innerHTML = renderUnifiedDiffHtml(state.gitDiffCache[relPath], relPath);
-  } catch (err) {
-    container.innerHTML = `<div class="p-2 text-xs text-rose-400">加载 Diff 失败</div>`;
+    if (res?.diff) {
+      state.gitDiffCache[relPath] = res.diff;
+      container.innerHTML = renderUnifiedDiffHtml(state.gitDiffCache[relPath], relPath);
+      return;
+    }
+  } catch (_) {}
+
+  if (fObj?.diff_preview) {
+    state.gitDiffCache[relPath] = fObj.diff_preview;
+    container.innerHTML = renderUnifiedDiffHtml(fObj.diff_preview, relPath);
+    return;
   }
+
+  container.innerHTML = `<div class="p-2 text-xs text-zinc-500">该文件变更已被提交或工作区无文本差异</div>`;
 }
 
 export async function viewFullGitDiff() {
@@ -302,6 +334,7 @@ export async function viewFullGitDiff() {
   }
 }
 
+
 export const modalActions = {
   closePairingGuideModal,
   submitPairCodeManual,
@@ -318,6 +351,8 @@ export const modalActions = {
   closeAgentsHealthModal,
   refreshAgentsHealth,
   openGitStatusModal,
+  setGitFilesFilter,
   toggleGitFileDiff,
   viewFullGitDiff,
+  updateGitStatusBadge,
 };

@@ -443,3 +443,220 @@ def build_system_overview(
         "pending_approvals_count": len(pending_approvals),
     }
 
+
+
+def get_session_modified_files_summary(
+    unified_id: str,
+    adapters: dict[str, BaseAgentAdapter],
+    meta_db: MetaDatabase,
+) -> dict[str, Any]:
+    """
+    聚合指定会话实际修改的所有文件列表，并比对工作区 Git 状态标记未提交与已提交。
+    """
+    from pathlib import Path
+    from backend.adapters.tool_utils import is_read_only_tool
+    from backend.core.workspace_git import get_git_workspace_status
+
+    if ":" not in unified_id:
+        return {
+            "ok": False,
+            "unified_id": unified_id,
+            "project_path": "",
+            "is_git_repo": False,
+            "branch": "",
+            "summary": {"total_modified": 0, "uncommitted_count": 0, "committed_count": 0},
+            "files": [],
+        }
+
+    actual_unified_id = meta_db.resolve_unified_id(unified_id) if hasattr(meta_db, "resolve_unified_id") else unified_id
+    agent_type, raw_id = actual_unified_id.split(":", 1)
+    overrides = meta_db.get_session_overrides().get(actual_unified_id) or meta_db.get_session_overrides().get(unified_id, {})
+    actual_raw_id = overrides.get("raw_session_id") or raw_id
+    adapter = adapters.get(agent_type)
+
+    project_path = overrides.get("project_path") or ""
+    if not project_path and adapter:
+        sess_obj = adapter.get_session(actual_raw_id)
+        if sess_obj and sess_obj.project_path:
+            project_path = sess_obj.project_path
+
+    if not adapter:
+        return {
+            "ok": True,
+            "unified_id": unified_id,
+            "project_path": project_path,
+            "is_git_repo": False,
+            "branch": "",
+            "summary": {"total_modified": 0, "uncommitted_count": 0, "committed_count": 0},
+            "files": [],
+        }
+
+    items = adapter.get_session_messages(actual_raw_id, limit=0)
+    write_keywords = ("edit", "write", "patch", "create", "replace", "delete", "remove", "append")
+
+    files_map: dict[str, dict[str, Any]] = {}
+    norm_project_path = project_path.replace("\\", "/").rstrip("/") if project_path else ""
+
+    for it in items:
+        step_idx = getattr(it, "step_index", 0)
+        created_at = getattr(it, "created_at", "")
+        for tc in getattr(it, "tool_calls", []):
+            raw_path = (getattr(tc, "file_path", "") or "").strip().strip('"\'')
+            if not raw_path:
+                continue
+            t_name = (getattr(tc, "name", "") or "").lower()
+            if is_read_only_tool(t_name):
+                continue
+
+            diff_text = getattr(tc, "diff_text", "") or ""
+            add_c = getattr(tc, "diff_add_count", 0) or 0
+            del_c = getattr(tc, "diff_del_count", 0) or 0
+
+            is_modifying = (
+                diff_text != ""
+                or add_c > 0
+                or del_c > 0
+                or any(k in t_name for k in write_keywords)
+            )
+            if not is_modifying:
+                continue
+
+            clean_p = raw_path.replace("\\", "/")
+            # 过滤内部暂存目录与 scratch 临时脚本，聚焦真实业务工程文件
+            if "/.gemini/antigravity/brain/" in clean_p.lower() or "/.system_generated/" in clean_p.lower():
+                continue
+
+            rel_p = clean_p
+            if norm_project_path and clean_p.lower().startswith(norm_project_path.lower() + "/"):
+                rel_p = clean_p[len(norm_project_path) + 1 :]
+            elif not Path(clean_p).is_absolute():
+                rel_p = clean_p.lstrip("./")
+
+            key = rel_p.lower()
+            if key not in files_map:
+                files_map[key] = {
+                    "path": rel_p,
+                    "full_path": clean_p,
+                    "filename": Path(rel_p).name,
+                    "session_additions": add_c,
+                    "session_deletions": del_c,
+                    "tool_names": [getattr(tc, "name", "")],
+                    "last_modified_step": step_idx,
+                    "last_modified_at": created_at,
+                    "diff_preview": diff_text[:2000] if diff_text else "",
+                }
+            else:
+                entry = files_map[key]
+                entry["session_additions"] += add_c
+                entry["session_deletions"] += del_c
+                curr_tool = getattr(tc, "name", "")
+                if curr_tool and curr_tool not in entry["tool_names"]:
+                    entry["tool_names"].append(curr_tool)
+                if step_idx >= entry["last_modified_step"]:
+                    entry["last_modified_step"] = step_idx
+                    entry["last_modified_at"] = created_at
+                    if diff_text:
+                        entry["diff_preview"] = diff_text[:2000]
+
+    git_status = get_git_workspace_status(project_path) if project_path else {
+        "ok": True, "is_git_repo": False, "branch": "", "changed_count": 0, "files": []
+    }
+    is_git_repo = bool(git_status.get("is_git_repo", False))
+    branch = git_status.get("branch", "")
+    git_files = git_status.get("files", [])
+    git_rel_map = {f["path"].replace("\\", "/").lower(): f for f in git_files}
+
+    result_files: list[dict[str, Any]] = []
+    seen_git_keys = set()
+    for key, f_obj in files_map.items():
+        git_info = git_rel_map.get(key)
+        if git_info:
+            seen_git_keys.add(key)
+            f_obj["status"] = "uncommitted"
+            f_obj["git_status"] = git_info.get("status", "M")
+            f_obj["git_additions"] = git_info.get("additions", 0)
+            f_obj["git_deletions"] = git_info.get("deletions", 0)
+            f_obj["from_session"] = True
+        else:
+            if is_git_repo:
+                f_obj["status"] = "committed"
+                f_obj["git_status"] = None
+                f_obj["git_additions"] = 0
+                f_obj["git_deletions"] = 0
+                f_obj["from_session"] = True
+            else:
+                f_obj["status"] = "non_git"
+                f_obj["git_status"] = None
+                f_obj["git_additions"] = 0
+                f_obj["git_deletions"] = 0
+                f_obj["from_session"] = True
+        result_files.append(f_obj)
+
+    # 补充工作区中存在但非本会话直接编辑的未提交变更文件
+    for git_f in git_files:
+        k = git_f["path"].replace("\\", "/").lower()
+        if k not in seen_git_keys and k not in files_map:
+            result_files.append({
+                "path": git_f["path"].replace("\\", "/"),
+                "full_path": git_f.get("full_path", ""),
+                "filename": Path(git_f["path"]).name,
+                "session_additions": 0,
+                "session_deletions": 0,
+                "tool_names": [],
+                "last_modified_step": 0,
+                "last_modified_at": "",
+                "diff_preview": "",
+                "status": "uncommitted",
+                "git_status": git_f.get("status", "M"),
+                "git_additions": git_f.get("additions", 0),
+                "git_deletions": git_f.get("deletions", 0),
+                "from_session": False,
+            })
+
+    result_files.sort(
+        key=lambda x: (
+            0 if x["status"] == "uncommitted" else 1,
+            -x["last_modified_step"],
+        )
+    )
+
+    session_files = [f for f in result_files if f.get("from_session")]
+    session_uncommitted = sum(1 for f in session_files if f["status"] == "uncommitted")
+    session_committed = sum(1 for f in session_files if f["status"] == "committed")
+    session_total = len(session_files)
+
+    uncommitted_count = sum(1 for f in result_files if f["status"] == "uncommitted")
+    committed_count = sum(1 for f in result_files if f["status"] == "committed")
+
+    project_name = Path(project_path).name if project_path else ""
+    session_title = overrides.get("title") or ""
+    if not session_title and adapter:
+        s_obj = adapter.get_session(actual_raw_id)
+        if s_obj and s_obj.title:
+            session_title = s_obj.title
+
+    for f_obj in result_files:
+        f_obj["project_name"] = project_name
+        if f_obj.get("from_session"):
+            f_obj["session_title"] = session_title
+        else:
+            f_obj["session_title"] = f_obj.get("session_title") or "工作区变更"
+
+    return {
+        "ok": True,
+        "unified_id": unified_id,
+        "project_path": project_path,
+        "project_name": project_name,
+        "session_title": session_title,
+        "is_git_repo": is_git_repo,
+        "branch": branch,
+        "summary": {
+            "total_modified": len(result_files),
+            "uncommitted_count": uncommitted_count,
+            "committed_count": committed_count,
+            "session_total_modified": session_total,
+            "session_uncommitted_count": session_uncommitted,
+            "session_committed_count": session_committed,
+        },
+        "files": result_files,
+    }

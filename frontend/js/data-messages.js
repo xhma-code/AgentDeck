@@ -251,7 +251,7 @@ export async function loadSessionMessages(unifiedId, options = false) {
       if (!silent || wasLoading || newSig !== oldSig) {
         renderMessagesList();
         renderCurrentSessionHeader();
-      } else {
+            } else {
         renderLiveStreamOverlay();
         renderCurrentSessionHeader();
       }

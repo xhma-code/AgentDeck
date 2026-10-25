@@ -40,6 +40,7 @@ from backend.engines.session_aggregator import (
     build_system_overview,
     fetch_full_step_output,
     fetch_session_detail,
+    get_session_modified_files_summary,
 )
 from backend.engines.stream_runner import StreamRunner
 from backend.engines.watcher import SafeStorageWatcher
@@ -293,6 +294,13 @@ class AgentOrchestrator:
             unified_id=unified_id, adapters=self.adapters, meta_db=self.meta_db, pending_approvals=self.pending_approvals,
             is_session_active_fn=self.is_session_active, resolve_default_model_fn=self._resolve_default_model,
             limit=limit, before_step=before_step, since_step=since_step,
+        )
+
+    def get_session_modified_files(self, unified_id: str) -> dict[str, Any]:
+        return get_session_modified_files_summary(
+            unified_id=unified_id,
+            adapters=self.adapters,
+            meta_db=self.meta_db,
         )
 
     def get_full_step_output(self, unified_id: str, step_index: int) -> str:

@@ -308,6 +308,7 @@ export async function loadSessions(silent = false) {
         renderCurrentSessionHeader();
         renderApprovalBanners();
         renderOtherRunningPill();
+        updateGitStatusBadge();
       }
     }
 
