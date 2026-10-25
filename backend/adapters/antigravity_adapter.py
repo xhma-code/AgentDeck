@@ -304,13 +304,52 @@ class AntigravityAdapter(BaseAgentAdapter):
             limit=limit,
         )
 
+    def ensure_session_workspace(self, raw_session_id: str, project_path: str) -> bool:
+        """确保会话在 conversation_summaries.db 中具有正确的工作区 URI，以便官方客户端按项目检索。"""
+        if not raw_session_id or not project_path:
+            return False
+        uri = AntigravityLanguageServerBridge._to_workspace_uri(project_path)
+        if not uri:
+            return False
+        import json, sqlite3
+        uris_json = json.dumps([uri])
+        for db_p in [
+            self.summary_db_path,
+            Path(os.path.expanduser("~/.gemini/antigravity/conversation_summaries.db")),
+            Path(os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")),
+        ]:
+            if not db_p.exists():
+                continue
+            try:
+                conn = sqlite3.connect(str(db_p))
+                row = conn.execute(
+                    "SELECT workspace_uris FROM conversation_summaries WHERE conversation_id = ?",
+                    (raw_session_id,),
+                ).fetchone()
+                if row is not None:
+                    curr = row[0] or ""
+                    if not curr or curr == "[]":
+                        conn.execute(
+                            "UPDATE conversation_summaries SET workspace_uris = ? WHERE conversation_id = ?",
+                            (uris_json, raw_session_id),
+                        )
+                        conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.debug(f"修补会话工作区 URI 异常 ({db_p}): {e}")
+        return True
+
     def create_session(self, title: str = "", project_path: str = "") -> Optional[str]:
         """多态创建 Antigravity 会话：IDE 在线走 Connect-RPC 原生注入桌面端，离线走 CLI 独立分配。"""
         import uuid
         new_cid = str(uuid.uuid4())
         if hasattr(self, "ls_bridge") and self.ls_bridge._scan_ls_processes():
-            ok = self.ls_bridge.start_cascade(new_cid, title=title)
+            ok = self.ls_bridge.start_cascade(
+                new_cid, title=title, project_path=project_path
+            )
             if ok:
+                if project_path:
+                    self.ensure_session_workspace(new_cid, project_path)
                 return new_cid
         return new_cid
 

@@ -462,13 +462,34 @@ class AntigravityLanguageServerBridge:
             self._cached_models_ts = now
         return results
 
-    def start_cascade(self, cascade_id: str, title: str = "") -> bool:
+    @staticmethod
+    def _to_workspace_uri(path_str: str) -> str:
+        """将本地绝对路径转换为 Antigravity 官方规范的 file URI。"""
+        if not path_str or not path_str.strip():
+            return ""
+        trimmed = path_str.strip()
+        if trimmed.startswith("file://"):
+            return trimmed
+        import urllib.parse
+        clean = trimmed.replace("\\", "/").rstrip("/")
+        if len(clean) >= 2 and clean[1] == ":":
+            drive = clean[0].lower() + "%3A"
+            rest = urllib.parse.quote(clean[2:])
+            return f"file:///{drive}{rest}"
+        return f"file:///{urllib.parse.quote(clean)}"
+
+    def start_cascade(
+        self, cascade_id: str, title: str = "", project_path: str = ""
+    ) -> bool:
         """通过 Connect-RPC StartCascade 原生在当前运行的 IDE 中创建新会话并初始化。"""
         candidates = self._scan_ls_processes()
-        payload = {
+        payload: dict[str, Any] = {
             "cascadeId": cascade_id,
             "source": "CORTEX_TRAJECTORY_SOURCE_VSCODE",
         }
+        uri = self._to_workspace_uri(project_path)
+        if uri:
+            payload["workspaceUris"] = [uri]
         for pid, token in candidates:
             ports = self._find_listening_ports(pid)
             for port in ports:
