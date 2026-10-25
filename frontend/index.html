@@ -357,18 +357,11 @@
 
       <!-- 浮动快捷操作药丸组：自适应吸附在底部控制舱上方，杜绝打架遮挡 -->
       <div id="floating-actions-container" class="absolute right-3 z-20 flex flex-col items-end gap-1.5 pointer-events-none transition-[bottom] duration-150">
-        <button id="collapse-steps-pill" onclick="window.appActions.collapseCurrentExpandedSteps()"
+        <button id="scroll-bottom-pill" onclick="window.appActions.scrollToBottomAndCollapse()"
           class="hidden pointer-events-auto px-2.5 py-1 rounded-full bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-[11px] shadow-lg flex items-center gap-1 active:scale-95 transition"
-          title="收起并跳转至最新">
-          <svg class="w-3.5 h-3.5 text-zinc-950" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg>
-          <span>收起</span>
-        </button>
-
-        <button id="scroll-bottom-pill" onclick="window.appActions.scrollToBottom()"
-          class="hidden pointer-events-auto px-2.5 py-1 rounded-full bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-[11px] shadow-lg flex items-center gap-1 active:scale-95 transition"
-          title="滚动至最新消息">
+          title="收起展开步骤并滚动至最新">
           <svg class="w-3.5 h-3.5 text-zinc-950" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-          <span>最新</span>
+          <span>最近</span>
         </button>
       </div>
 
@@ -572,10 +565,10 @@
         <div>
           <label class="block text-[11px] text-zinc-400 mb-1">权限模式</label>
           <select id="new-session-mode" class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100">
+            <option value="auto">⚡ 全自动 (Auto)</option>
             <option value="ask">🛡️ 审批 (Ask)</option>
             <option value="accept_edits">✏️ 自动改 (Edit)</option>
             <option value="plan">📋 规划 (Plan)</option>
-            <option value="auto">⚡ 全自动 (Auto)</option>
           </select>
         </div>
       </div>
@@ -603,9 +596,9 @@
       </div>
 
       <div class="flex justify-end gap-2 pt-1">
-        <button onclick="window.appActions.closeNewSessionModal()"
+        <button id="new-session-cancel-btn" onclick="window.appActions.closeNewSessionModal()"
           class="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition">取消</button>
-        <button onclick="window.appActions.confirmCreateNewSession()"
+        <button id="new-session-confirm-btn" onclick="window.appActions.confirmCreateNewSession()"
           class="px-3.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-bold text-xs transition">创建</button>
       </div>
     </div>

@@ -402,21 +402,64 @@ window.appActions = {
   copyCodeBlock,
   copyThinkingText,
   collapseCurrentExpandedSteps() {
-    state.expandedTurns = {};
-    state.turnThinkingExpanded = {};
-    state.expandedDetails = {};
-    state.expandedCodeBlocks = {};
-    state.turnFilterEdits = {};
+    let hasAny = false;
+    for (const k of Object.keys(state.expandedTurns || {})) {
+      if (state.expandedTurns[k]) { state.expandedTurns[k] = false; hasAny = true; }
+    }
+    for (const k of Object.keys(state.turnThinkingExpanded || {})) {
+      if (state.turnThinkingExpanded[k]) { state.turnThinkingExpanded[k] = false; hasAny = true; }
+    }
+    for (const k of Object.keys(state.expandedDetails || {})) {
+      if (state.expandedDetails[k]) { state.expandedDetails[k] = false; hasAny = true; }
+    }
+    for (const k of Object.keys(state.expandedCodeBlocks || {})) {
+      if (state.expandedCodeBlocks[k]) { state.expandedCodeBlocks[k] = false; hasAny = true; }
+    }
+    for (const k of Object.keys(state.turnFilterEdits || {})) {
+      if (state.turnFilterEdits[k]) { state.turnFilterEdits[k] = false; hasAny = true; }
+    }
+    if (hasAny) {
+      renderMessagesList();
+    }
+    updateCollapseStepsPillVisibility();
+    return hasAny;
+  },
+
+  scrollToBottomAndCollapse() {
+    const hasExpanded =
+      Object.values(state.expandedTurns || {}).some(Boolean) ||
+      Object.values(state.turnThinkingExpanded || {}).some(Boolean) ||
+      Object.values(state.expandedDetails || {}).some(Boolean) ||
+      Object.values(state.expandedCodeBlocks || {}).some(Boolean) ||
+      Object.values(state.turnFilterEdits || {}).some(Boolean);
+    if (hasExpanded) {
+      let hasAny = false;
+      for (const k of Object.keys(state.expandedTurns || {})) {
+        if (state.expandedTurns[k]) { state.expandedTurns[k] = false; hasAny = true; }
+      }
+      for (const k of Object.keys(state.turnThinkingExpanded || {})) {
+        if (state.turnThinkingExpanded[k]) { state.turnThinkingExpanded[k] = false; hasAny = true; }
+      }
+      for (const k of Object.keys(state.expandedDetails || {})) {
+        if (state.expandedDetails[k]) { state.expandedDetails[k] = false; hasAny = true; }
+      }
+      for (const k of Object.keys(state.expandedCodeBlocks || {})) {
+        if (state.expandedCodeBlocks[k]) { state.expandedCodeBlocks[k] = false; hasAny = true; }
+      }
+      for (const k of Object.keys(state.turnFilterEdits || {})) {
+        if (state.turnFilterEdits[k]) { state.turnFilterEdits[k] = false; hasAny = true; }
+      }
+      if (hasAny) {
+        renderMessagesList();
+      }
+    }
     state.autoScrollLocked = false;
-    const pill = document.getElementById("collapse-steps-pill");
-    if (pill) pill.classList.add("hidden");
-    const jumpBtn = document.getElementById("scroll-bottom-pill");
-    if (jumpBtn) jumpBtn.classList.add("hidden");
     const stickyBar = document.getElementById("sticky-user-prompt-bar");
     if (stickyBar) stickyBar.classList.add("hidden");
-    renderMessagesList();
     scrollToBottom(true);
-    showToast("已收起并跳转至最新", "info");
+    const pill = document.getElementById("scroll-bottom-pill");
+    if (pill) pill.classList.add("hidden");
+    updateCollapseStepsPillVisibility();
   },
   async toggleAwakeLock(enable) {
     await apiFetch(`/api/v1/system/awake-lock?enable=${enable}`, { method: "POST" });

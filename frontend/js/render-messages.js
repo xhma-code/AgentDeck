@@ -18,14 +18,27 @@ export { isReadOnlyTool, groupMessagesIntoTurns } from "./render-turn-grouping.j
 import { isReadOnlyTool, groupMessagesIntoTurns } from "./render-turn-grouping.js";
 
 export function updateCollapseStepsPillVisibility() {
-  const pill = document.getElementById("collapse-steps-pill");
+  const pill = document.getElementById("scroll-bottom-pill");
   if (!pill) return;
   const hasExpandedTurn =
     Object.values(state.expandedTurns || {}).some(Boolean) ||
-    Object.values(state.turnThinkingExpanded || {}).some(Boolean);
+    Object.values(state.turnThinkingExpanded || {}).some(Boolean) ||
+    Object.values(state.expandedDetails || {}).some(Boolean) ||
+    Object.values(state.expandedCodeBlocks || {}).some(Boolean) ||
+    Object.values(state.turnFilterEdits || {}).some(Boolean);
   const container = document.getElementById("messages-container");
-  const isScrolledDown = container ? container.scrollTop > 80 : false;
-  pill.classList.toggle("hidden", !(hasExpandedTurn && isScrolledDown));
+  if (!container) {
+    pill.classList.add("hidden");
+    return;
+  }
+  const distFromBottom =
+    container.scrollHeight - container.scrollTop - container.clientHeight;
+  const isNotAtBottom = distFromBottom > 120;
+  if (isNotAtBottom) {
+    pill.classList.remove("hidden");
+  } else {
+    pill.classList.add("hidden");
+  }
 }
 
 export {

@@ -232,7 +232,7 @@ export function _doRenderLiveStreamOverlay() {
     } else {
       const m = Math.floor(elapsedSec / 60);
       const s = elapsedSec % 60;
-      elapsedStr = `${m}m ${s}s`;
+      elapsedStr = `${m}m ${String(s).padStart(2, "0")}s`;
     }
   }
 
