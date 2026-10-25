@@ -129,6 +129,13 @@ class StreamRunner:
             raise ValueError(f"未知的 Agent 类型: {agent_type}")
 
         actual_unified_id, actual_raw_id, actual_agent_type = unified_id, raw_id, agent_type
+        if target_db and hasattr(target_db, "resolve_unified_id"):
+            actual_unified_id = target_db.resolve_unified_id(unified_id)
+            if ":" in actual_unified_id:
+                actual_agent_type, parsed_raw = actual_unified_id.split(":", 1)
+                ov = target_db.get_session_overrides().get(actual_unified_id) or target_db.get_session_overrides().get(unified_id, {})
+                actual_raw_id = ov.get("raw_session_id") or parsed_raw
+                adapter = self.adapters.get(actual_agent_type) or adapter
 
         norm_mode = target_norm(actual_agent_type, execution_mode) if target_norm else "auto"
         workdir = project_path or str(PROJECT_ROOT)
@@ -240,8 +247,9 @@ class StreamRunner:
         if not adapter:
             return
         try:
-            initial_items, _, _ = adapter.get_session_messages_page(raw_session_id, limit=5)
-            last_step = initial_items[-1].step_index if initial_items else 0
+            initial_all = adapter.get_session_messages(raw_session_id)
+            last_step = initial_all[-1].step_index if initial_all else 0
+            initial_count = len(initial_all)
             has_seen_active = False
             consecutive_inactive = 0
 
@@ -267,10 +275,11 @@ class StreamRunner:
                         consecutive_inactive += 1
 
                 # 2. 检查是否有新步骤或消息更新
-                curr_items, _, _ = adapter.get_session_messages_page(raw_session_id, limit=5)
-                curr_step = curr_items[-1].step_index if curr_items else 0
-                if curr_step > last_step:
-                    last_step = curr_step
+                curr_all = adapter.get_session_messages(raw_session_id)
+                curr_step = curr_all[-1].step_index if curr_all else 0
+                if curr_step > last_step or len(curr_all) > initial_count:
+                    if curr_step > last_step:
+                        last_step = curr_step
                     await self.broadcast_event(
                         "STREAM_DELTA",
                         {"unified_id": unified_id, "delta_type": "step_updated", "step_index": curr_step},
@@ -282,7 +291,7 @@ class StreamRunner:
                     break
 
                 # 情况 B：若未感知到活跃标记（如轮询间隔穿透），但检测到新步骤且已连续 12s 稳定无变动
-                if not is_active and last_step > (initial_items[-1].step_index if initial_items else 0):
+                if not is_active and (curr_step > (initial_all[-1].step_index if initial_all else 0) or len(curr_all) > initial_count):
                     consecutive_inactive += 1
                     if consecutive_inactive >= 8:  # 8 次 * 1.5s = 12s 静默
                         break
@@ -404,12 +413,15 @@ class StreamRunner:
                 )
                 await self.broadcast_event("SESSION_ERROR", {"unified_id": unified_id, "error": diag})
             finally:
-                if proc is not None and self.active_processes.get(unified_id) is proc:
-                    self.active_processes.pop(unified_id, None)
-                    self.process_last_active.pop(unified_id, None)
-                    await self.broadcast_event("SESSION_TURN_FINISHED", {"unified_id": unified_id})
-                elif proc is None and unified_id not in self.active_processes:
-                    await self.broadcast_event("SESSION_TURN_FINISHED", {"unified_id": unified_id})
+                current_uid = ctx.unified_id
+                if proc is not None:
+                    if self.active_processes.get(unified_id) is proc:
+                        self.active_processes.pop(unified_id, None)
+                        self.process_last_active.pop(unified_id, None)
+                    if self.active_processes.get(current_uid) is proc:
+                        self.active_processes.pop(current_uid, None)
+                        self.process_last_active.pop(current_uid, None)
+                await self.broadcast_event("SESSION_TURN_FINISHED", {"unified_id": current_uid, "original_unified_id": unified_id})
 
     async def _handle_stream_line(
         self,
@@ -435,14 +447,43 @@ class StreamRunner:
 
         # Antigravity CLI 首轮动态回填真实 conversation_id
         if ctx.agent_type == "agy_cli":
-            real_cid = event.get("conversation_id")
+            real_cid = (
+                event.get("conversation_id")
+                or (event.get("step_update") or {}).get("conversation_id")
+                or (event.get("result") or {}).get("conversation_id")
+                or (event.get("init") or {}).get("conversation_id")
+            )
             if real_cid and real_cid != ctx.raw_session_id:
+                old_unified_id = ctx.unified_id
+                new_unified_id = f"{ctx.agent_type}:{real_cid}"
                 ctx.raw_session_id = real_cid
-                if self.meta_db and hasattr(self.meta_db, "update_raw_session_id"):
-                    try:
-                        self.meta_db.update_raw_session_id(ctx.unified_id, real_cid)
-                    except Exception as db_exc:
-                        logger.debug("动态回填真实会话ID异常: %s", db_exc)
+                ctx.unified_id = new_unified_id
+
+                if old_unified_id in self.active_processes:
+                    self.active_processes[new_unified_id] = self.active_processes[old_unified_id]
+                if old_unified_id in self.process_last_active:
+                    self.process_last_active[new_unified_id] = self.process_last_active[old_unified_id]
+
+                if self.meta_db:
+                    if hasattr(self.meta_db, "remap_session_unified_id"):
+                        try:
+                            self.meta_db.remap_session_unified_id(old_unified_id, new_unified_id, real_cid)
+                        except Exception as db_exc:
+                            logger.debug("动态回填真实会话ID异常: %s", db_exc)
+                    elif hasattr(self.meta_db, "update_raw_session_id"):
+                        try:
+                            self.meta_db.update_raw_session_id(old_unified_id, real_cid)
+                        except Exception as db_exc:
+                            logger.debug("动态回填真实会话ID异常: %s", db_exc)
+
+                await self.broadcast_event(
+                    "SESSION_REMAPPED",
+                    {
+                        "old_unified_id": old_unified_id,
+                        "new_unified_id": new_unified_id,
+                        "raw_session_id": real_cid,
+                    },
+                )
 
         await self.broadcast_event(
             "STREAM_JSON_FRAME",

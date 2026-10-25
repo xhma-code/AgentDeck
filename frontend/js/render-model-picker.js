@@ -39,6 +39,9 @@ export function renderModelOptionsForAgent(selectEl, agentType, selectedModelId 
       .join("");
   } else {
     selectEl.value = activeId;
+    const labelEl = document.getElementById("new-session-model-label");
+    const activeModel = models.find((m) => m.id === activeId) || defaultModelItem;
+    if (labelEl && activeModel) labelEl.textContent = activeModel.label;
   }
   renderModelPicker();
 }

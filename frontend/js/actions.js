@@ -26,8 +26,19 @@ import {
 } from "./render.js";
 import {
   openNewSessionModal,
+  closeNewSessionModal,
   confirmCreateNewSession,
+  toggleCustomPathInput,
   updateDrawerVisibility,
+  toggleNewSessionAgentDropdown,
+  selectNewSessionAgent,
+  toggleNewSessionModeDropdown,
+  selectNewSessionMode,
+  toggleNewSessionModelDropdown,
+  selectNewSessionModel,
+  toggleNewSessionWorkspaceDropdown,
+  selectNewSessionWorkspace,
+  handleNewSessionModalClick,
 } from "./modals.js";
 import { renderUnifiedDiffHtml } from "./diff-viewer.js";
 import { renderTurnProcessBar } from "./render-step-cards.js";
@@ -281,10 +292,18 @@ window.appActions = {
     });
   },
   openNewSessionModal: (prefill = "") => openNewSessionModal(prefill, ""),
-  closeNewSessionModal() {
-    document.getElementById("new-session-modal").classList.add("hidden");
-  },
+  closeNewSessionModal,
+  toggleCustomPathInput,
   confirmCreateNewSession,
+  toggleNewSessionAgentDropdown,
+  selectNewSessionAgent,
+  toggleNewSessionModeDropdown,
+  selectNewSessionMode,
+  toggleNewSessionModelDropdown,
+  selectNewSessionModel,
+  toggleNewSessionWorkspaceDropdown,
+  selectNewSessionWorkspace,
+  handleNewSessionModalClick,
   sendPrompt: () => handleSendPrompt(null),
   abortSession: handleAbortCurrentSession,
   changeMode: (el) => handleModeChange(el.value),

@@ -300,14 +300,17 @@ def fetch_session_detail(
             "has_more": False,
             "pending_approval": None,
         }
-    agent_type, raw_id = unified_id.split(":", 1)
+    actual_unified_id = meta_db.resolve_unified_id(unified_id) if hasattr(meta_db, "resolve_unified_id") else unified_id
+    agent_type, raw_id = actual_unified_id.split(":", 1)
+    overrides = meta_db.get_session_overrides().get(actual_unified_id) or meta_db.get_session_overrides().get(unified_id, {})
+    actual_raw_id = overrides.get("raw_session_id") or raw_id
     adapter = adapters.get(agent_type)
     messages: list[dict[str, Any]] = []
     total_count = 0
     has_more = False
     if adapter:
         items, total_count, has_more = adapter.get_session_messages_page(
-            raw_id, limit=limit, before_step=before_step, since_step=since_step
+            actual_raw_id, limit=limit, before_step=before_step, since_step=since_step
         )
         if items:
             last_idx = len(items) - 1
@@ -316,19 +319,17 @@ def fetch_session_detail(
                 for idx, it in enumerate(items)
             ]
 
-    pa = pending_approvals.get(unified_id)
+    pa = pending_approvals.get(unified_id) or pending_approvals.get(actual_unified_id)
     deleted_ids = meta_db.get_deleted_session_ids()
-    overrides = meta_db.get_session_overrides().get(unified_id, {})
     session_actual_model = ""
     if adapter and hasattr(adapter, "get_session_model"):
         try:
-            session_actual_model = adapter.get_session_model(raw_id) or ""
+            session_actual_model = adapter.get_session_model(actual_raw_id) or ""
         except Exception as exc:
-            logger.debug(f"获取会话 {raw_id[:8]} 真实模型异常: {exc}")
+            logger.debug(f"获取会话 {actual_raw_id[:8]} 真实模型异常: {exc}")
     default_mid = resolve_default_model_fn(agent_type)
     chosen_model = overrides.get("model_name") or session_actual_model or default_mid
 
-    # 校验模型有效性：若旧记录中的模型已不可用，纠偏为当前电脑端生效的默认模型
     if adapter and hasattr(adapter, "get_available_models_with_quota"):
         try:
             avail = adapter.get_available_models_with_quota()
@@ -338,19 +339,19 @@ def fetch_session_detail(
         except Exception:
             pass
     token_usage = (
-        adapter.get_session_token_usage(raw_id, model_name=chosen_model)
+        adapter.get_session_token_usage(actual_raw_id, model_name=chosen_model)
         if adapter
         else SessionTokenUsage(context_limit=200_000).to_dict()
     )
 
-    is_active = is_session_active_fn(unified_id)
+    is_active = is_session_active_fn(unified_id) or is_session_active_fn(actual_unified_id)
     if not is_active and adapter:
         try:
             if hasattr(adapter, "is_external_session_active"):
-                is_active = adapter.is_external_session_active(raw_id)
+                is_active = adapter.is_external_session_active(actual_raw_id)
             else:
                 for s in adapter.list_sessions(limit=50):
-                    if s.raw_session_id == raw_id:
+                    if s.raw_session_id == actual_raw_id:
                         if s.status in ("running", "desktop_active"):
                             is_active = True
                         break
@@ -369,9 +370,10 @@ def fetch_session_detail(
                 is_active = True
 
     return {
-        "unified_id": unified_id,
+        "unified_id": actual_unified_id,
+        "original_unified_id": unified_id,
         "agent_type": agent_type,
-        "raw_session_id": raw_id,
+        "raw_session_id": actual_raw_id,
         "execution_mode": overrides.get("execution_mode", ExecutionMode.AUTO.value),
         "model_name": chosen_model,
         "is_pinned": overrides.get("is_pinned", 0),

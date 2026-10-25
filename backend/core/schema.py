@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS t_tool_approval_log (
     decided_at TEXT NOT NULL                  -- 审批操作时间（ISO 8601）
 );
 
+-- 表名：t_session_alias（移动端临时会话到真实底层会话重定向别名表）
+CREATE TABLE IF NOT EXISTS t_session_alias (
+    alias_unified_id TEXT PRIMARY KEY,   -- 别名会话主键（如首轮临时生成的 agy_cli:uuid）
+    target_unified_id TEXT NOT NULL,     -- 映射的真实会话主键（如 CLI 动态回填后的 agy_cli:real_cid）
+    created_at TEXT NOT NULL             -- 别名建立时间（ISO 8601）
+);
+
 -- 表名：t_workspace_bookmark（移动端新建会话常用工作区收藏表）
 CREATE TABLE IF NOT EXISTS t_workspace_bookmark (
     workspace_id INTEGER PRIMARY KEY AUTOINCREMENT, -- 工作区收藏自增主键
@@ -95,6 +102,9 @@ TABLE_COLUMN_COMMENTS: list[tuple[str, str, str, str]] = [
     ("t_tool_approval_log", "移动端工具调用审批审计日志表", "risk_level", "风险等级（normal：普通，high：高危）"),
     ("t_tool_approval_log", "移动端工具调用审批审计日志表", "decision", "审批决定（approved：允许，denied：拒绝）"),
     ("t_tool_approval_log", "移动端工具调用审批审计日志表", "decided_at", "审批操作时间（ISO 8601）"),
+    ("t_session_alias", "移动端临时会话到真实底层会话重定向别名表", "alias_unified_id", "别名会话主键"),
+    ("t_session_alias", "移动端临时会话到真实底层会话重定向别名表", "target_unified_id", "映射的真实会话主键"),
+    ("t_session_alias", "移动端临时会话到真实底层会话重定向别名表", "created_at", "别名建立时间（ISO 8601）"),
     ("t_workspace_bookmark", "移动端新建会话常用工作区收藏表", "workspace_id", "工作区收藏自增主键"),
     ("t_workspace_bookmark", "移动端新建会话常用工作区收藏表", "workspace_name", "工作区显示名称"),
     ("t_workspace_bookmark", "移动端新建会话常用工作区收藏表", "workspace_path", "工作区本地绝对路径"),

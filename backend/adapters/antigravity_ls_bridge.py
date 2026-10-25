@@ -462,6 +462,39 @@ class AntigravityLanguageServerBridge:
             self._cached_models_ts = now
         return results
 
+    def start_cascade(self, cascade_id: str, title: str = "") -> bool:
+        """通过 Connect-RPC StartCascade 原生在当前运行的 IDE 中创建新会话并初始化。"""
+        candidates = self._scan_ls_processes()
+        payload = {
+            "cascadeId": cascade_id,
+            "source": "CORTEX_TRAJECTORY_SOURCE_VSCODE",
+        }
+        for pid, token in candidates:
+            ports = self._find_listening_ports(pid)
+            for port in ports:
+                scheme = self._probe_connect_port(port, token)
+                if not scheme:
+                    continue
+                ok, _ = self._raw_post(
+                    scheme=scheme,
+                    port=port,
+                    csrf_token=token,
+                    method="StartCascade",
+                    body=payload,
+                    timeout=3.0,
+                )
+                if ok:
+                    logger.info(
+                        f"已通过 Language Server (PID={pid}, Port={port}) Connect-RPC 原生创建 IDE 新会话: {cascade_id[:8]}"
+                    )
+                    if title and title.strip():
+                        try:
+                            self.update_conversation_title(cascade_id, title.strip())
+                        except Exception as t_exc:
+                            logger.debug(f"新会话设置初始标题异常: {t_exc}")
+                    return True
+        return False
+
     def update_conversation_title(self, cascade_id: str, new_title: str) -> bool:
         """通过 Connect-RPC UpdateConversationAnnotations 实时更新 Antigravity 运行中会话标题。"""
         candidates = self._scan_ls_processes()

@@ -349,33 +349,61 @@ export function handleRealtimeEvent(envelope) {
     return;
   }
 
+  if (type === "SESSION_REMAPPED") {
+    const oldId = payload && payload.old_unified_id;
+    const newId = payload && payload.new_unified_id;
+    if (oldId && newId) {
+      if (state.selectedSessionId === oldId) {
+        state.selectedSessionId = newId;
+      }
+      if (state.optimisticMessages[oldId]) {
+        state.optimisticMessages[newId] = state.optimisticMessages[oldId];
+        delete state.optimisticMessages[oldId];
+      }
+      if (state.pendingTurnThinking[oldId]) {
+        state.pendingTurnThinking[newId] = state.pendingTurnThinking[oldId];
+        delete state.pendingTurnThinking[oldId];
+      }
+      if (state.streamingBuffer[oldId]) {
+        state.streamingBuffer[newId] = state.streamingBuffer[oldId];
+        delete state.streamingBuffer[oldId];
+      }
+      loadSessions(true);
+      loadSessionMessages(newId, true);
+    }
+    return;
+  }
+
   if (type === "SESSION_TURN_FINISHED" || type === "SESSION_ABORTED") {
     const uid = payload && payload.unified_id;
-    if (uid) {
-      delete state.pendingTurnThinking[uid];
-      const sess = (state.allSessions || state.sessions).find((s) => s.unified_id === uid);
+    const origUid = payload && payload.original_unified_id;
+    const affected = [uid, origUid].filter(Boolean);
+    for (const id of affected) {
+      delete state.pendingTurnThinking[id];
+      const sess = (state.allSessions || state.sessions).find((s) => s.unified_id === id);
       if (sess && sess.status === "running") {
         sess.status = "idle";
       }
-      if (uid !== state.selectedSessionId) {
-        delete state.streamingBuffer[uid];
-        if (state.optimisticMessages[uid]) {
-          delete state.optimisticMessages[uid];
-        }
-        markSessionCompletedUnread(uid);
-      } else {
-        if (state.retainedActiveSessionIds) {
-          state.retainedActiveSessionIds.add(uid);
-        }
-      }
-      renderSessionList();
-      renderOtherRunningPill();
-      if (uid === state.selectedSessionId) {
-        renderCurrentSessionHeader();
+      if (id !== state.selectedSessionId) {
+        delete state.streamingBuffer[id];
+        delete state.optimisticMessages[id];
       }
     }
+    const curUid = state.selectedSessionId;
+    if (affected.includes(curUid)) {
+      if (state.retainedActiveSessionIds) {
+        state.retainedActiveSessionIds.add(curUid);
+      }
+    } else if (uid) {
+      markSessionCompletedUnread(uid);
+    }
+    renderSessionList();
+    renderOtherRunningPill();
+    if (affected.includes(state.selectedSessionId)) {
+      renderCurrentSessionHeader();
+    }
     loadSessions(true);
-    if (state.selectedSessionId && (!uid || uid === state.selectedSessionId)) {
+    if (state.selectedSessionId && (!uid || affected.includes(state.selectedSessionId))) {
       loadSessionMessages(state.selectedSessionId, { silent: false }).finally(() => {
         if (uid) {
           delete state.streamingBuffer[uid];

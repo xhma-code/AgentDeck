@@ -183,7 +183,18 @@ class AntigravityAdapter(BaseAgentAdapter):
         return list(active_ids)[:10]
 
     def get_session_transcript_path(self, raw_session_id: str) -> Optional[Path]:
-        return self.brain_dir / raw_session_id / ".system_generated" / "logs" / "transcript.jsonl"
+        p = self.brain_dir / raw_session_id / ".system_generated" / "logs" / "transcript.jsonl"
+        if p.exists():
+            return p
+        alt_root = (
+            Path(os.path.expanduser("~/.gemini/antigravity"))
+            if "antigravity-cli" in str(self.root_dir).lower()
+            else Path(os.path.expanduser("~/.gemini/antigravity-cli"))
+        )
+        alt_p = alt_root / "brain" / raw_session_id / ".system_generated" / "logs" / "transcript.jsonl"
+        if alt_p.exists():
+            return alt_p
+        return p
 
     def _get_summary_db_sig(self) -> tuple[int, int, int, int]:
         m1, s1, m2, s2 = 0, 0, 0, 0
@@ -256,13 +267,27 @@ class AntigravityAdapter(BaseAgentAdapter):
 
     def get_session(self, raw_session_id: str) -> Optional[UnifiedSession]:
         """按 ID 精确定位单个 Antigravity 会话摘要。"""
-        return query_antigravity_single_session(
+        sess = query_antigravity_single_session(
             summary_db_path=self.summary_db_path,
             brain_dir=self.brain_dir,
             agent_type=self.agent_type,
             agent_label=self.agent_label,
             raw_session_id=raw_session_id,
         )
+        if not sess:
+            alt_root = (
+                Path(os.path.expanduser("~/.gemini/antigravity"))
+                if "antigravity-cli" in str(self.root_dir).lower()
+                else Path(os.path.expanduser("~/.gemini/antigravity-cli"))
+            )
+            sess = query_antigravity_single_session(
+                summary_db_path=alt_root / "conversation_summaries.db",
+                brain_dir=alt_root / "brain",
+                agent_type=self.agent_type,
+                agent_label=self.agent_label,
+                raw_session_id=raw_session_id,
+            )
+        return sess
 
     def get_session_messages(
         self, raw_session_id: str, limit: int = 120
@@ -278,6 +303,16 @@ class AntigravityAdapter(BaseAgentAdapter):
             messages_cache=self._messages_cache,
             limit=limit,
         )
+
+    def create_session(self, title: str = "", project_path: str = "") -> Optional[str]:
+        """多态创建 Antigravity 会话：IDE 在线走 Connect-RPC 原生注入桌面端，离线走 CLI 独立分配。"""
+        import uuid
+        new_cid = str(uuid.uuid4())
+        if hasattr(self, "ls_bridge") and self.ls_bridge._scan_ls_processes():
+            ok = self.ls_bridge.start_cascade(new_cid, title=title)
+            if ok:
+                return new_cid
+        return new_cid
 
     def send_prompt_via_ls(
         self, raw_session_id: str, prompt: str, model_id: str = ""

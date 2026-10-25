@@ -63,10 +63,11 @@ ADHOC_DIR_NAMES = {
 
 
 def normalize_project_path(raw_path: str) -> str:
-    """统一正斜杠、去除末尾斜杠并规范化 Windows 盘符为小写，避免同项目因大小写/斜杠不同被拆开。"""
+    """统一正斜杠、去除重复与末尾斜杠并规范化 Windows 盘符为小写，避免同项目因大小写/斜杠不同被拆开。"""
     if not raw_path:
         return ""
-    cleaned = str(raw_path).strip().replace("\\", "/").rstrip("/")
+    import re
+    cleaned = re.sub(r"/+", "/", str(raw_path).strip().replace("\\", "/")).rstrip("/")
     if len(cleaned) >= 2 and cleaned[1] == ":":
         cleaned = cleaned[0].lower() + cleaned[1:]
     return cleaned

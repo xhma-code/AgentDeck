@@ -25,7 +25,7 @@ import {
   toggleAgentFilterMenu,
   closeAgentFilterMenu,
 } from "./render.js";
-import { openNewSessionModal } from "./modals.js";
+import { openNewSessionModal, renderNewSessionModelUI, renderNewSessionModeUI } from "./modals.js";
 import {
   renderModelOptionsForAgent,
   renderModeOptionsForAgent,
@@ -416,7 +416,9 @@ export async function hideProject(projectPath, ev, projectName = "") {
 }
 
 export function onNewSessionAgentChange(agentType) {
+  renderNewSessionModeUI(agentType, "auto");
   const modelSelect = document.getElementById("new-session-model");
+  renderNewSessionModelUI(agentType, "");
   renderModelOptionsForAgent(modelSelect, agentType, "");
   const modeSelect = document.getElementById("new-session-mode");
   renderModeOptionsForAgent(modeSelect, agentType, modeSelect ? modeSelect.value : "auto", false);

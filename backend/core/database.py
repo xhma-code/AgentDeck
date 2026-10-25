@@ -23,6 +23,7 @@ from backend.core.sqlite_snapshot import (
     TMP_SNAPSHOT_DIR,
     safe_query_external_sqlite,
 )
+from backend.core.workspace import normalize_project_path
 
 __all__ = [
     "DATA_DIR",
@@ -48,6 +49,7 @@ class MetaDatabase:
         self.db_path = db_path or META_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self._id_aliases: dict[str, str] = {}
 
     @contextmanager
     def connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -95,7 +97,7 @@ class MetaDatabase:
             conn.execute("UPDATE t_unified_session_meta SET last_viewed_at = updated_at WHERE last_viewed_at IS NULL;")
 
             # 首次初始化默认置入 AgentDeck 自身作为工作区
-            agentdeck_root = str(PROJECT_ROOT.resolve()).replace("\\", "/")
+            agentdeck_root = normalize_project_path(str(PROJECT_ROOT.resolve()))
             conn.execute(
                 """
                 INSERT OR IGNORE INTO t_workspace_bookmark
@@ -104,6 +106,7 @@ class MetaDatabase:
                 """,
                 ("AgentDeck", agentdeck_root, utc_now_iso()),
             )
+            self._clean_and_dedup_workspaces(conn)
 
     def get_session_overrides(self) -> dict[str, dict[str, Any]]:
         """获取所有会话的用户自定义覆盖项（如置顶、执行策略、模型选择等）。"""
@@ -170,14 +173,88 @@ class MetaDatabase:
             ).fetchone()
             return dict(row) if row else {}
 
+    def resolve_unified_id(self, unified_id: str) -> str:
+        """解析会话 ID 别名映射（如首轮动态回填真实 ID 后的重定向）。"""
+        if not unified_id:
+            return ""
+        if unified_id in self._id_aliases:
+            return self._id_aliases[unified_id]
+        try:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT target_unified_id FROM t_session_alias WHERE alias_unified_id = ?",
+                    (unified_id,),
+                ).fetchone()
+                if row and row["target_unified_id"]:
+                    self._id_aliases[unified_id] = row["target_unified_id"]
+                    return row["target_unified_id"]
+        except Exception:
+            pass
+        return unified_id
+
+    def remap_session_unified_id(
+        self, old_unified_id: str, new_unified_id: str, real_raw_id: str
+    ) -> None:
+        """重映射统一会话 ID 与底层真实 raw_id（如 Antigravity CLI 首轮动态回填）。"""
+        if not old_unified_id or not new_unified_id:
+            return
+        self._id_aliases[old_unified_id] = new_unified_id
+        now = utc_now_iso()
+        try:
+            with self.connect() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO t_session_alias (alias_unified_id, target_unified_id, created_at) VALUES (?, ?, ?)",
+                    (old_unified_id, new_unified_id, now),
+                )
+        except Exception:
+            pass
+        with self.connect() as conn:
+            existing_new = conn.execute(
+                "SELECT unified_id FROM t_unified_session_meta WHERE unified_id = ?",
+                (new_unified_id,),
+            ).fetchone()
+            existing_old = conn.execute(
+                "SELECT * FROM t_unified_session_meta WHERE unified_id = ?",
+                (old_unified_id,),
+            ).fetchone()
+
+            if existing_new:
+                if existing_old:
+                    old_row = dict(existing_old)
+                    upd_title = old_row.get("title")
+                    upd_pin = old_row.get("is_pinned")
+                    upd_mode = old_row.get("execution_mode")
+                    conn.execute(
+                        """
+                        UPDATE t_unified_session_meta
+                        SET title = COALESCE(NULLIF(?, ''), title),
+                            is_pinned = MAX(is_pinned, ?),
+                            execution_mode = COALESCE(NULLIF(?, ''), execution_mode),
+                            updated_at = ?
+                        WHERE unified_id = ?
+                        """,
+                        (upd_title, upd_pin or 0, upd_mode, now, new_unified_id),
+                    )
+                    conn.execute(
+                        "DELETE FROM t_unified_session_meta WHERE unified_id = ?",
+                        (old_unified_id,),
+                    )
+            elif existing_old:
+                conn.execute(
+                    """
+                    UPDATE t_unified_session_meta
+                    SET unified_id = ?, raw_session_id = ?, updated_at = ?
+                    WHERE unified_id = ?
+                    """,
+                    (new_unified_id, real_raw_id, now, old_unified_id),
+                )
+
     def update_raw_session_id(self, unified_id: str, new_raw_id: str) -> None:
         """更新会话关联的底层真实 raw_session_id（如 Antigravity CLI 首轮动态回填）。"""
         now = utc_now_iso()
-        with self.connect() as conn:
-            conn.execute(
-                "UPDATE t_unified_session_meta SET raw_session_id = ?, updated_at = ? WHERE unified_id = ?",
-                (new_raw_id, now, unified_id),
-            )
+        agent_type = unified_id.split(":", 1)[0] if ":" in unified_id else "agy_cli"
+        new_unified_id = f"{agent_type}:{new_raw_id}"
+        self.remap_session_unified_id(unified_id, new_unified_id, new_raw_id)
 
     def _upsert_session_viewed_time(
         self, conn: sqlite3.Connection, unified_id: str, viewed_at_iso: str, only_if_newer: bool = False
@@ -311,8 +388,58 @@ class MetaDatabase:
             )
             return cur.lastrowid or 0
 
+    def _clean_and_dedup_workspaces(self, conn: sqlite3.Connection) -> None:
+        """彻底清洗并合并 t_workspace_bookmark 中因大小写、斜杠不一致造成的重复工作区记录。"""
+        rows = conn.execute(
+            "SELECT workspace_id, workspace_name, workspace_path, default_agent, is_hidden, last_used_at "
+            "FROM t_workspace_bookmark"
+        ).fetchall()
+        if not rows:
+            return
+
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            raw_path = str(r["workspace_path"] or "").strip()
+            norm = normalize_project_path(raw_path)
+            if not norm:
+                continue
+            key = norm.lower()
+            item = dict(r)
+            item["norm_path"] = norm
+            groups.setdefault(key, []).append(item)
+
+        for key, items in groups.items():
+            # 选出主记录：优先未隐藏、最新使用时间
+            items.sort(
+                key=lambda x: (
+                    1 if int(x.get("is_hidden") or 0) == 0 else 0,
+                    str(x.get("last_used_at") or ""),
+                ),
+                reverse=True,
+            )
+            primary = items[0]
+            target_path = primary["norm_path"]
+            primary_id = primary["workspace_id"]
+            best_name = primary.get("workspace_name") or target_path.split("/")[-1] or "Project"
+            best_agent = primary.get("default_agent") or "claude_code"
+            any_visible = any(int(it.get("is_hidden") or 0) == 0 for it in items)
+            final_hidden = 0 if any_visible else 1
+            max_used = max(str(it.get("last_used_at") or "") for it in items)
+
+            conn.execute(
+                """
+                UPDATE t_workspace_bookmark
+                SET workspace_path = ?, workspace_name = ?, default_agent = ?, is_hidden = ?, last_used_at = ?
+                WHERE workspace_id = ?
+                """,
+                (target_path, best_name, best_agent, final_hidden, max_used, primary_id),
+            )
+
+            for dup in items[1:]:
+                conn.execute("DELETE FROM t_workspace_bookmark WHERE workspace_id = ?", (dup["workspace_id"],))
+
     def list_workspaces(self, include_hidden: bool = False) -> list[dict[str, Any]]:
-        """获取工作区收藏列表，按最近使用时间倒序排列。"""
+        """获取工作区收藏列表，按最近使用时间倒序排列并做内存去重兜底。"""
         sql = "SELECT * FROM t_workspace_bookmark"
         params: tuple[Any, ...] = ()
         if not include_hidden:
@@ -320,13 +447,26 @@ class MetaDatabase:
         sql += " ORDER BY is_hidden ASC, last_used_at DESC"
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-            return [dict(r) for r in rows]
+            result: list[dict[str, Any]] = []
+            seen_keys: set[str] = set()
+            for r in rows:
+                item = dict(r)
+                norm = normalize_project_path(item.get("workspace_path") or "")
+                key = norm.lower()
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                item["workspace_path"] = norm
+                result.append(item)
+            return result
 
     def _normalize_and_dedup_workspace(self, conn: sqlite3.Connection, norm_path: str) -> None:
         """清理历史遗留的大小写或斜杠不一致的重复记录，确保唯一路径只保留一条。"""
+        target_key = normalize_project_path(norm_path).lower()
         existing = conn.execute("SELECT workspace_id, workspace_path FROM t_workspace_bookmark").fetchall()
         for r in existing:
-            if r["workspace_path"].lower() == norm_path.lower() and r["workspace_path"] != norm_path:
+            raw = str(r["workspace_path"] or "")
+            if normalize_project_path(raw).lower() == target_key and raw != norm_path:
                 conn.execute("DELETE FROM t_workspace_bookmark WHERE workspace_id = ?", (r["workspace_id"],))
 
     def add_workspace(
@@ -336,7 +476,7 @@ class MetaDatabase:
         default_agent: str = "claude_code",
     ) -> dict[str, Any]:
         """新增或激活工作区收藏。"""
-        norm_path = str(Path(workspace_path).resolve()).replace("\\", "/")
+        norm_path = normalize_project_path(str(Path(workspace_path).resolve()))
         now = utc_now_iso()
         with self.connect() as conn:
             self._normalize_and_dedup_workspace(conn, norm_path)
@@ -358,7 +498,7 @@ class MetaDatabase:
 
     def hide_workspace(self, workspace_path: str) -> dict[str, Any]:
         """将指定目录从侧边栏「项目」列表中移出隐藏（不删除会话数据）。"""
-        norm_path = str(Path(workspace_path).resolve()).replace("\\", "/")
+        norm_path = normalize_project_path(str(Path(workspace_path).resolve()))
         now = utc_now_iso()
         folder_name = norm_path.split("/")[-1] if norm_path else "Project"
         with self.connect() as conn:

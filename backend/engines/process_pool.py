@@ -228,10 +228,15 @@ class AgentOrchestrator:
         execution_mode: Optional[str] = None,
     ) -> tuple[str, dict[str, Any]]:
         """深模块：一站式创建并初始化新会话（状态感知路由：IDE 活跃走 IDE，未打开平滑切 CLI）。"""
-        # 网页端新建会话：Antigravity 统一创建由 CLI 驱动的独立会话
-        # （IDE 桌面端只支持接管/直连桌面端自身已创建的活动会话，不支持通过 RPC 凭空注入未初始化的会话）
+        # 网页端新建会话：状态感知自适应路由（IDE 活跃优先通过 Connect-RPC 原生注入，离线平滑转 CLI）
         if agent_type in ("antigravity", "agy_ide", "agy_cli"):
-            real_agent = "agy_cli"
+            ide_adapter = self.adapters.get("agy_ide")
+            has_ls = bool(
+                ide_adapter
+                and hasattr(ide_adapter, "ls_bridge")
+                and ide_adapter.ls_bridge._scan_ls_processes()
+            )
+            real_agent = "agy_ide" if has_ls else "agy_cli"
         else:
             real_agent = agent_type
 

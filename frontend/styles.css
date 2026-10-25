@@ -978,3 +978,18 @@ details:not([open]) > summary .toggle-arrow-closed {
   background-color: rgba(56, 189, 248, 0.4) !important;
   color: #ffffff !important;
 }
+
+/* 新建会话弹窗自定义下拉选择器交互优化 */
+#new-session-agent-dropdown,
+#new-session-mode-dropdown,
+#new-session-model-dropdown,
+#new-session-workspace-dropdown {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+#new-session-agent-dropdown > div,
+#new-session-mode-dropdown > div,
+#new-session-model-dropdown > div,
+#new-session-workspace-dropdown > div {
+  touch-action: manipulation;
+}
