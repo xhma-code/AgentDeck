@@ -164,9 +164,9 @@ class AgentOrchestrator:
         supported = (
             adapter.supported_modes
             if adapter
-            else {ExecutionMode.ASK.value, ExecutionMode.PLAN.value, ExecutionMode.ACCEPT_EDITS.value, ExecutionMode.AUTO.value}
+            else {ExecutionMode.AUTO.value, ExecutionMode.ACCEPT_EDITS.value, ExecutionMode.PLAN.value, ExecutionMode.ASK.value}
         )
-        return m if m in supported else ExecutionMode.ASK.value
+        return m if m in supported else ExecutionMode.AUTO.value
 
     def is_session_active(self, unified_id: str) -> bool:
         if unified_id in self.active_processes:

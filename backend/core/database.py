@@ -159,7 +159,7 @@ class MetaDatabase:
                     """,
                     (
                         unified_id, agent_type, raw_session_id, parent_unified_id,
-                        project_path, title, is_pinned or 0, execution_mode or "ask",
+                        project_path, title, is_pinned or 0, execution_mode or "auto",
                         model_name or "", now,
                     ),
                 )

@@ -419,7 +419,7 @@ export function onNewSessionAgentChange(agentType) {
   const modelSelect = document.getElementById("new-session-model");
   renderModelOptionsForAgent(modelSelect, agentType, "");
   const modeSelect = document.getElementById("new-session-mode");
-  renderModeOptionsForAgent(modeSelect, agentType, modeSelect ? modeSelect.value : "ask", false);
+  renderModeOptionsForAgent(modeSelect, agentType, modeSelect ? modeSelect.value : "auto", false);
 }
 
 export async function refreshPairCodeAndQr() {

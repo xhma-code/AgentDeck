@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS t_unified_session_meta (
     project_path TEXT,                   -- 关联的工作区目录绝对路径
     title TEXT,                          -- 会话标题摘要（自动提取首条提问或原生标题）
     is_pinned INTEGER DEFAULT 0,         -- 手机端是否置顶（0：否，1：是）
-    execution_mode TEXT DEFAULT 'ask',   -- 手机端接管执行策略（plan / ask / accept_edits / auto）
+    execution_mode TEXT DEFAULT 'auto',   -- 手机端接管执行策略（auto / accept_edits / plan / ask）
     model_name TEXT DEFAULT '',          -- 会话当前选定的模型名称（如 claude-sonnet-5-5-high / gemini-4-argon-high）
     last_viewed_at TEXT,                 -- 多端已查看时间戳（ISO 8601，用于跨端消除待查看蓝点）
     is_deleted INTEGER DEFAULT 0,        -- 是否已在网页端/手机端删除（0：正常，1：已删除）

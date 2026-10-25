@@ -43,13 +43,13 @@ export function renderModelOptionsForAgent(selectEl, agentType, selectedModelId 
   renderModelPicker();
 }
 
-export function renderModeOptionsForAgent(selectEl, agentType, selectedMode = "ask", isShort = false) {
-  if (!selectEl) return "ask";
+export function renderModeOptionsForAgent(selectEl, agentType, selectedMode = "auto", isShort = false) {
+  if (!selectEl) return "auto";
   const normalizedType = (agentType === "claude") ? "claude_code" : ((agentType === "antigravity" || agentType === "agy_ide") ? "agy_cli" : (agentType || "agy_cli"));
   const list = MODES_BY_AGENT[normalizedType] || MODES_BY_AGENT.agy_cli;
 
   const isSupported = list.some((m) => m.value === selectedMode);
-  const activeMode = isSupported ? selectedMode : (list[0]?.value || "ask");
+  const activeMode = isSupported ? selectedMode : (list[0]?.value || "auto");
 
   selectEl.innerHTML = list
     .map((m) => {

@@ -44,10 +44,10 @@ export const DEFAULT_MODELS_BY_AGENT = {
 
 
 export const ALL_EXECUTION_MODES = [
-  { value: "ask", label: "🛡️ 审批", fullLabel: "🛡️ 审批 (Ask)" },
-  { value: "plan", label: "📋 规划", fullLabel: "📋 规划 (Plan)" },
-  { value: "accept_edits", label: "✏️ 自动改", fullLabel: "✏️ 自动改 (Edit)" },
   { value: "auto", label: "⚡ 全自动", fullLabel: "⚡ 全自动 (Auto)" },
+  { value: "accept_edits", label: "✏️ 自动改", fullLabel: "✏️ 自动改 (Edit)" },
+  { value: "plan", label: "📋 规划", fullLabel: "📋 规划 (Plan)" },
+  { value: "ask", label: "🛡️ 审批", fullLabel: "🛡️ 审批 (Ask)" },
 ];
 
 
@@ -56,14 +56,14 @@ export const MODES_BY_AGENT = {
   claude: ALL_EXECUTION_MODES,
   claude_code: ALL_EXECUTION_MODES,
   opencode: [
-    { value: "ask", label: "🛡️ 审批", fullLabel: "🛡️ 审批 (Ask)" },
     { value: "auto", label: "⚡ 全自动", fullLabel: "⚡ 全自动 (Auto)" },
+    { value: "ask", label: "🛡️ 审批", fullLabel: "🛡️ 审批 (Ask)" },
   ],
   agy_ide: [
-    { value: "ask", label: "🛡️ 审批", fullLabel: "🛡️ 审批 (克隆接管)" },
-    { value: "plan", label: "📋 规划", fullLabel: "📋 规划 (克隆接管)" },
-    { value: "accept_edits", label: "✏️ 自动改", fullLabel: "✏️ 自动改 (克隆接管)" },
     { value: "auto", label: "⚡ 全自动", fullLabel: "⚡ 全自动 (克隆接管)" },
+    { value: "accept_edits", label: "✏️ 自动改", fullLabel: "✏️ 自动改 (克隆接管)" },
+    { value: "plan", label: "📋 规划", fullLabel: "📋 规划 (克隆接管)" },
+    { value: "ask", label: "🛡️ 审批", fullLabel: "🛡️ 审批 (克隆接管)" },
   ],
 };
 

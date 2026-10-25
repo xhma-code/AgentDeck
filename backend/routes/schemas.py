@@ -20,7 +20,7 @@ class CreateSessionRequest(BaseModel):
     agent_type: str = Field(default="claude_code", description="Agent 类型 (claude_code/agy_cli/opencode)")
     project_path: str = Field(default="", description="工作区目录绝对路径")
     title: str = Field(default="", description="初始会话标题")
-    execution_mode: str = Field(default="ask", description="初始执行模式 (plan/ask/accept_edits/auto)")
+    execution_mode: str = Field(default="auto", description="初始执行模式 (auto/accept_edits/plan/ask)")
     model_name: str = Field(default="", description="选定模型名称")
     initial_prompt: str = Field(default="", description="可选首条发送指令")
 

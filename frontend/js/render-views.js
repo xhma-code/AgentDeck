@@ -135,7 +135,7 @@ export function renderCurrentSessionHeader() {
   }
   updatePromptInputPlaceholder(sess);
   if (modeSelect) {
-    const activeMode = renderModeOptionsForAgent(modeSelect, sess.agent_type, sess.execution_mode || "ask", true);
+    const activeMode = renderModeOptionsForAgent(modeSelect, sess.agent_type, sess.execution_mode || "auto", true);
     // 若原存储的模式不受该 Agent 支持且发生了自动回退，静默同步更新后端元数据持久化
     if (sess.execution_mode && sess.execution_mode !== activeMode) {
       sess.execution_mode = activeMode;

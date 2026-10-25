@@ -121,7 +121,7 @@ def aggregate_all_sessions(
         ov = overrides.get(sess.unified_id)
         if ov:
             sess.is_pinned = int(ov.get("is_pinned") or 0)
-            sess.execution_mode = str(ov.get("execution_mode") or ExecutionMode.ASK.value)
+            sess.execution_mode = str(ov.get("execution_mode") or ExecutionMode.AUTO.value)
             if ov.get("model_name"):
                 sess.model_name = str(ov["model_name"])
             if ov.get("title"):
@@ -187,7 +187,7 @@ def aggregate_all_sessions(
                 if sess.is_subagent or sess.parent_unified_id:
                     continue
                 sess.is_pinned = int(ov.get("is_pinned") or 0)
-                sess.execution_mode = str(ov.get("execution_mode") or ExecutionMode.ASK.value)
+                sess.execution_mode = str(ov.get("execution_mode") or ExecutionMode.AUTO.value)
                 if ov.get("model_name"):
                     sess.model_name = str(ov["model_name"])
                 if ov.get("title") and str(ov["title"]).strip():
@@ -260,7 +260,7 @@ def aggregate_all_sessions(
                     step_count=0,
                     updated_at=str(ov.get("updated_at") or utc_now_iso()),
                     is_pinned=int(ov.get("is_pinned") or 0),
-                    execution_mode=str(ov.get("execution_mode") or ExecutionMode.ASK.value),
+                    execution_mode=str(ov.get("execution_mode") or ExecutionMode.AUTO.value),
                     model_name=chosen_mid,
                     is_project=is_proj,
                     project_name=proj_name,
@@ -372,7 +372,7 @@ def fetch_session_detail(
         "unified_id": unified_id,
         "agent_type": agent_type,
         "raw_session_id": raw_id,
-        "execution_mode": overrides.get("execution_mode", ExecutionMode.ASK.value),
+        "execution_mode": overrides.get("execution_mode", ExecutionMode.AUTO.value),
         "model_name": chosen_model,
         "is_pinned": overrides.get("is_pinned", 0),
         "is_running": is_active,

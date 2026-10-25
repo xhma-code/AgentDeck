@@ -130,7 +130,7 @@ class StreamRunner:
 
         actual_unified_id, actual_raw_id, actual_agent_type = unified_id, raw_id, agent_type
 
-        norm_mode = target_norm(actual_agent_type, execution_mode) if target_norm else "ask"
+        norm_mode = target_norm(actual_agent_type, execution_mode) if target_norm else "auto"
         workdir = project_path or str(PROJECT_ROOT)
         def_model = target_res(actual_agent_type) if target_res else ""
         chosen_model = model_name or def_model

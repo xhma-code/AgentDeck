@@ -123,11 +123,6 @@
               <polyline points="14 9 11 12 14 15"></polyline>
             </svg>
           </button>
-          <button onclick="window.appActions.toggleDrawer(false)"
-            class="md:hidden p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 active:scale-95"
-            aria-label="关闭侧边栏">
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-          </button>
         </div>
       </div>
 
@@ -412,11 +407,11 @@
                 <div class="flex items-center bg-zinc-950/70 hover:bg-zinc-800/80 border border-zinc-800/70 hover:border-zinc-700/80 rounded-lg px-1.5 sm:px-2 h-7 shrink-0 transition">
                   <select id="execution-mode-select" onchange="window.appActions.changeMode(this)"
                     class="bg-transparent text-[11px] text-zinc-200 font-medium focus:outline-none cursor-pointer [&>option]:bg-zinc-900 [&>option]:text-zinc-100 py-0.5"
-                    title="选择执行模式（审批 / 规划 / 自动改 / 全自动）">
-                    <option value="ask">🛡️ 审批</option>
-                    <option value="plan">📋 规划</option>
-                    <option value="accept_edits">✏️ 自动改</option>
+                    title="选择执行模式（全自动 / 自动改 / 规划 / 审批）">
                     <option value="auto">⚡ 全自动</option>
+                    <option value="accept_edits">✏️ 自动改</option>
+                    <option value="plan">📋 规划</option>
+                    <option value="ask">🛡️ 审批</option>
                   </select>
                 </div>
               </div>
@@ -566,9 +561,9 @@
           <label class="block text-[11px] text-zinc-400 mb-1">权限模式</label>
           <select id="new-session-mode" class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100">
             <option value="auto">⚡ 全自动 (Auto)</option>
-            <option value="ask">🛡️ 审批 (Ask)</option>
             <option value="accept_edits">✏️ 自动改 (Edit)</option>
             <option value="plan">📋 规划 (Plan)</option>
+            <option value="ask">🛡️ 审批 (Ask)</option>
           </select>
         </div>
       </div>
@@ -579,19 +574,25 @@
       </div>
 
       <div>
-        <label class="block text-[11px] text-zinc-400 mb-1">项目目录</label>
+        <div class="flex items-center justify-between mb-1">
+          <label class="block text-[11px] text-zinc-400">项目目录</label>
+          <button type="button" id="toggle-custom-path-btn" onclick="window.appActions.toggleCustomPathInput()"
+            class="text-[11px] text-sky-400 hover:text-sky-300 transition cursor-pointer select-none">
+            + 输入其它路径
+          </button>
+        </div>
         <select id="new-session-workspace" class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100"></select>
       </div>
 
-      <div>
-        <label class="block text-[11px] text-zinc-400 mb-1">自定义项目路径（可选）</label>
-        <input id="new-session-custom-path" type="text" placeholder="d:/Development Files/..."
+      <div id="new-session-custom-path-container" class="hidden">
+        <label class="block text-[11px] text-zinc-400 mb-1">自定义项目绝对路径</label>
+        <input id="new-session-custom-path" type="text" placeholder="D:/Development Files/..."
           class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 font-mono" />
       </div>
 
       <div>
         <label class="block text-[11px] text-zinc-400 mb-1">首条指令（可选）</label>
-        <textarea id="new-session-prompt" rows="2" placeholder="输入任务指令..."
+        <textarea id="new-session-prompt" rows="2" placeholder="输入任务指令（可选，支持 Ctrl+Enter 直接创建）..."
           class="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100"></textarea>
       </div>
 

@@ -10,12 +10,12 @@ from typing import Any, Optional
 
 
 class ExecutionMode(StrEnum):
-    """会话工具执行权限策略枚举。"""
+    """会话工具执行权限策略枚举（从最高到最低权限排序）。"""
 
+    AUTO = "auto"
+    ACCEPT_EDITS = "accept_edits"
     PLAN = "plan"
     ASK = "ask"
-    ACCEPT_EDITS = "accept_edits"
-    AUTO = "auto"
 
 
 class RiskLevel(StrEnum):
@@ -105,7 +105,7 @@ class UnifiedSession:
     step_count: int
     updated_at: str
     is_pinned: int = 0
-    execution_mode: str = "ask"
+    execution_mode: str = "auto"
     model_name: str = ""
     is_project: bool = False
     project_name: str = ""
