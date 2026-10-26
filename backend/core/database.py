@@ -10,10 +10,11 @@ AgentDeck 数据库管理与外部 SQLite 安全只读快照引擎。
 from __future__ import annotations
 
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator, Optional
+from typing import Any, Callable, Generator, Optional
 
 from backend.core.logger import PROJECT_ROOT, log_structured_error, logger
 from backend.core.schema import SCHEMA_DDL, TABLE_COLUMN_COMMENTS
@@ -50,6 +51,14 @@ class MetaDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
         self._id_aliases: dict[str, str] = {}
+        # 状态变更广播回调（由 orchestrator 注入；database 层不依赖 engines，避免循环 import）
+        self._status_broadcast_fn: Optional[Callable[[str, str, str, str, int], Any]] = None
+
+    def set_status_broadcast_callback(
+        self, fn: Optional[Callable[[str, str, str, str, int], Any]]
+    ) -> None:
+        """注入状态变更广播回调：fn(unified_id, old_status, new_status, reason, status_seq)。"""
+        self._status_broadcast_fn = fn
 
     @contextmanager
     def connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -93,6 +102,14 @@ class MetaDatabase:
                 conn.execute("ALTER TABLE t_unified_session_meta ADD COLUMN last_viewed_at TEXT;")
             if "is_deleted" not in cols:
                 conn.execute("ALTER TABLE t_unified_session_meta ADD COLUMN is_deleted INTEGER DEFAULT 0;")
+            # 会话真相状态机列（S1）：存量旧行统一补为 live（非 creating，避免旧会话永久骨架态）
+            if "status" not in cols:
+                conn.execute("ALTER TABLE t_unified_session_meta ADD COLUMN status TEXT DEFAULT 'live';")
+            if "status_seq" not in cols:
+                conn.execute("ALTER TABLE t_unified_session_meta ADD COLUMN status_seq INTEGER DEFAULT 0;")
+            conn.execute(
+                "UPDATE t_unified_session_meta SET status = 'live' WHERE status IS NULL OR status NOT IN ('creating','live','degraded','dead');"
+            )
             # 对存量未标记过的历史会话，统一兜底初始化为已读（避免跨端冷启动产生大量虚假待查看）
             conn.execute("UPDATE t_unified_session_meta SET last_viewed_at = updated_at WHERE last_viewed_at IS NULL;")
 
@@ -172,6 +189,153 @@ class MetaDatabase:
                 (unified_id,),
             ).fetchone()
             return dict(row) if row else {}
+
+    def set_session_status(
+        self,
+        unified_id: str,
+        new_status: str,
+        reason: str = "",
+        expected_seq: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """会话状态机唯一写入点（CAS：status_seq 单调递增，防陈旧异步写覆盖新状态）。
+
+        Returns:
+            {"changed": bool, "status": str, "status_seq": int}
+        """
+        now = utc_now_iso()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT status, status_seq FROM t_unified_session_meta WHERE unified_id = ?",
+                (unified_id,),
+            ).fetchone()
+            if not row:
+                parts = unified_id.split(":", 1)
+                atype = parts[0] if len(parts) > 1 else "unknown"
+                raw_id = parts[1] if len(parts) > 1 else unified_id
+                conn.execute(
+                    """
+                    INSERT INTO t_unified_session_meta
+                    (unified_id, agent_type, raw_session_id, status, status_seq, updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?)
+                    """,
+                    (unified_id, atype, raw_id, new_status, now),
+                )
+                old_status, new_seq = "", 1
+                self._broadcast_status(unified_id, old_status, new_status, reason, new_seq)
+                return {"changed": True, "status": new_status, "status_seq": new_seq}
+
+            old_status = str(row["status"] or "live")
+            seq = int(row["status_seq"] or 0)
+            if expected_seq is not None and seq != expected_seq:
+                # 陈旧写入拒绝（CAS 不命中）
+                logger.warning(
+                    "unified_id %s status CAS miss: expected seq=%s actual=%s (write %s→%s rejected)",
+                    unified_id, expected_seq, seq, old_status, new_status,
+                )
+                return {"changed": False, "status": old_status, "status_seq": seq}
+            if old_status == new_status and not reason:
+                return {"changed": False, "status": old_status, "status_seq": seq}
+
+            new_seq = seq + 1
+            conn.execute(
+                "UPDATE t_unified_session_meta SET status = ?, status_seq = ?, updated_at = ? WHERE unified_id = ?",
+                (new_status, new_seq, now, unified_id),
+            )
+            logger.info(
+                "unified_id %s status %s→%s seq=%s reason=%s",
+                unified_id, old_status, new_status, new_seq, reason or "unspecified",
+            )
+            self._broadcast_status(unified_id, old_status, new_status, reason, new_seq)
+            return {"changed": True, "status": new_status, "status_seq": new_seq}
+
+    def _broadcast_status(
+        self, unified_id: str, old_status: str, new_status: str, reason: str, seq: int
+    ) -> None:
+        """通过注入回调广播状态事件（广播失败不影响状态写入）。"""
+        fn = self._status_broadcast_fn
+        if fn is None:
+            return
+        try:
+            fn(unified_id, old_status, new_status, reason, seq)
+        except Exception as exc:
+            logger.warning(f"状态广播失败（不影响状态写入）: {exc}")
+
+    # ------------------------------------------------------------------
+    # S2：命令幂等记录持久化（epoch 秒；error 态不阻塞重启后重放）
+    # ------------------------------------------------------------------
+
+    def get_command_record(self, command_id: str) -> Optional[dict[str, Any]]:
+        """查询已持久化的命令处理记录；不存在返回 None。"""
+        try:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT command_id, unified_id, status, payload_summary, created_at, updated_at "
+                    "FROM t_command_idempotency WHERE command_id = ?",
+                    (command_id,),
+                ).fetchone()
+                return dict(row) if row else None
+        except Exception as exc:
+            logger.warning(f"幂等记录查询失败（降级内存表）: {exc}")
+            return None
+
+    def record_command(
+        self, command_id: str, unified_id: str, status: str, payload_summary: str = ""
+    ) -> None:
+        """插入或更新命令幂等记录（status: done / error）。读写失败仅日志告警不阻断执行。"""
+        now = int(time.time())
+        try:
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO t_command_idempotency
+                    (command_id, unified_id, status, payload_summary, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(command_id) DO UPDATE SET
+                        status = excluded.status,
+                        payload_summary = excluded.payload_summary,
+                        updated_at = excluded.updated_at
+                    """,
+                    (command_id, unified_id, status, payload_summary[:300], now, now),
+                )
+        except Exception as exc:
+            logger.warning(f"幂等记录写库失败（降级内存表）: {exc}")
+
+    def prune_command_records(self, keep: int = 1000) -> None:
+        """按 epoch 时间清理过期幂等记录，最多保留最新 keep 条。"""
+        try:
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    DELETE FROM t_command_idempotency WHERE command_id NOT IN (
+                        SELECT command_id FROM t_command_idempotency
+                        ORDER BY updated_at DESC LIMIT ?
+                    )
+                    """,
+                    (keep,),
+                )
+        except Exception as exc:
+            logger.debug(f"幂等记录清理跳过: {exc}")
+
+    def get_session_status(self, unified_id: str) -> str:
+        """读取单会话当前真相状态（未知会话按 live 处理）。"""
+        try:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT status FROM t_unified_session_meta WHERE unified_id = ?",
+                    (unified_id,),
+                ).fetchone()
+                return str(row["status"]) if row and row["status"] else "live"
+        except Exception:
+            return "live"
+
+    def get_active_session_status_ids(self) -> dict[str, dict[str, Any]]:
+        """返回非正常态（creating/degraded/dead）会话的状态快照，供 WS 快照与 REST 查询合成。"""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT unified_id, status, status_seq FROM t_unified_session_meta "
+                "WHERE status IS NOT NULL AND status != 'live'"
+            ).fetchall()
+            return {r["unified_id"]: dict(r) for r in rows}
 
     def resolve_unified_id(self, unified_id: str) -> str:
         """解析会话 ID 别名映射（如首轮动态回填真实 ID 后的重定向）。"""

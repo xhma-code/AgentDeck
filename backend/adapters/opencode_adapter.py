@@ -365,13 +365,18 @@ class OpenCodeAdapter(BaseAgentAdapter):
         )
 
     def create_session(self, title: str = "", project_path: str = "") -> Optional[str]:
-        """创建 OpenCode 会话（优先通过官方 HTTP Bridge 创建并获取 ses_ 前缀 ID）。"""
+        """创建 OpenCode 会话（优先通过官方 HTTP Bridge 创建并获取 ses_ 前缀 ID）。
+
+        E1：HTTP 创建失败时不再自行伪造回调假 ID —— 返回 None 并记录
+        last_create_via_http=False，由 orchestrator 生成兜底 ID 并标记 degraded。
+        """
+        self.last_create_via_http = False
         if self.http_bridge.is_server_running():
-            sid = self.http_bridge.create_session(title=title, directory=project_path)
-            if sid:
+            sid, via_http = self.http_bridge.create_session(title=title, directory=project_path)
+            if sid and via_http:
+                self.last_create_via_http = True
                 return sid
-        import uuid
-        return f"ses_{uuid.uuid4().hex[:20]}"
+        return None
 
     def build_cli_command(
         self,

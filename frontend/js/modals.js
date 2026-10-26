@@ -880,6 +880,8 @@ export async function confirmCreateNewSession() {
       execution_mode: mode,
       model_name: modelName,
       status: initialPrompt ? "RUNNING" : "IDLE",
+      // S1/D7：乐观对象以真相状态 creating 渲染（骨架「启动中」徽标），杜绝假 RUNNING
+      lifecycle: "creating",
       updated_at: new Date().toISOString(),
     };
 

@@ -171,7 +171,11 @@ def print_startup_banner(app, port: int) -> str:
 
 
 async def serve_multi_host(app, hosts: list[str], port: int) -> None:
-    """同时在 Tailscale IP (100.x.y.z) 与本机环回 (127.0.0.1) 上启动 Uvicorn 服务。"""
+    """同时在 Tailscale IP (100.x.y.z) 与本机环回 (127.0.0.1) 上启动 Uvicorn 服务。
+
+    C7：per-server bind 异常隔离 —— 单个 host bind 失败（如 Tailscale IP 暂时不可绑定）
+    只告警降级，不再炸掉整组服务（环回入口仍可用）。
+    """
     unique_hosts: list[str] = []
     for h in hosts:
         if h not in unique_hosts:
@@ -186,9 +190,35 @@ async def serve_multi_host(app, hosts: list[str], port: int) -> None:
             log_level="info",
             access_log=False,
         )
-        servers.append(uvicorn.Server(cfg))
+        servers.append((h, uvicorn.Server(cfg)))
 
-    await asyncio.gather(*(s.serve() for s in servers))
+    failed_hosts: list[str] = []
+
+    async def _serve_one(h: str, server: uvicorn.Server) -> None:
+        try:
+            await server.serve()
+        except Exception as exc:
+            failed_hosts.append(h)
+            logger.error(
+                "【bind 失败】地址 %s:%d 服务启动异常并已隔离（其余地址不受影响）: %s",
+                h, port, exc,
+            )
+
+    try:
+        await asyncio.gather(*(_serve_one(h, s) for h, s in servers))
+    except Exception as exc:
+        if len(failed_hosts) >= len(servers):
+            raise
+        logger.error("multi-host gather 部分异常（已隔离）: %s", exc)
+
+    if len(failed_hosts) >= len(servers):
+        raise RuntimeError(f"全部 bind 地址均启动失败: {failed_hosts}")
+    for h in failed_hosts:
+        log_structured_error(
+            problem=f"多网卡绑定降级 (host={h} port={port})",
+            cause=f"地址 {h} bind 失败",
+            fix=f"服务改由其余地址提供；请检查该网卡/Tailscale 状态，或使用 --port 更换端口。",
+        )
 
 
 def free_port_if_occupied(port: int) -> None:
@@ -297,6 +327,15 @@ def run_server_worker(port: int, local_only: bool) -> None:
 
 def run_with_reload(port: int, local_only: bool) -> None:
     """热重载 Supervisor：监听 backend/ 变动，保存时自动终止并重启服务。"""
+    # Supervisor 进程仅需在控制台输出提示，移除文件日志处理器以释放 Windows 文件写锁，避免父子进程锁死 app.log
+    for handler in list(logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            try:
+                handler.close()
+            except Exception:
+                pass
+            logger.removeHandler(handler)
+
     free_port_if_occupied(port)
     try:
         from watchfiles import DefaultFilter, watch
@@ -394,6 +433,22 @@ def run_doctor(port: int = 8765) -> int:
         if s.connect_ex(("127.0.0.1", port)) == 0:
             port_status = f"当前已被占用 (启动时将自动清理或可使用 '--port {port + 1}')"
     print(f"  [i] 目标端口 ({port})  : {port_status}")
+
+    # D25：WAL 模式边界校验 —— SQLite WAL 在网络驱动器（UNC/映射网络盘/overlay fs）上易失谐
+    wal_ok = True
+    try:
+        import string
+        db_str = str(db.db_path.resolve())
+        drive = db_str.split(":")[0].upper() if ":" in db_str else ""
+        wal_ok = bool(drive) and drive in string.ascii_uppercase and drive not in ("",)
+        unc = db_str.startswith("\\\\")
+        wal_ok = wal_ok and not unc
+    except Exception:
+        wal_ok = False
+    if wal_ok:
+        print(f"  [✓] WAL 数据库磁盘 : 本地磁盘 ({db.db_path}) —— WAL 模式可正常工作")
+    else:
+        print(f"  [!] WAL 数据库磁盘 : 网络路径 {db.db_path} —— WAL 在网络驱动器上易锁失谐，建议迁移到本地盘")
 
     print("─" * 72)
     if ts.is_online and all_ready:

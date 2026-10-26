@@ -68,6 +68,7 @@ class StreamRunner:
         normalize_mode_fn: Optional[Callable[[str, Optional[str]], str]] = None,
         resolve_default_model_fn: Optional[Callable[[str], str]] = None,
         bump_version_fn: Optional[Callable[[], None]] = None,
+        max_concurrent_fn: Optional[Callable[[], int]] = None,
     ) -> None:
         self.adapters = adapters
         self.active_processes = active_processes
@@ -81,6 +82,7 @@ class StreamRunner:
         self.normalize_mode_fn = normalize_mode_fn
         self.resolve_default_model_fn = resolve_default_model_fn
         self.bump_version_fn = bump_version_fn
+        self.max_concurrent_fn = max_concurrent_fn
 
     def build_cli_command(
         self,
@@ -284,6 +286,11 @@ class StreamRunner:
             if not fork_target:
                 if auto_fork_ide:
                     ls_err += " 改用 AGY 命令行也失败，请检查磁盘空间"
+                log_structured_error(
+                    problem=f"AGY IDE 直发指令失败 ({actual_unified_id})",
+                    cause=ls_err,
+                    fix="请确认 Antigravity 桌面端当前已打开该项目与对应会话。",
+                )
                 return {
                     "ok": False,
                     "unified_id": actual_unified_id,
@@ -472,6 +479,20 @@ class StreamRunner:
 
         proc: Optional[asyncio.subprocess.Process] = None
         stderr_task: Optional[asyncio.Task[None]] = None
+        # C5：并发额度满 → 先广播「排队中」瞬态事件（不进追赶缓冲）
+        if self.process_semaphore.locked():
+            try:
+                await self.broadcast_event(
+                    "SESSION_QUEUED",
+                    {
+                        "unified_id": unified_id,
+                        "max_concurrent": self.max_concurrent_fn() if self.max_concurrent_fn else None,
+                    },
+                    track_in_buffer=False,
+                    send_timeout=0.3,
+                )
+            except Exception as exc:
+                logger.debug(f"广播排队事件失败: {exc}")
         async with self.process_semaphore:
             try:
                 proc = await asyncio.create_subprocess_exec(

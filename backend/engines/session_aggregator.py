@@ -152,7 +152,10 @@ def aggregate_all_sessions(
         elif is_session_active_fn(sess.unified_id):
             sess.status = "running"
 
-        merged.append(sess.to_dict())
+        d = dict(sess.to_dict())
+        # S1：携带数据库真相状态（creating/live/degraded/dead），前端由此驱动徽标
+        d["lifecycle"] = str((ov or {}).get("status") or "live")
+        merged.append(d)
 
     seen_agy_raw_ids: set[str] = {
         s.raw_session_id for s in all_sessions if s.agent_type in ("agy_ide", "agy_cli")
@@ -269,6 +272,7 @@ def aggregate_all_sessions(
                     last_viewed_at=ov.get("last_viewed_at"),
                 ).to_dict()
             )
+            merged[-1]["lifecycle"] = str(ov.get("status") or "live")
 
     def _session_sort_key(x: dict[str, Any]) -> tuple:
         pinned = int(x.get("is_pinned") or 0)
@@ -456,6 +460,8 @@ def fetch_session_detail(
         "model_name": chosen_model,
         "is_pinned": overrides.get("is_pinned", 0),
         "is_running": is_active,
+        # S1 真相状态透出（degraded 时前端展示横幅与重试入口）
+        "lifecycle": str(overrides.get("status") or "live"),
         "pending_approval": pa.to_dict() if pa else None,
         "pending_form": pending_form,
         "is_waiting_interaction": bool(pending_form),

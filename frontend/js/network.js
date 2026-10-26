@@ -210,6 +210,43 @@ export function connectWebSocket() {
 export function handleRealtimeEvent(envelope) {
   const { type, payload } = envelope;
 
+  // --- S1 会话真相状态机事件 ---
+  if (type === "SESSION_STATUS_CHANGED") {
+    const uid = payload && payload.unified_id;
+    const st = (payload && payload.status) || "live";
+    if (uid) {
+      mergeLifecycleStatuses({ [uid]: { status: st, reason: payload.reason || "" } });
+      if (st === "degraded") {
+        showToast(
+          "OpenCode 服务未响应，已自动改用备用方式连接。会话可正常使用，点击重试恢复完整功能。",
+          "info"
+        );
+      }
+      renderSessionList();
+      if (uid === state.selectedSessionId) {
+        renderCurrentSessionHeader();
+      }
+    }
+    return;
+  }
+
+  if (type === "SESSION_QUEUED") {
+    const uid = payload && payload.unified_id;
+    if (uid) {
+      const sess = findSessionAny(uid);
+      if (sess) sess.lifecycle = "queued";
+      const maxN = payload && payload.max_concurrent;
+      showToast(
+        maxN
+          ? `已达到同时运行上限（${maxN}），本会话将自动开始`
+          : "已达到同时运行上限，本会话将自动开始",
+        "info"
+      );
+      renderSessionList();
+    }
+    return;
+  }
+
   // 手机端扫码配对成功广播：电脑端扫码弹窗瞬间响应双向握手并优雅自动关闭
   if (type === "DEVICE_PAIRED") {
     state.pairedSuccessNotice = payload;
@@ -229,6 +266,10 @@ export function handleRealtimeEvent(envelope) {
   if (type === "SESSION_STATE_SNAPSHOT") {
     state.pendingApprovals = payload.pending_approvals || [];
     renderApprovalBanners();
+    // S1：快照携带全量非正常态真相状态，重连对账不依赖追赶缓冲
+    if (payload.session_statuses) {
+      mergeLifecycleStatuses(payload.session_statuses);
+    }
     if (payload.is_overflow) {
       console.info("[AgentDeck] 检测到事件环形缓冲区溢出 (is_overflow=true)，触发全量数据补偿同步...");
       loadSessions(true);
@@ -562,6 +603,38 @@ export function handleRealtimeEvent(envelope) {
     showToast(payload.error || "执行异常", "error");
     loadSessions();
     return;
+  }
+}
+
+// --- S1 状态机辅助：真相状态合并到本地会话对象（字段级 last-write-wins，后端事件优先） ---
+function findSessionAny(uid) {
+  return (
+    (state.allSessions || []).find((s) => s.unified_id === uid) ||
+    (state.sessions || []).find((s) => s.unified_id === uid) ||
+    null
+  );
+}
+
+function mergeLifecycleStatuses(statusMap) {
+  for (const [uid, infoRaw] of Object.entries(statusMap || {})) {
+    const info = typeof infoRaw === "string" ? { status: infoRaw } : infoRaw;
+    const st = String(info.status || "").toLowerCase();
+    if (!["creating", "live", "degraded", "dead", "queued"].includes(st)) continue;
+    const sess = findSessionAny(uid);
+    if (sess) {
+      sess.lifecycle = st;
+      if (st === "dead") sess.reason = info.reason || sess.reason || "";
+    } else {
+      // 不存在的会话按需补乐观骨架对象（快照对账路径）
+      const optimistic = {
+        unified_id: uid,
+        raw_session_id: uid.split(":")[1] || "",
+        title: "",
+        status: "idle",
+        lifecycle: st,
+      };
+      state.allSessions = [optimistic, ...(state.allSessions || [])];
+    }
   }
 }
 

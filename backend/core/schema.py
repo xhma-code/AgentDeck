@@ -31,7 +31,19 @@ CREATE TABLE IF NOT EXISTS t_unified_session_meta (
     model_name TEXT DEFAULT '',          -- 会话当前选定的模型名称（如 claude-sonnet-5-5-high / gemini-4-argon-high）
     last_viewed_at TEXT,                 -- 多端已查看时间戳（ISO 8601，用于跨端消除待查看蓝点）
     is_deleted INTEGER DEFAULT 0,        -- 是否已在网页端/手机端删除（0：正常，1：已删除）
+    status TEXT DEFAULT 'live',          -- 会话真相状态（creating/live/degraded/dead）
+    status_seq INTEGER DEFAULT 0,        -- 状态单调递增序号（CAS 护栏，防陈旧异步写覆盖新状态）
     updated_at TEXT NOT NULL             -- 最近消息更新时间（ISO 8601）
+);
+
+-- 表名：t_command_idempotency（命令幂等处理记录持久化表）
+CREATE TABLE IF NOT EXISTS t_command_idempotency (
+    command_id TEXT PRIMARY KEY,         -- 幂等键（客户端生成的唯一命令 ID）
+    unified_id TEXT,                     -- 关联的统一会话主键
+    status TEXT DEFAULT 'done',          -- 处理终态（done：已成功，error：失败可重放）
+    payload_summary TEXT,                -- 命令载荷摘要（白名单字段+截断，不存 prompt 全文）
+    created_at INTEGER NOT NULL,         -- 处理时间（Unix epoch 秒，用于过期清理）
+    updated_at INTEGER NOT NULL          -- 最后更新时间（Unix epoch 秒）
 );
 
 -- 表名：t_tool_approval_log（移动端工具调用审批审计日志表）
@@ -93,7 +105,15 @@ TABLE_COLUMN_COMMENTS: list[tuple[str, str, str, str]] = [
     ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "model_name", "会话当前选定的模型名称"),
     ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "last_viewed_at", "多端已查看时间戳（ISO 8601）"),
     ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "is_deleted", "是否已在网页端/手机端删除（0：正常展示，1：已删除隐藏）"),
+    ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "status", "会话真相状态（creating/live/degraded/dead）"),
+    ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "status_seq", "状态单调递增序号（CAS 护栏，防陈旧异步写覆盖新状态）"),
     ("t_unified_session_meta", "多 Agent 会话统一索引与扩展元数据表", "updated_at", "最近消息更新时间（ISO 8601）"),
+    ("t_command_idempotency", "命令幂等处理记录持久化表", "command_id", "幂等键（客户端生成的唯一命令 ID）"),
+    ("t_command_idempotency", "命令幂等处理记录持久化表", "unified_id", "关联的统一会话主键"),
+    ("t_command_idempotency", "命令幂等处理记录持久化表", "status", "处理终态（done：已成功，error：失败可重放）"),
+    ("t_command_idempotency", "命令幂等处理记录持久化表", "payload_summary", "命令载荷摘要（白名单字段+截断）"),
+    ("t_command_idempotency", "命令幂等处理记录持久化表", "created_at", "处理时间（Unix epoch 秒）"),
+    ("t_command_idempotency", "命令幂等处理记录持久化表", "updated_at", "最后更新时间（Unix epoch 秒）"),
     ("t_tool_approval_log", "移动端工具调用审批审计日志表", "log_id", "审计日志自增主键"),
     ("t_tool_approval_log", "移动端工具调用审批审计日志表", "unified_id", "关联的统一会话主键"),
     ("t_tool_approval_log", "移动端工具调用审批审计日志表", "tool_call_id", "工具调用唯一 ID"),

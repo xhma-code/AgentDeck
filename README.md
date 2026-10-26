@@ -13,6 +13,12 @@
   - **Antigravity CLI (`~/.gemini/antigravity-cli`)**：原生 `stream-json` 双向管道与多模型热切换。
   - **Claude Code (`~/.claude/projects`)**：实时解析 `.jsonl` 会话流，支持 `--permission-prompt-tool stdio` 逐条工具权限拦截与审批。
   - **OpenCode (`~/.local/share/opencode/opencode.db`)**：短连接毫秒级只读聚合 SQLite 会话，并对接 `opencode serve` HTTP/SSE 接口。
+- **会话真相状态机 (`creating / live / degraded / dead`)**：
+  - 每个会话的真相状态持久化于 `agentdeck.db`（`t_unified_session_meta.status` + CAS 单调 `status_seq` 护栏），所有展示由这张真相表驱动，杜绝「乐观假 RUNNING」「幻影会话」。
+  - 底层 Agent 创建失败不再静默打假 ID：会话标记 **degraded**（amber「直连」徽标 + 顶部横幅），CLI 直连通道仍可正常收发消息，可一键重试恢复完整功能。
+  - 状态变更通过 WS `SESSION_STATUS_CHANGED` 实时广播（不进重连追赶缓冲），断线重连时由 `SESSION_STATE_SNAPSHOT.session_statuses` 全量对账。
+  - 命令幂等记录持久化 (`t_command_idempotency`)：弱网重发重复执行被拦截；成功 (done) 重启后回放 ACK，失败 (error) 重启后允许重放。
+  - 并发额度满时新会话自动「排队中」（`SESSION_QUEUED` 事件），额度释放后自动执行；上限可用环境变量 `AGENTDECK_MAX_SUBPROCESSES` 放宽。
 - **零公网暴露安全架构**：
   - 严格仅绑定本机 Tailscale 虚拟网卡 IP（`100.x.y.z`）与 `127.0.0.1`，**严禁绑定 `0.0.0.0`**。
   - 启动时生成 **60 秒一次性配对码 (`pair_code`)** 与本地离线 SVG 二维码，手机扫码后置换 SHA-256 长期访问令牌，防截图重放与跨站 WebSocket 劫持 (CSWSH)。
@@ -74,6 +80,7 @@ AgentDeck 基于 FastAPI 提供了完备的 REST 与 WebSocket 接口，并内�
 | **端口已被占用 (Errno 10048)** | 上次异常退出残留旧进程 | AgentDeck 启动时已内置自动释放端口；若仍被外部程序占用，可指定新端口：`python run.py --port 8766`。 |
 | **手机扫码提示「配对码已失效」** | 二维码配对码默认 60 秒有效期，超时未扫码 | 刷新电脑端 `http://127.0.0.1:8765/` 或重启服务重新生成配对二维码。 |
 | **手机无法打开电脑端 Tailscale IP** | 手机与电脑未加入同一个 Tailnet | 确认手机端 Tailscale App 已开启并连接至与电脑相同的账号，且未开启公司隔离防火墙规则。 |
+| **会话列表出现 amber「直连」徽标 (degraded)** | 底层 Agent 服务（如 `opencode serve`）未响应，创建失败 | 无需处理即可用：本轮已自动走 CLI 直连。恢复完整功能请在横幅点「重试」或确认电脑端 `opencode serve` 运行后重新发送指令。 |
 
 ---
 

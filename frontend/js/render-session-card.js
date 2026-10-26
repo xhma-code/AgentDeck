@@ -24,6 +24,7 @@ import {
 } from "./session-helper.js";
 
 import { loadSessionMessages } from "./data-messages.js";
+import { renderLifecycleBadge, getLifecycleStatus } from "./session-status.js";
 
 const preloadedSessionIds = new Set();
 if (typeof window !== "undefined") {
@@ -39,8 +40,13 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
 
   // 运行/等待审批/活跃/完成未看状态判定：优先在右侧显示对应状态徽标
   const isWorking = typeof isSessionWorking === "function" ? isSessionWorking(s.unified_id) : false;
+
+  // S1：真相状态优先 —— creating/degraded/dead/queued 徽标覆盖常规状态点
+  const lifecycleBadge = renderLifecycleBadge(s);
   let statusDotHtml = null;
-  if (s.status === "error") {
+  if (lifecycleBadge) {
+    statusDotHtml = lifecycleBadge.outerHTML; // 模块内部已 textContent 转义构造
+  } else if (s.status === "error") {
     if (isUnread) {
       statusDotHtml = `
         <span class="relative flex h-2 w-2" title="会话中断 / 额度耗尽（未查看）" aria-label="未读异常中断">

@@ -74,20 +74,16 @@ class CommandBus:
                 "error": "缺少 client_msg_id",
             }
 
-        # 1. 幂等性命中检查：若该命令已完成或正在执行，直接返回缓存 ACK
+        # 1. 幂等性命中检查：成功(in_progress/success)直接回放缓存 ACK；error 态允许重放（D16）
         if client_msg_id in self._processed_commands:
             cached = self._processed_commands[client_msg_id]
-            logger.info(f"[CommandBus] 命中幂等防重缓存: {client_msg_id} ({command_type})")
-            return {
-                "action": "command_ack",
-                "type": "COMMAND_ACK",
-                "client_msg_id": client_msg_id,
-                "command_type": command_type,
-                "status": cached.get("status", "success"),
-                "result": cached.get("result"),
-                "error": cached.get("error"),
-                "is_duplicate": True,
-            }
+            if cached.get("status") == "error":
+                last_err = str(cached.get("error") or "")
+                self._processed_commands.pop(client_msg_id, None)
+                logger.warning(f"[CommandBus] error 态放行重放: {client_msg_id} (上次错误: {last_err[:120]})")
+            else:
+                logger.info(f"[CommandBus] 命中幂等防重缓存: {client_msg_id} ({command_type})")
+                return self._build_duplicate_ack(client_msg_id, command_type, cached)
 
         # 标记为处理中
         self._processed_commands[client_msg_id] = {
@@ -96,6 +92,24 @@ class CommandBus:
             "error": None,
             "ts": time.monotonic(),
         }
+
+        # S2：内存未命中时查持久化幂等表（重启恢复）；done → 直接回放 ACK，error → 允许重放
+        persisted = self._get_persisted_record(client_msg_id)
+        if persisted:
+            if persisted.get("status") == "done":
+                logger.info(f"[CommandBus] 命中持久化幂等记录(重启后重放 ACK): {client_msg_id}")
+                return self._build_duplicate_ack(client_msg_id, command_type, {
+                    "status": "success", "result": persisted, "error": None,
+                })
+            # error 态：不阻塞重放（2am 静默故障防线，D16）—— 走全新执行
+
+        payload_summary = self._build_payload_summary(command_type, session_id, payload)
+        meta_db = getattr(self.orchestrator, "meta_db", None)
+        if meta_db is not None and hasattr(meta_db, "record_command"):
+            try:
+                meta_db.record_command(client_msg_id, session_id, "in_progress", payload_summary)
+            except Exception:
+                pass
 
         try:
             handler = getattr(self, f"_handle_{command_type.lower()}", None)
@@ -110,6 +124,7 @@ class CommandBus:
                 "error": None,
                 "ts": time.monotonic(),
             }
+            self._persist_command(meta_db, client_msg_id, session_id, "done", payload_summary)
 
             return {
                 "action": "command_ack",
@@ -134,6 +149,7 @@ class CommandBus:
                 "error": err_msg,
                 "ts": time.monotonic(),
             }
+            self._persist_command(meta_db, client_msg_id, session_id, "error", payload_summary)
             return {
                 "action": "command_ack",
                 "type": "COMMAND_ACK",
@@ -143,6 +159,59 @@ class CommandBus:
                 "result": None,
                 "error": err_msg,
             }
+
+    # -------------------------------------------------------------------------
+    # S2 幂等持久化辅助
+    # -------------------------------------------------------------------------
+
+    def _build_duplicate_ack(self, client_msg_id: str, command_type: str, cached: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "action": "command_ack",
+            "type": "COMMAND_ACK",
+            "client_msg_id": client_msg_id,
+            "command_type": command_type,
+            "status": cached.get("status", "success") if cached.get("status") != "in_progress" else "in_progress",
+            "result": cached.get("result"),
+            "error": cached.get("error"),
+            "is_duplicate": True,
+        }
+
+    def _get_persisted_record(self, client_msg_id: str) -> Optional[dict[str, Any]]:
+        meta_db = getattr(self.orchestrator, "meta_db", None)
+        if meta_db is None or not hasattr(meta_db, "get_command_record"):
+            return None
+        try:
+            return meta_db.get_command_record(client_msg_id)
+        except Exception:
+            return None
+
+    def _persist_command(
+        self, meta_db: Any, command_id: str, unified_id: str, status: str, payload_summary: str
+    ) -> None:
+        if meta_db is None or not hasattr(meta_db, "record_command"):
+            return
+        try:
+            meta_db.record_command(command_id, unified_id, status, payload_summary)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _build_payload_summary(command_type: str, session_id: str, payload: dict[str, Any]) -> str:
+        """白名单字段 + 截断摘要（严禁写入 prompt 全文，防元数据库膨胀与内容泄漏）。"""
+        try:
+            import json as _json
+            summary: dict[str, Any] = {"command_type": command_type}
+            if session_id:
+                summary["session_id"] = session_id
+            for key in ("agent_type", "project_path", "title", "is_pinned", "decision"):
+                if key in payload and payload.get(key) is not None:
+                    summary[key] = str(payload.get(key))[:80]
+            prompt = str(payload.get("prompt") or "")
+            if prompt:
+                summary["prompt_len"] = len(prompt)
+            return _json.dumps(summary, ensure_ascii=False)
+        except Exception:
+            return f"{command_type}@{session_id}"
 
     # -------------------------------------------------------------------------
     # 具体指令业务处理器

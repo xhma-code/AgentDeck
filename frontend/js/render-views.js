@@ -1,4 +1,4 @@
-import { apiFetch } from "./api.js";
+import { apiFetch, showToast } from "./api.js";
 /**
  * AgentDeck 控制面板、Git 审查模态框、二维码与状态胶囊渲染器
  */
@@ -17,9 +17,66 @@ import {
   isSessionWorking,
   getAgentDisplayName,
 } from "./data.js";
+import { renderLifecycleBanner, getLifecycleStatus } from "./session-status.js";
 
 let qrExpireTimer = null;
 let liveStreamRaf = null;
+
+/**
+ * S1：degraded/dead 会话 header 横幅（幂等单例，重渲染不会重复插入）。
+ * degraded 重试入口：重放上一条用户 prompt（POST /send，走 CLI 直连探测恢复）。
+ */
+export function updateLifecycleBanner(sess) {
+  const titleEl = document.getElementById("current-session-title");
+  if (!titleEl) return;
+  const parent = titleEl.parentElement;
+  if (!parent) return;
+  let holder = document.getElementById("session-lifecycle-banner");
+  const banner = sess && state.selectedSessionId ? renderLifecycleBanner(sess, onDegradedRetry) : null;
+  if (banner) {
+    banner.dataset.sessionId = state.selectedSessionId || "";
+    if (holder) {
+      holder.replaceChildren(banner);
+      holder.classList.remove("hidden");
+    } else {
+      holder = document.createElement("div");
+      holder.id = "session-lifecycle-banner";
+      holder.appendChild(banner);
+      parent.insertBefore(holder, titleEl);
+    }
+  } else if (holder) {
+    holder.replaceChildren();
+    holder.classList.add("hidden");
+  }
+}
+
+async function onDegradedRetry() {
+  const uid = state.selectedSessionId;
+  if (!uid) {
+    return;
+  }
+  try {
+    const res = await apiFetch(`/api/v1/sessions/${encodeURIComponent(uid)}/messages`, {
+      limit: 30,
+    });
+    const msgs = (res && res.messages) || [];
+    const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+    const prompt = lastUser ? String(lastUser.content || "").slice(0, 4000) : "";
+    if (!prompt) {
+      showToast("没有可重试的上轮指令", "info");
+      return;
+    }
+    await apiFetch(`/api/v1/sessions/${encodeURIComponent(uid)}/send`, {
+      method: "POST",
+      timeout: 25000,
+      body: JSON.stringify({ prompt }),
+    });
+    showToast("已在备用通道重发上一轮指令", "success");
+    updateLifecycleBanner(state.sessions.find((s) => s.unified_id === uid));
+  } catch (err) {
+    showToast(`重试失败: ${err.message}`, "error");
+  }
+}
 
 export {
   renderModelOptionsForAgent,
@@ -46,12 +103,13 @@ export function updatePromptInputPlaceholder(sess) {
     return;
   }
   const agentName = getAgentDisplayName(sess.agent_type);
+  const degradedSuffix = getLifecycleStatus(sess) === "degraded" ? "（备用通道直连）" : "";
   if (overlayEl) {
     overlayEl.innerHTML = `
-      <span>发消息给&nbsp;</span><span class="text-[10px] sm:text-xs text-zinc-400 font-mono">${escapeHtml(agentName)}</span><span>...</span>
+      <span>发消息给&nbsp;</span><span class="text-[10px] sm:text-xs text-zinc-400 font-mono">${escapeHtml(agentName)}</span><span>${escapeHtml(degradedSuffix)}...</span>
     `;
   }
-  inputEl.placeholder = `发消息给 ${agentName}...`;
+  inputEl.placeholder = `发消息给 ${agentName}${degradedSuffix}...`;
 }
 
 export function renderCurrentSessionHeader() {
@@ -151,6 +209,7 @@ export function renderCurrentSessionHeader() {
   if (subtitleEl) {
     subtitleEl.textContent = "";
   }
+  updateLifecycleBanner(sess);
   updatePromptInputPlaceholder(sess);
   if (modeSelect) {
     const activeMode = renderModeOptionsForAgent(modeSelect, sess.agent_type, sess.execution_mode || "auto", true);

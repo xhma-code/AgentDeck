@@ -12,6 +12,7 @@ from __future__ import annotations
 from backend.adapters.tool_utils import extract_snippet
 
 import asyncio
+import os
 import uuid
 import collections
 import time
@@ -80,8 +81,23 @@ class AgentOrchestrator:
         self.process_last_active: dict[str, float] = {}
         self.active_direct_tasks: dict[str, asyncio.Task[None]] = {}
         self.background_tasks: set[asyncio.Task[Any]] = set()
-        self.max_concurrent_subprocesses = max_concurrent_subprocesses
+        # C5 逃生舱：允许环境变量放宽子进程并发上限（仅可大于默认值方向由使用者自担）
+        try:
+            env_max = int(os.environ.get("AGENTDECK_MAX_SUBPROCESSES", "") or 0)
+        except ValueError:
+            env_max = 0
+        self.max_concurrent_subprocesses = max(max_concurrent_subprocesses, env_max)
         self.process_semaphore = asyncio.Semaphore(self.max_concurrent_subprocesses)
+        # C1 会话锁：send_prompt_to_session 唯一下沉点（REST 与 WS 两路自然串行）
+        self._send_locks: dict[str, asyncio.Lock] = {}
+        try:
+            self._idle_poll_seconds = float(os.environ.get("AGENTDECK_IDLE_POLL_SECONDS", "") or 30.0)
+        except ValueError:
+            self._idle_poll_seconds = 30.0
+        try:
+            self._idle_min_seconds = float(os.environ.get("AGENTDECK_IDLE_MIN_SECONDS", "") or 300.0)
+        except ValueError:
+            self._idle_min_seconds = 300.0
 
         self.event_bus = RealtimeEventBus(buffer_maxlen=200)
         self.approval_coordinator = ApprovalCoordinator(
@@ -104,9 +120,12 @@ class AgentOrchestrator:
             normalize_mode_fn=self.normalize_execution_mode,
             resolve_default_model_fn=self._resolve_default_model,
             bump_version_fn=self.bump_version,
+            max_concurrent_fn=lambda: self.max_concurrent_subprocesses,
         )
         self._idle_ttl_task: Optional[asyncio.Task[None]] = None
         self._cache_store: dict[str, tuple[float, Any]] = {}
+        # S1 状态机：注入状态变更广播回调（DB 写库后同步回调，异步调度在 orchestrator 侧）
+        self.meta_db.set_status_broadcast_callback(self._schedule_status_broadcast)
         self.command_bus = CommandBus(orchestrator=self)
 
     @property
@@ -139,6 +158,31 @@ class AgentOrchestrator:
 
     def bump_version(self) -> None:
         self.event_bus.bump_seq()
+
+    def _schedule_status_broadcast(
+        self, unified_id: str, old_status: str, new_status: str, reason: str, seq: int
+    ) -> None:
+        """S1 状态变更广播：调度异步 WS 推送（不进 200 条追赶缓冲，快照本身携带 status）。"""
+        if old_status == new_status:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            self.event_bus.broadcast(
+                "SESSION_STATUS_CHANGED",
+                {
+                    "unified_id": unified_id,
+                    "old_status": old_status,
+                    "status": new_status,
+                    "reason": reason,
+                    "status_seq": seq,
+                },
+                track_in_buffer=False,
+                send_timeout=0.3,
+            )
+        )
 
     def get_sessions_etag(self, agent_filter: str = "all", limit: int = 40) -> str:
         active_count = len(self.active_processes) + len(self.active_direct_tasks)
@@ -189,14 +233,21 @@ class AgentOrchestrator:
         """统一通过 CommandBus 处理带幂等防重的全双工命令帧。"""
         return await self.command_bus.execute_command(envelope)
 
-    async def broadcast_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        await self.event_bus.broadcast(event_type, payload)
+    async def broadcast_event(
+        self, event_type: str, payload: dict[str, Any], **kwargs: Any
+    ) -> None:
+        await self.event_bus.broadcast(event_type, payload, **kwargs)
 
     def get_state_snapshot(self, since_seq_id: int = 0) -> dict[str, Any]:
+        try:
+            session_statuses = self.meta_db.get_active_session_status_ids()
+        except Exception:
+            session_statuses = {}
         return self.event_bus.get_snapshot(
             since_seq_id=since_seq_id,
             active_session_ids=list(self.active_processes.keys()) + list(self.active_direct_tasks.keys()),
             pending_approvals=self.approval_coordinator.get_snapshot_list(),
+            session_statuses=session_statuses,
         )
 
     def _get_cached_or_compute(self, cache_key: str, ttl_seconds: float, compute_fn: Callable[[], Any]) -> Any:
@@ -248,10 +299,12 @@ class AgentOrchestrator:
         final_title = title.strip() or (initial_prompt.strip()[:50] if initial_prompt else "新建会话")
 
         raw_id = ""
+        adapter_raw_id = ""
         adapter = self.adapters.get(real_agent)
         if adapter and hasattr(adapter, "create_session"):
             try:
                 raw_id = adapter.create_session(title=final_title, project_path=workdir) or ""
+                adapter_raw_id = raw_id
             except Exception as c_exc:
                 logger.debug(f"适配器多态创建会话异常: {c_exc}")
 
@@ -263,10 +316,13 @@ class AgentOrchestrator:
             if adapter and hasattr(adapter, "create_session"):
                 try:
                     raw_id = adapter.create_session(title=final_title, project_path=workdir) or ""
+                    adapter_raw_id = raw_id
                 except Exception as c_exc:
                     logger.debug(f"降级 CLI 创建会话异常: {c_exc}")
 
+        created_ok = bool(adapter_raw_id)
         if not raw_id:
+            # S1/E1：底层创建失败不再静默打假 ID —— 仍需 id 落库，但会话标记 degraded 并通知用户
             raw_id = f"ses_{uuid.uuid4().hex[:20]}" if real_agent == "opencode" else str(uuid.uuid4())
 
         unified_id = f"{real_agent}:{raw_id}"
@@ -283,40 +339,66 @@ class AgentOrchestrator:
         )
         self.bump_version()
 
-        if initial_prompt.strip():
-            # 首轮 prompt 改为后台异步派发：
-            # 同步链路（StartCascade→改题→LS 直发）在 IDE 忙碌时常超 8s，手机端 apiFetch
-            # 默认 8s 超时中断请求后，派发未落地 → 会话“建了但不跑”。后台化后创建响应
-            # 立即返回，派发失败也不再静默。
-            prompt_text = initial_prompt.strip()
+        # S1 状态机初始态：底层创建成功 → creating（等首轮派发确认）或 live（无首轮任务）
+        #                  底层创建失败 → degraded（CLI 直连可用）
+        prompt_text = initial_prompt.strip()
+        if not prompt_text:
+            init_status, init_reason = (
+                ("live", "created") if created_ok else ("degraded", "backend_create_failed")
+            )
+            status_res = self.meta_db.set_session_status(unified_id, init_status, reason=init_reason)
+            meta.update(self.meta_db.get_session_overrides().get(unified_id) or {})
+            return unified_id, meta
 
-            async def _dispatch_first_prompt() -> None:
-                try:
-                    send_res = await self.send_prompt_to_session(
-                        unified_id=unified_id,
-                        prompt=prompt_text,
-                        project_path=workdir,
-                        execution_mode=norm_mode,
-                        model_name=model_name.strip() if model_name else None,
-                        auto_fork_ide=True,
-                    )
-                    if not send_res.get("ok", False):
-                        log_structured_error(
-                            problem=f"新建会话首轮指令派发失败 ({unified_id})",
-                            cause=str(send_res.get("error") or "直发通道返回失败"),
-                            fix="可在该会话中重新发送首轮指令，或检查 Antigravity 桌面端是否在线。",
-                        )
-                except Exception as exc:
+        status_res = self.meta_db.set_session_status(
+            unified_id, "creating", reason="first_prompt_pending"
+        )
+        meta.update(self.meta_db.get_session_overrides().get(unified_id) or {})
+
+        # 首轮 prompt 改为后台异步派发：
+        # 同步链路（StartCascade→改题→LS 直发）在 IDE 忙碌时常超 8s，手机端 apiFetch
+        # 默认 8s 超时中断请求后，派发未落地 → 会话“建了但不跑”。后台化后创建响应
+        # 立即返回，派发失败也不再静默。
+        async def _dispatch_first_prompt() -> None:
+            try:
+                send_res = await self.send_prompt_to_session(
+                    unified_id=unified_id,
+                    prompt=prompt_text,
+                    project_path=workdir,
+                    execution_mode=norm_mode,
+                    model_name=model_name.strip() if model_name else None,
+                    auto_fork_ide=True,
+                )
+                if not send_res.get("ok", False):
                     log_structured_error(
-                        problem=f"新建会话首轮指令派发异常 ({unified_id})",
-                        cause=f"{type(exc).__name__}: {exc}",
-                        fix="请确认 IDE/CLI 通道可用后在会话中重试发送。",
-                        exc=exc,
+                        problem=f"新建会话首轮指令派发失败 ({unified_id})",
+                        cause=str(send_res.get("error") or "直发通道返回失败"),
+                        fix="可在该会话中重新发送首轮指令，或检查 Antigravity 桌面端是否在线。",
                     )
+                    self.meta_db.set_session_status(
+                        unified_id, "degraded", reason="first_prompt_failed"
+                    )
+                else:
+                    # S1：首轮派发成功 → live；底层降级创建的会话保持 degraded
+                    self.meta_db.set_session_status(
+                        unified_id,
+                        "live" if created_ok else "degraded",
+                        reason="first_prompt_done",
+                    )
+            except Exception as exc:
+                log_structured_error(
+                    problem=f"新建会话首轮指令派发异常 ({unified_id})",
+                    cause=f"{type(exc).__name__}: {exc}",
+                    fix="请确认 IDE/CLI 通道可用后在会话中重试发送。",
+                    exc=exc,
+                )
+                self.meta_db.set_session_status(
+                    unified_id, "degraded", reason="first_prompt_failed"
+                )
 
-            fp_task = asyncio.create_task(_dispatch_first_prompt())
-            self.background_tasks.add(fp_task)
-            fp_task.add_done_callback(self.background_tasks.discard)
+        fp_task = asyncio.create_task(_dispatch_first_prompt())
+        self.background_tasks.add(fp_task)
+        fp_task.add_done_callback(self.background_tasks.discard)
 
         return unified_id, meta
 
@@ -376,14 +458,31 @@ class AgentOrchestrator:
         logger.info("AgentOrchestrator 后台服务已安全停止")
 
     async def _idle_process_ttl_loop(self) -> None:
+        """C3 空闲回收长尾兜底（watcher 退出失败路径）：
+
+        空闲信号 = 连续 2 个 poll 周期无新输出 且 空闲时长 ≥ AGENTDECK_IDLE_MIN_SECONDS
+        （默认 5min）。绝不用裸 10min TTL 误杀直连轮询的合法长任务。
+        """
+        idle_strikes: dict[str, int] = {}
         while True:
             try:
-                await asyncio.sleep(30.0)
+                await asyncio.sleep(self._idle_poll_seconds)
                 now = time.time()
                 for uid, last_time in list(self.process_last_active.items()):
-                    if now - last_time > 600.0:
-                        logger.info(f"子进程空闲超过 10 分钟 TTL，自动回收: {uid}")
-                        await self.abort_session(uid, reason="子进程空闲超时自动回收 (10min TTL)")
+                    if uid in self.active_direct_tasks and not self.active_direct_tasks[uid].done():
+                        continue
+                    idle = now - last_time
+                    if idle <= self._idle_min_seconds:
+                        idle_strikes.pop(uid, None)
+                        continue
+                    strikes = idle_strikes.get(uid, 0) + 1
+                    idle_strikes[uid] = strikes
+                    if strikes >= 2:
+                        logger.info(
+                            f"子进程连续 {strikes} 个周期无输出且空闲 {idle:.0f}s，长尾回收: {uid}"
+                        )
+                        await self.abort_session(uid, reason="长尾空闲回收（watcher 未退出兜底）")
+                        idle_strikes.pop(uid, None)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -403,6 +502,11 @@ class AgentOrchestrator:
         killed = False
         if proc and proc.pid:
             killed = kill_windows_process_tree(proc.pid)
+            # E7：kill 后 reap 子进程，避免 Windows 上的僵尸句柄与残留输出缓冲
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except Exception as exc:
+                logger.warning(f"等待子进程退出超时 ({unified_id}): {exc}")
 
         if ":" in unified_id:
             atype, raw_cid = unified_id.split(":", 1)
@@ -473,11 +577,22 @@ class AgentOrchestrator:
         execution_mode: Optional[str] = None, model_name: Optional[str] = None,
         auto_fork_ide: bool = True, approved_tools: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        return await self._stream_runner.dispatch_prompt(
-            unified_id=unified_id, prompt=prompt, project_path=project_path,
-            execution_mode=execution_mode, model_name=model_name, auto_fork_ide=auto_fork_ide,
-            approved_tools=approved_tools, allow_real_process_in_test=getattr(self, "_allow_real_process_in_test", False),
-        )
+        # C1：会话锁下沉到唯一入口 —— REST 与 WS 两路并发发送在此自然串行，
+        # 不再依赖 CommandBus 单路锁（绕过总线的派发同样受保护）。
+        lock = self._send_locks.setdefault(unified_id, asyncio.Lock())
+        async with lock:
+            res = await self._stream_runner.dispatch_prompt(
+                unified_id=unified_id, prompt=prompt, project_path=project_path,
+                execution_mode=execution_mode, model_name=model_name, auto_fork_ide=auto_fork_ide,
+                approved_tools=approved_tools, allow_real_process_in_test=getattr(self, "_allow_real_process_in_test", False),
+            )
+        # S1：仅 creating → live；degraded 会话保持 degraded（D10：CLI 直连真实可用，
+        # 用户重试按钮显式恢复后才转 live）
+        if res.get("ok", False):
+            cur_status = self.meta_db.get_session_status(unified_id)
+            if cur_status == "creating":
+                self.meta_db.set_session_status(unified_id, "live", reason="prompt_accepted")
+        return res
 
     def _build_cli_command(self, agent_type: str, raw_session_id: str, prompt: str, execution_mode: str, model_name: str = "", approved_tools: Optional[list[str]] = None) -> list[str]:
         return self._stream_runner.build_cli_command(agent_type, raw_session_id, prompt, execution_mode, model_name, approved_tools)

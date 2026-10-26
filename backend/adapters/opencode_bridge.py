@@ -175,8 +175,13 @@ class OpenCodeHttpBridge:
         """兼容别名：探测本地 opencode serve HTTP 服务是否存活。"""
         return self.is_server_running()
 
-    def create_session(self, title: str = "", directory: str = "") -> Optional[str]:
-        """通过 OpenCode 官方 HTTP 接口创建会话（遵循 POST /api/session 规范）。"""
+    def create_session(self, title: str = "", directory: str = "") -> tuple[Optional[str], bool]:
+        """通过 OpenCode 官方 HTTP 接口创建会话（遵循 POST /api/session 规范）。
+
+        Returns:
+            (session_id, via_http)：via_http=False 表示 HTTP 通道失败，
+            调用方不得拿返回值伪造「底层已创建」的假象（E1）。
+        """
         try:
             payload: dict[str, Any] = {}
             if title:
@@ -190,10 +195,12 @@ class OpenCodeHttpBridge:
                     raw = resp.read().decode("utf-8", errors="replace")
                     doc = json.loads(raw) if raw else {}
                     if isinstance(doc, dict) and isinstance(doc.get("data"), dict):
-                        return doc["data"].get("id")
+                        sid = doc["data"].get("id")
+                        if sid:
+                            return str(sid), True
         except Exception as exc:
             logger.debug(f"通过 OpenCode HTTP 接口创建会话跳过/失败: {exc}")
-        return None
+        return None, False
 
     def send_message(self, session_id: str, prompt: str, model_name: str = "") -> Optional[dict[str, Any]]:
         """发送消息：自适应 OpenCode 2 (/api/session/{id}/prompt) 与 OpenCode 1 (/session/{id}/message)。"""

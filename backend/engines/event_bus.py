@@ -57,8 +57,18 @@ class RealtimeEventBus:
         """注销 WebSocket 推送回调。"""
         self._subscribers.discard(callback)
 
-    async def broadcast(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """向所有已连接的订阅者安全广播统一封包事件，并计入重连追赶缓冲区。"""
+    async def broadcast(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        track_in_buffer: bool = True,
+        send_timeout: float = 1.5,
+    ) -> dict[str, Any]:
+        """向所有已连接的订阅者安全广播统一封包事件。
+
+        track_in_buffer=False 用于高频瞬态事件（如会话状态机变更 E9）：
+        不计入重连追赶缓冲区，避免断线重放携带两秒前的陈旧状态；快照本身携带全量 status。
+        """
         self._seq_counter += 1
         envelope = {
             "seq_id": self._seq_counter,
@@ -66,7 +76,8 @@ class RealtimeEventBus:
             "timestamp": utc_now_iso(),
             "payload": payload,
         }
-        self._event_buffer.append(envelope)
+        if track_in_buffer:
+            self._event_buffer.append(envelope)
 
         if not self._subscribers:
             return envelope
@@ -77,7 +88,7 @@ class RealtimeEventBus:
             cb: Callable[[dict[str, Any]], Coroutine[Any, Any, None]],
         ) -> Optional[Any]:
             try:
-                await asyncio.wait_for(cb(envelope), timeout=1.5)
+                await asyncio.wait_for(cb(envelope), timeout=send_timeout)
                 return None
             except Exception:
                 return cb
@@ -96,6 +107,7 @@ class RealtimeEventBus:
         since_seq_id: int = 0,
         active_session_ids: Optional[list[str]] = None,
         pending_approvals: Optional[list[dict[str, Any]]] = None,
+        session_statuses: Optional[dict[str, dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """获取重连或首屏所需的状态快照（支持检测环形缓冲区是否溢出覆盖）。"""
         is_overflow = False
@@ -111,6 +123,9 @@ class RealtimeEventBus:
             "current_seq_id": self._seq_counter,
             "active_session_ids": active_session_ids or [],
             "pending_approvals": pending_approvals or [],
+            # E9：全量非正常态会话状态（creating/degraded/dead）随快照下发，
+            # 不依赖追赶缓冲区里的瞬态状态事件
+            "session_statuses": session_statuses or {},
             "missed_events": missed_events[-50:] if since_seq_id > 0 else [],
             "is_overflow": is_overflow,
         }
