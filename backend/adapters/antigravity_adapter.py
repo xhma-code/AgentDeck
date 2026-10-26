@@ -340,9 +340,11 @@ class AntigravityAdapter(BaseAgentAdapter):
         return True
 
     def create_session(self, title: str = "", project_path: str = "") -> Optional[str]:
-        """多态创建 Antigravity 会话：IDE 在线走 Connect-RPC 原生注入桌面端，离线走 CLI 独立分配。"""
+        """多态创建 Antigravity 会话：IDE 类型在线注入桌面端（失败返回 None 由上层切 CLI），CLI 类型直接独立分配。"""
         import uuid
         new_cid = str(uuid.uuid4())
+        if self.agent_type != "agy_ide":
+            return new_cid
         if hasattr(self, "ls_bridge") and self.ls_bridge._scan_ls_processes():
             ok = self.ls_bridge.start_cascade(
                 new_cid, title=title, project_path=project_path
@@ -351,7 +353,11 @@ class AntigravityAdapter(BaseAgentAdapter):
                 if project_path:
                     self.ensure_session_workspace(new_cid, project_path)
                 return new_cid
-        return new_cid
+            logger.warning(
+                f"StartCascade 原生注入失败，放弃返回幻影会话 ({new_cid[:8]})，交由上层降级 CLI 创建"
+            )
+            return None
+        return None
 
     def send_prompt_via_ls(
         self, raw_session_id: str, prompt: str, model_id: str = ""

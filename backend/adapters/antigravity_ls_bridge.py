@@ -235,6 +235,13 @@ class AntigravityLanguageServerBridge:
                 if 200 <= status < 300:
                     raw_resp = resp.read()
                     return True, raw_resp
+        except urllib.error.HTTPError as exc:
+            # 非 2xx：保留 LS 原始错误响应体，便于定位协议参数变化（如枚举改名）
+            try:
+                err_body = exc.read()[:300]
+            except Exception:
+                err_body = b""
+            logger.debug(f"Connect-RPC POST {method} 被拒 ({url}): HTTP {exc.code} {err_body!r}")
         except Exception as exc:
             logger.debug(f"Connect-RPC POST {method} 失败 ({url}): {exc}")
         return False, None
@@ -483,37 +490,47 @@ class AntigravityLanguageServerBridge:
     ) -> bool:
         """通过 Connect-RPC StartCascade 原生在当前运行的 IDE 中创建新会话并初始化。"""
         candidates = self._scan_ls_processes()
-        payload: dict[str, Any] = {
-            "cascadeId": cascade_id,
-            "source": "CORTEX_TRAJECTORY_SOURCE_VSCODE",
-        }
         uri = self._to_workspace_uri(project_path)
-        if uri:
-            payload["workspaceUris"] = [uri]
-        for pid, token in candidates:
-            ports = self._find_listening_ports(pid)
-            for port in ports:
-                scheme = self._probe_connect_port(port, token)
-                if not scheme:
-                    continue
-                ok, _ = self._raw_post(
-                    scheme=scheme,
-                    port=port,
-                    csrf_token=token,
-                    method="StartCascade",
-                    body=payload,
-                    timeout=3.0,
-                )
-                if ok:
-                    logger.info(
-                        f"已通过 Language Server (PID={pid}, Port={port}) Connect-RPC 原生创建 IDE 新会话: {cascade_id[:8]}"
+        # source 枚举随 LS 版本演进（旧版 VSCODE 已被移除），按序回退保证向前兼容
+        sources = [
+            "CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT",
+            "CORTEX_TRAJECTORY_SOURCE_INTERACTIVE_CASCADE",
+            "CORTEX_TRAJECTORY_SOURCE_VSCODE",
+        ]
+        last_err = ""
+        for src in sources:
+            payload: dict[str, Any] = {
+                "cascadeId": cascade_id,
+                "source": src,
+            }
+            if uri:
+                payload["workspaceUris"] = [uri]
+            for pid, token in candidates:
+                ports = self._find_listening_ports(pid)
+                for port in ports:
+                    scheme = self._probe_connect_port(port, token)
+                    if not scheme:
+                        continue
+                    ok, raw = self._raw_post(
+                        scheme=scheme,
+                        port=port,
+                        csrf_token=token,
+                        method="StartCascade",
+                        body=payload,
+                        timeout=3.0,
                     )
-                    if title and title.strip():
-                        try:
-                            self.update_conversation_title(cascade_id, title.strip())
-                        except Exception as t_exc:
-                            logger.debug(f"新会话设置初始标题异常: {t_exc}")
-                    return True
+                    if ok:
+                        logger.info(
+                            f"已通过 Language Server (PID={pid}, Port={port}) Connect-RPC 原生创建 IDE 新会话: {cascade_id[:8]} (source={src})"
+                        )
+                        if title and title.strip():
+                            try:
+                                self.update_conversation_title(cascade_id, title.strip())
+                            except Exception as t_exc:
+                                logger.debug(f"新会话设置初始标题异常: {t_exc}")
+                        return True
+                    last_err = f"PID={pid} Port={port} source={src} 响应={raw!r}"
+        logger.warning(f"StartCascade 原生注入最终失败 ({cascade_id[:8]}): {last_err or '无可达的 Language Server 实例'}")
         return False
 
     def update_conversation_title(self, cascade_id: str, new_title: str) -> bool:

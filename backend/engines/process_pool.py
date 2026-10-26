@@ -255,6 +255,17 @@ class AgentOrchestrator:
             except Exception as c_exc:
                 logger.debug(f"适配器多态创建会话异常: {c_exc}")
 
+        # IDE 在线但原生注入失败：平滑降级为 CLI 独立创建，杜绝幻影会话
+        if not raw_id and real_agent == "agy_ide":
+            logger.warning("IDE 会话原生创建失败，自动降级为 AGY CLI 独立创建")
+            real_agent = "agy_cli"
+            adapter = self.adapters.get(real_agent)
+            if adapter and hasattr(adapter, "create_session"):
+                try:
+                    raw_id = adapter.create_session(title=final_title, project_path=workdir) or ""
+                except Exception as c_exc:
+                    logger.debug(f"降级 CLI 创建会话异常: {c_exc}")
+
         if not raw_id:
             raw_id = f"ses_{uuid.uuid4().hex[:20]}" if real_agent == "opencode" else str(uuid.uuid4())
 

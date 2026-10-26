@@ -41,42 +41,54 @@ def fork_ide_session_to_cli(
     dst_root = cli_root or Path(os.path.expanduser("~/.gemini/antigravity-cli"))
 
     try:
+        src_conv_db = src_root / "conversations" / f"{effective_id}.db"
+        src_brain = src_root / "brain" / effective_id
+        src_sum_db = src_root / "conversation_summaries.db"
+        src_sum_rows = (
+            safe_query_external_sqlite(
+                src_sum_db,
+                "SELECT conversation_id FROM conversation_summaries WHERE conversation_id = ?",
+                (effective_id,),
+            )
+            if src_sum_db.exists()
+            else []
+        )
+        # 源会话在 IDE 侧无任何存储痕迹（幻影会话）：克隆无从谈起，如实失败
+        if not src_conv_db.exists() and not src_brain.exists() and not src_sum_rows:
+            return ForkResult(
+                ok=False,
+                cli_unified_id="",
+                cli_raw_session_id=effective_id,
+                message="源 IDE 会话不存在或为无效会话，无法克隆接力",
+            )
+
         (dst_root / "conversations").mkdir(parents=True, exist_ok=True)
         (dst_root / "brain").mkdir(parents=True, exist_ok=True)
 
-        src_conv_db = src_root / "conversations" / f"{effective_id}.db"
         dst_conv_db = dst_root / "conversations" / f"{effective_id}.db"
         if src_conv_db.exists():
             shutil.copy2(src_conv_db, dst_conv_db)
 
-        src_brain = src_root / "brain" / effective_id
         dst_brain = dst_root / "brain" / effective_id
         if src_brain.exists():
             shutil.copytree(src_brain, dst_brain, dirs_exist_ok=True)
 
-        src_sum_db = src_root / "conversation_summaries.db"
         dst_sum_db = dst_root / "conversation_summaries.db"
-        if src_sum_db.exists() and dst_sum_db.exists():
-            rows = safe_query_external_sqlite(
-                src_sum_db,
-                "SELECT * FROM conversation_summaries WHERE conversation_id = ?",
-                (effective_id,),
-            )
-            if rows:
-                row = rows[0]
-                cols = list(row.keys())
-                placeholders = ", ".join(["?"] * len(cols))
-                col_names = ", ".join([f"`{c}`" for c in cols])
-                conn = sqlite3.connect(str(dst_sum_db), timeout=3.0)
-                try:
-                    conn.execute("PRAGMA busy_timeout = 3000;")
-                    conn.execute(
-                        f"INSERT OR REPLACE INTO conversation_summaries ({col_names}) VALUES ({placeholders})",
-                        tuple(row[c] for c in cols),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
+        if src_sum_rows and dst_sum_db.exists():
+            row = src_sum_rows[0]
+            cols = list(row.keys())
+            placeholders = ", ".join(["?"] * len(cols))
+            col_names = ", ".join([f"`{c}`" for c in cols])
+            conn = sqlite3.connect(str(dst_sum_db), timeout=3.0)
+            try:
+                conn.execute("PRAGMA busy_timeout = 3000;")
+                conn.execute(
+                    f"INSERT OR REPLACE INTO conversation_summaries ({col_names}) VALUES ({placeholders})",
+                    tuple(row[c] for c in cols),
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
         cli_unified_id = f"agy_cli:{effective_id}"
 
