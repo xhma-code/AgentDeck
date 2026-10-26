@@ -167,7 +167,10 @@ class AgentOrchestrator:
             if adapter
             else {ExecutionMode.AUTO.value, ExecutionMode.ACCEPT_EDITS.value, ExecutionMode.PLAN.value, ExecutionMode.ASK.value}
         )
-        return m if m in supported else ExecutionMode.AUTO.value
+        if m not in supported:
+            logger.warning(f"【权限模式安全纠偏】Agent '{target_type}' 不支持模式 '{m}'，已自动安全回退为审批模式 (ask)")
+            return ExecutionMode.ASK.value
+        return m
 
     def is_session_active(self, unified_id: str) -> bool:
         if unified_id in self.active_processes:
