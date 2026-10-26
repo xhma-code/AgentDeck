@@ -26,20 +26,17 @@ function hasMeaningfulOutput(output) {
 
 export function getTurnRunningStartTime(turn, sessionId) {
   let startMs = null;
-  if (sessionId && state.pendingTurnThinking && state.pendingTurnThinking[sessionId]) {
-    startMs = state.pendingTurnThinking[sessionId];
-  }
-  if (!startMs && turn) {
-    const rawCandidates = [
-      turn.started_at,
-      turn.start_at,
-      turn.startTime,
-      turn.start_time,
-      turn.processRecords && turn.processRecords[0] && turn.processRecords[0].created_at,
-      turn.primarySteps && turn.primarySteps[0] && turn.primarySteps[0].created_at,
-      turn.createdAt,
-      turn.created_at,
-    ];
+  const rawCandidates = [
+    turn && turn.started_at,
+    turn && turn.start_at,
+    turn && turn.startTime,
+    turn && turn.start_time,
+    sessionId && state.pendingTurnThinking && state.pendingTurnThinking[sessionId],
+    turn && turn.processRecords && turn.processRecords[0] && turn.processRecords[0].created_at,
+    turn && turn.primarySteps && turn.primarySteps[0] && turn.primarySteps[0].created_at,
+    turn && turn.createdAt,
+    turn && turn.created_at,
+  ];
     for (const raw of rawCandidates) {
       if (!raw) continue;
       if (typeof raw === "number") {

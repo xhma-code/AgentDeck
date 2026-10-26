@@ -352,7 +352,7 @@ export function renderMessagesList() {
       isRunning: true,
       isPendingInitial: true,
       createdAt: new Date().toISOString(),
-      started_at: (state.pendingTurnThinking && state.pendingTurnThinking[state.selectedSessionId]) || Date.now(),
+      started_at: (lastTurn && lastTurn.item && lastTurn.item.created_at) || (state.pendingTurnThinking && state.pendingTurnThinking[state.selectedSessionId]) || Date.now(),
     };
     pendingAssistantHtml = `
       <article class="mb-6">

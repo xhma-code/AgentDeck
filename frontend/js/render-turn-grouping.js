@@ -3,7 +3,7 @@
  */
 
 import { state } from "./state.js";
-import { getBasename, getDurationStrFromDates, formatDuration } from "./utils.js";
+import { getBasename, getDurationStrFromDates, formatDuration, isLocalPreviewableLink } from "./utils.js";
 
 export function isReadOnlyTool(tc) {
   if (tc && typeof tc.is_read_only === "boolean") return tc.is_read_only;
@@ -21,10 +21,12 @@ export function isReadOnlyTool(tc) {
 export function groupMessagesIntoTurns(messages) {
   const turns = [];
   let i = 0;
+  let lastUserItem = null;
 
   while (i < messages.length) {
     const m = messages[i];
     if (m.role === "user") {
+      lastUserItem = m;
       turns.push({ type: "user", item: m });
       i++;
       continue;
@@ -71,7 +73,7 @@ export function groupMessagesIntoTurns(messages) {
       }
       if (/\.(md|markdown|mdx)$/i.test(clean) || /\.(md|markdown|mdx)$/i.test(decodedClean)) {
         const base = getBasename(decodedClean);
-        if (base.toLowerCase() !== "skill.md") {
+        if (base.toLowerCase() !== "skill.md" && isLocalPreviewableLink(decodedClean)) {
           mdFilesMap.set(clean, base);
         }
       }
@@ -140,9 +142,13 @@ export function groupMessagesIntoTurns(messages) {
       }
     });
 
+    // 耗时精准从 Agent 收到指令（前置用户指令）的时间开始计算
+    const startTimeIso = (lastUserItem && lastUserItem.created_at) || (firstStep && firstStep.created_at);
+    const endTimeIso = (lastStep && lastStep.created_at) || (firstStep && firstStep.created_at);
+
     let durationStr = "";
-    if (firstStep && lastStep && firstStep.created_at && lastStep.created_at) {
-      durationStr = getDurationStrFromDates(firstStep.created_at, lastStep.created_at);
+    if (startTimeIso && endTimeIso) {
+      durationStr = getDurationStrFromDates(startTimeIso, endTimeIso);
     }
     if (!durationStr && processRecords.length > 0) {
       let totalToolSec = 0;
@@ -171,10 +177,13 @@ export function groupMessagesIntoTurns(messages) {
       editedFiles: Array.from(editedFilesSet),
       mdFiles: Array.from(mdFilesMap.entries()).map(([path, name]) => ({ path, name })),
       hasHighRisk,
-      createdAt: lastStep.created_at || firstStep.created_at,
+      started_at: startTimeIso,
+      createdAt: endTimeIso,
       firstStepIndex: firstStep.step_index,
       lastStepIndex: lastStep.step_index,
     });
+
+    lastUserItem = null;
   }
 
   return turns;
