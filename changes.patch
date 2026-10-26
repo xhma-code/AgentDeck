@@ -1,0 +1,225 @@
+diff --git a/frontend/index.html b/frontend/index.html
+index 8a7cdef..8234aac 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -363,26 +363,8 @@
+       <div id="bottom-approval-bar" class="hidden shrink-0 z-20"></div>
+ 
+       <!-- 底部控制舱（模型选择 + 模式选择 + 新对话 + 输入框） -->
+-      <footer id="chat-footer" class="border-t border-white/[0.06] bg-black/95 px-2 sm:px-3 py-1.5 safe-bottom shrink-0 relative z-40">
++      <footer id="chat-footer" class="border-t border-white/[0.06] bg-black/95 px-2 sm:px-3 py-1.5 safe-bottom shrink-0">
+         <div class="max-w-5xl mx-auto w-full relative">
+-          <!-- 运行中合并状态条：Working... + 执行步骤 合并到输入框上方，避免插入消息流导致输入框被顶走 -->
+-          <div id="running-combo-bar" class="hidden mb-1.5 rounded-xl bg-zinc-900/90 border border-zinc-800/80 shadow-lg shadow-black/40 overflow-hidden">
+-            <button id="running-combo-toggle" type="button" onclick="window.appActions.toggleRunningCombo()" class="w-full flex items-center justify-between gap-2 px-2.5 py-1 text-left active:bg-zinc-800/60 transition">
+-              <div class="flex items-center gap-1.5 min-w-0">
+-                <span class="relative flex h-1.5 w-1.5 shrink-0">
+-                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+-                  <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-400"></span>
+-                </span>
+-                <span class="text-[11px] font-semibold text-sky-400 shrink-0">Working...</span>
+-                <span id="running-combo-elapsed" class="text-[11px] font-mono text-sky-300/80 shrink-0 hidden"></span>
+-                <span class="text-zinc-600 shrink-0">·</span>
+-                <span id="running-combo-steps" class="text-[11px] text-zinc-300 truncate">已执行 0 步骤</span>
+-              </div>
+-              <svg id="running-combo-arrow" class="w-3 h-3 text-zinc-500 transition-transform duration-150 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+-            </button>
+-            <div id="running-combo-detail" class="hidden border-t border-zinc-800/70 max-h-44 overflow-y-auto subtle-scrollbar"></div>
+-          </div>
+-
+           <!-- 斜杠指令与全部 Skills 浮动菜单（在大框正上方弹出） -->
+           <div id="slash-popover" class="hidden mb-2 rounded-xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-1 max-h-72 sm:max-h-80 overflow-y-auto subtle-scrollbar"></div>
+ 
+diff --git a/frontend/js/actions.js b/frontend/js/actions.js
+index 66673f4..23dcbf9 100644
+--- a/frontend/js/actions.js
++++ b/frontend/js/actions.js
+@@ -535,9 +535,30 @@ window.appActions = {
+       return;
+     }
+ 
+-    const startMs = state.pendingTurnThinking ? state.pendingTurnThinking[state.selectedSessionId] : null;
++    const turns = state.turnsMap ? Object.values(state.turnsMap) : [];
++    const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
++
++    let startMs = null;
++    if (lastTurn) {
++      startMs =
++        lastTurn.started_at ||
++        lastTurn.start_at ||
++        lastTurn.startTime ||
++        lastTurn.start_time ||
++        lastTurn.created_at ||
++        lastTurn.createdAt ||
++        lastTurn.timestamp ||
++        lastTurn.time_start;
++    }
++    if (!startMs && state.pendingTurnThinking) {
++      startMs = state.pendingTurnThinking[state.selectedSessionId];
++    }
++    if (typeof startMs === "number" && startMs > 0 && startMs < 1000000000000) {
++      startMs = startMs * 1000;
++    }
++
+     if (elapsedEl) {
+-      if (startMs) {
++      if (startMs && typeof startMs === "number") {
+         const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+         let elapsedStr = "";
+         if (elapsedSec < 60) {
+@@ -547,24 +568,24 @@ window.appActions = {
+           const s = elapsedSec % 60;
+           elapsedStr = `${m}m ${String(s).padStart(2, "0")}s`;
+         }
+-        elapsedEl.textContent = elapsedStr;
++        elapsedEl.textContent = `· ${elapsedStr}`;
+         elapsedEl.classList.remove("hidden");
+       } else {
+         elapsedEl.classList.add("hidden");
+       }
+     }
+ 
+-    const turns = state.turnsMap ? Object.values(state.turnsMap) : [];
+-    const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+     let stepsCount = 0;
+     if (lastTurn) {
+       if (Array.isArray(lastTurn.processRecords)) {
+         stepsCount = lastTurn.processRecords.length;
+       } else if (Array.isArray(lastTurn.primarySteps)) {
+         stepsCount = lastTurn.primarySteps.length;
++      } else if (Array.isArray(lastTurn.steps)) {
++        stepsCount = lastTurn.steps.length;
+       }
+     }
+-    stepsEl.textContent = `已执行 ${stepsCount} 步骤`;
++    stepsEl.textContent = `${stepsCount} 个执行步骤`;
+ 
+     if (detail && lastTurn) {
+       try {
+diff --git a/frontend/js/data-session-selection.js b/frontend/js/data-session-selection.js
+index 368397a..a9df6e2 100644
+--- a/frontend/js/data-session-selection.js
++++ b/frontend/js/data-session-selection.js
+@@ -68,6 +68,7 @@ export async function selectSession(unifiedId) {
+ 
+   // 自动展开当前选中会话所在的项目分组
+   const sess = state.allSessions.find((s) => s.unified_id === unifiedId);
++  const prevSess = prevId ? state.allSessions.find((s) => s.unified_id === prevId) : null;
+   let needFullSidebarRender = wasUnread || wasRetained;
+   if (sess && sess.project_path) {
+     const pKey = getProjectInfo(sess.project_path).key;
+@@ -80,25 +81,56 @@ export async function selectSession(unifiedId) {
+   updateDrawerVisibility();
+   const sessionListContainer = document.getElementById("session-list-container");
+   const isListEmpty = !sessionListContainer || sessionListContainer.children.length === 0;
+-  if (needFullSidebarRender || isListEmpty) {
++  if (isListEmpty) {
++    needFullSidebarRender = true;
++  }
++  // 收紧：同一已展开项目分组内切换且无未读/保留态时，仅更新高亮，避免全量重渲染
++  if (!needFullSidebarRender && prevSess && sess && prevSess !== sess) {
++    const prevPKey = prevSess.project_path ? getProjectInfo(prevSess.project_path).key : "";
++    const currPKey = sess.project_path ? getProjectInfo(sess.project_path).key : "";
++    if (prevPKey && currPKey && prevPKey === currPKey && state.expandedProjects[currPKey]) {
++      needFullSidebarRender = false;
++    }
++  }
++  if (needFullSidebarRender) {
+     renderSessionList();
+   } else {
+     updateSelectedSessionHighlight(prevId, unifiedId);
+   }
++
++  // 消息优先：先更新头部骨架并准备消息区，非关键 UI 延迟渲染
+   renderCurrentSessionHeader();
+-  renderApprovalBanners();
+-  renderOtherRunningPill();
+-  updateGitStatusBadge();
+-  renderLiveStreamOverlay();
+ 
++  const runDeferredUi = () => {
++    renderApprovalBanners();
++    renderOtherRunningPill();
++    updateGitStatusBadge();
++    renderLiveStreamOverlay();
++  };
++  if (typeof requestAnimationFrame === "function") {
++    requestAnimationFrame(runDeferredUi);
++  } else {
++    setTimeout(runDeferredUi, 0);
++  }
++
++  // 非关键：延迟加载 workflows，避免阻塞首屏消息
+   if (sess && sess.project_path) {
+-    apiFetch(`/api/v1/workflows?project_path=${encodeURIComponent(sess.project_path)}`)
+-      .then((res) => {
+-        if (res && res.ok && Array.isArray(res.workflows)) {
+-          state.workflows = res.workflows;
+-        }
+-      })
+-      .catch(() => {});
++    const loadWorkflows = () => {
++      apiFetch(`/api/v1/workflows?project_path=${encodeURIComponent(sess.project_path)}`)
++        .then((res) => {
++          if (res && res.ok && Array.isArray(res.workflows)) {
++            state.workflows = res.workflows;
++          }
++        })
++        .catch(() => {});
++    };
++    if (typeof requestIdleCallback === "function") {
++      requestIdleCallback(loadWorkflows, { timeout: 1500 });
++    } else if (typeof requestAnimationFrame === "function") {
++      requestAnimationFrame(() => setTimeout(loadWorkflows, 0));
++    } else {
++      setTimeout(loadWorkflows, 0);
++    }
+   }
+ 
+   const mountCachedOrLoad = async () => {
+@@ -108,6 +140,7 @@ export async function selectSession(unifiedId) {
+       state.hasMoreMessages = false;
+       state.totalMessagesCount = state.messages.length;
+       state.currentTokenUsage = null;
++      state.loadingMessages = false;
+       renderMessagesList();
+       renderLiveStreamOverlay();
+       loadSessionMessages(unifiedId, { silent: true });
+@@ -129,7 +162,9 @@ export async function selectSession(unifiedId) {
+     } else {
+       state.currentTokenUsage = null;
+       renderTokenUsage();
+-      await loadSessionMessages(unifiedId, { silent: false });
++      state.loadingMessages = true;
++      renderMessagesList();
++      await loadSessionMessages(unifiedId, { silent: false, limit: 20 });
+     }
+   };
+ 
+diff --git a/frontend/js/render-session-card.js b/frontend/js/render-session-card.js
+index 25732b6..795b7be 100644
+--- a/frontend/js/render-session-card.js
++++ b/frontend/js/render-session-card.js
+@@ -23,6 +23,14 @@ import {
+   getProjectInfo,
+ } from "./session-helper.js";
+ 
++import { loadSessionMessages } from "./data-messages.js";
++
++const preloadedSessionIds = new Set();
++if (typeof window !== "undefined") {
++  window.__agentdeckPreloadedSessionIds = preloadedSessionIds;
++  window.loadSessionMessages = loadSessionMessages;
++}
++
+ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = null) {
+   const meta = AGENT_META[s.agent_type] || AGENT_META.claude_code;
+   const isSelected = s.unified_id === state.selectedSessionId;
+@@ -104,6 +112,7 @@ export function renderCompactSessionItem(s, showProjectTag = true, matchInfo = n
+       data-session-id="${escapeHtml(s.unified_id)}"
+       draggable="false"
+       ondragstart="event.preventDefault(); return false;"
++      onmouseenter="(function(el,id){ try{ if(preloadedSessionIds){ if(preloadedSessionIds.has(id)) return; preloadedSessionIds.add(id); } }catch(e){} try{ var st=window.state||{}; if(st.sessionMessagesCache&&st.sessionMessagesCache[id]) return; if(typeof loadSessionMessages==='function'){ loadSessionMessages(id,{silent:true,limit:30}); } }catch(e){} })(this, '${escapeHtml(s.unified_id)}')"
+       onclick="window.appActions.selectSession('${escapeHtml(s.unified_id)}')"
+       style="-webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; touch-action: pan-y; -webkit-tap-highlight-color: transparent;"
+       class="group cursor-pointer px-2.5 py-2 rounded-lg border transition-colors duration-150 flex items-center justify-between gap-2 ${

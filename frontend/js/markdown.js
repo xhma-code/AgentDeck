@@ -57,7 +57,15 @@ export function renderInlineMarkdown(rawLine) {
     (_, label, rawHref) => {
       const idx = links.length;
       const href = rawHref.trim();
-      const cleanLabel = label.replace(/`/g, "").trim() || getBasename(href);
+      let cleanLabel = label.replace(/`/g, "").trim();
+      if (/%[0-9a-fA-F]{2}/.test(cleanLabel)) {
+        try {
+          cleanLabel = decodeURIComponent(cleanLabel);
+        } catch {}
+      }
+      if (!cleanLabel) {
+        cleanLabel = getBasename(href);
+      }
       if (isLocalPreviewableLink(href)) {
         links.push(
           `<button type="button" onclick="window.appActions.openFilePreview('${escapeJsSingleQuote(

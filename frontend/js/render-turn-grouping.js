@@ -63,8 +63,14 @@ export function groupMessagesIntoTurns(messages) {
     const recordMdCandidate = (rawPath) => {
       if (!rawPath) return;
       const clean = String(rawPath).split("#")[0].split("?")[0].trim();
-      if (/\.(md|markdown|mdx)$/i.test(clean)) {
-        const base = getBasename(clean);
+      let decodedClean = clean;
+      if (/%[0-9a-fA-F]{2}/.test(clean)) {
+        try {
+          decodedClean = decodeURIComponent(clean);
+        } catch {}
+      }
+      if (/\.(md|markdown|mdx)$/i.test(clean) || /\.(md|markdown|mdx)$/i.test(decodedClean)) {
+        const base = getBasename(decodedClean);
         if (base.toLowerCase() !== "skill.md") {
           mdFilesMap.set(clean, base);
         }

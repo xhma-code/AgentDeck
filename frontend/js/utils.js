@@ -15,7 +15,14 @@ export function escapeHtml(str) {
 
 export function cleanFriendlyText(text) {
   if (!text) return "";
-  const str = String(text).trim();
+  let str = String(text).trim();
+  if (/%[0-9a-fA-F]{2}/.test(str)) {
+    try {
+      str = decodeURIComponent(str);
+    } catch {
+      // 忽略非法百分号编码异常
+    }
+  }
   const m = str.match(/^\[已拒绝工具\s+[^\]]+\]\s*(?:请勿执行刚才的操作，按以下要求调整方案：)?\s*(.*)$/);
   if (m) {
     const feedback = m[1] ? m[1].trim() : "";
@@ -70,11 +77,18 @@ export function escapeJsSingleQuote(str) {
 }
 
 export function getBasename(rawPath) {
-  const clean = String(rawPath || "")
+  let clean = String(rawPath || "")
     .split("#")[0]
     .split("?")[0]
     .replace(/\\/g, "/")
     .replace(/\/+$/, "");
+  if (/%[0-9a-fA-F]{2}/.test(clean)) {
+    try {
+      clean = decodeURIComponent(clean);
+    } catch {
+      // 忽略非法百分号编码异常
+    }
+  }
   const parts = clean.split("/").filter(Boolean);
   return parts[parts.length - 1] || clean || "文档";
 }

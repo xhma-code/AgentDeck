@@ -426,20 +426,22 @@ export function renderTurnProcessBar(turn, isRunningOverride) {
           <div class="flex items-center gap-1 min-w-0 overflow-hidden">
             ${badges.join("")}
           </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
           ${
             isRunning && runningStartMs
-              ? `<span class="text-zinc-500 font-normal shrink-0">·</span><span id="running-turn-duration" data-start-ms="${runningStartMs}" class="text-[11px] font-mono text-sky-400 font-medium shrink-0">${escapeHtml(
-                  displayDuration || "1s"
+              ? `<span id="running-turn-duration" data-start-ms="${runningStartMs}" class="text-[11px] font-mono text-sky-400 font-medium shrink-0">${escapeHtml(
+                  displayDuration || "0.1s"
                 )}</span>`
               : displayDuration
-              ? `<span class="text-zinc-500 font-normal shrink-0">·</span><span class="text-[11px] font-mono text-zinc-400 font-normal shrink-0">${escapeHtml(
+              ? `<span class="text-[11px] font-mono text-zinc-400 font-normal shrink-0">${escapeHtml(
                   displayDuration
                 )}</span>`
               : ""
           }
-        </div>
-        <div class="text-[11px] text-sky-400 hover:text-sky-300 font-medium shrink-0 px-2 py-1 -mr-1 rounded-md hover:bg-zinc-800/50 transition flex items-center gap-0.5">
-          <span>${isExpanded ? "收起 ▴" : "展开 ▾"}</span>
+          <div class="text-[11px] text-sky-400 hover:text-sky-300 font-medium shrink-0 px-1.5 py-0.5 rounded-md hover:bg-zinc-800/50 transition flex items-center gap-0.5">
+            <span>${isExpanded ? "收起 ▴" : "展开 ▾"}</span>
+          </div>
         </div>
       </div>
       ${detailsHtml}
