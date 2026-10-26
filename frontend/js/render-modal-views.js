@@ -397,3 +397,139 @@ export function renderGitStatusBody(data) {
     </div>
   `;
 }
+
+
+export function renderInteractiveDecisionModalHtml(form, selectedMap = {}, customInputMap = {}) {
+  if (!form || !form.fields || form.fields.length === 0) {
+    return `<div class="p-4 text-center text-zinc-400 text-xs">无待决议内容</div>`;
+  }
+
+  const fieldsHtml = form.fields
+    .map((field, fIdx) => {
+      const fKey = field.key || `q${fIdx}`;
+      const title = field.title || field.header || `问题 ${fIdx + 1}`;
+      const desc = field.description || field.question || "";
+      const isMulti = field.is_multi_select || field.type === "multiselect";
+      const selected = selectedMap[fKey] || [];
+
+      const optsHtml = (field.options || [])
+        .map((opt, oIdx) => {
+          let label = typeof opt === "string" ? opt : (opt.label || opt.value || "");
+          let value = typeof opt === "string" ? opt.split(" — ")[0].trim() : (opt.value || opt.label || "");
+          let descText = typeof opt === "object" && opt.description ? opt.description : "";
+          if (typeof opt === "string" && opt.includes(" — ")) {
+            descText = opt.split(" — ").slice(1).join(" — ").trim();
+          }
+
+          const isRec = label.includes("(Recommended)") || value.includes("(Recommended)");
+          const isChosen = selected.includes(value);
+
+          return `
+            <div onclick="window.appActions.selectDecisionOption('${escapeJsSingleQuote(fKey)}', '${escapeJsSingleQuote(value)}', ${!!isMulti})"
+              onkeydown="if(event.key===' '||event.key==='Enter'){event.preventDefault();window.appActions.selectDecisionOption('${escapeJsSingleQuote(fKey)}', '${escapeJsSingleQuote(value)}', ${!!isMulti});}"
+              tabindex="0"
+              role="${isMulti ? 'checkbox' : 'radio'}"
+              aria-checked="${isChosen}"
+              class="group relative flex items-center gap-2.5 py-1.5 px-3 rounded-lg border transition-all cursor-pointer select-none active:scale-[0.99] min-h-[36px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-950 ${
+                isChosen
+                  ? "bg-sky-500/15 border-sky-400/80 shadow-sm"
+                  : "bg-zinc-900/70 hover:bg-zinc-800/80 border-zinc-800 text-zinc-300"
+              }">
+              <div class="shrink-0 flex items-center justify-center">
+                <span class="w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] transition ${
+                  isChosen
+                    ? "bg-sky-500 text-zinc-950 font-bold shadow-sm shadow-sky-500/50"
+                    : "border-2 border-zinc-600 bg-zinc-800/50 text-transparent"
+                }">
+                  ${isMulti ? "✓" : `<span class="w-1.5 h-1.5 rounded-full ${isChosen ? "bg-zinc-950" : "bg-transparent"}"></span>`}
+                </span>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center justify-between gap-2 leading-tight">
+                  <div class="flex items-center gap-1.5 flex-wrap min-w-0">
+                    <span class="font-semibold text-xs sm:text-sm leading-tight ${isChosen ? "text-sky-200" : "text-zinc-200"}">
+                      ${escapeHtml(label.replace(" (Recommended)", ""))}
+                    </span>
+                    ${
+                      isRec
+                        ? `<span class="px-1 py-0.5 rounded text-[9px] leading-none bg-sky-500/20 text-sky-400 border border-sky-500/40 font-bold shrink-0">Recommended</span>`
+                        : ""
+                    }
+                  </div>
+                  <span class="hidden sm:inline-block text-[10px] font-mono px-1 py-0.5 rounded bg-zinc-800/80 text-zinc-400 border border-zinc-700/60 shrink-0 leading-none">
+                    [${oIdx + 1}]
+                  </span>
+                </div>
+                ${
+                  descText
+                    ? `<div class="mt-0.5 text-[11px] leading-snug ${isChosen ? "text-sky-300/80" : "text-zinc-400"}">${escapeHtml(descText)}</div>`
+                    : ""
+                }
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+
+      return `
+        <div class="space-y-2.5 pt-2 first:pt-0">
+          <div class="flex items-center gap-1.5 font-bold text-xs sm:text-sm text-zinc-100">
+            <span class="w-1.5 h-3.5 rounded-full bg-sky-400 shrink-0"></span>
+            <span>${escapeHtml(title)}</span>
+          </div>
+          ${
+            desc
+              ? `<div class="text-xs text-zinc-300 bg-zinc-900/50 p-2.5 rounded-xl border border-zinc-800/60 whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">${escapeHtml(desc)}</div>`
+              : ""
+          }
+          <div class="space-y-1">${optsHtml}</div>
+        </div>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="flex items-center justify-between pb-3 border-b border-zinc-800/80 shrink-0">
+      <div class="flex items-center gap-2">
+        <div class="w-7 h-7 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div>
+          <div id="decision-modal-title" class="font-bold text-sm text-zinc-100 flex items-center gap-1.5">
+            <span>交互式决策问答</span>
+          </div>
+          <div class="text-[10px] text-zinc-500">Agent 正在挂起等待确认</div>
+        </div>
+      </div>
+      <div id="decision-countdown-badge" onclick="window.appActions.extendDecisionCountdown(60)" title="点击延长决策时间 (+60s)" class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/80 hover:bg-amber-900/80 border border-amber-500/40 text-amber-300 font-mono text-[11px] shadow-sm cursor-pointer select-none transition active:scale-95">
+        <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+        <span id="decision-countdown-timer">45s 后自动推荐</span>
+        <span class="text-[10px] text-amber-400/80 font-normal hover:text-amber-200 ml-0.5 underline decoration-dotted">+60s</span>
+      </div>
+    </div>
+
+    <!-- 顶部进度条 -->
+    <div class="w-full h-1 bg-zinc-900 rounded-full overflow-hidden shrink-0">
+      <div id="decision-progress-bar" class="h-full bg-amber-500 transition-all duration-1000 ease-linear" style="width: 100%"></div>
+    </div>
+
+    <!-- 中部滚动问答与选项 -->
+    <div class="overflow-y-auto space-y-4 pr-1 flex-1 py-1">
+      ${fieldsHtml}
+    </div>
+
+    <!-- 底部操作与提交条 -->
+    <div class="pt-3 border-t border-zinc-800/80 space-y-2 shrink-0">
+      <div class="flex items-center justify-between text-[11px] text-zinc-500">
+        <span class="hidden sm:inline">桌面快捷键：按 1~9 选择选项，按 Enter 直接确认</span>
+        <span id="decision-retry-status" class="text-amber-400 font-medium"></span>
+      </div>
+      <button id="decision-submit-btn" onclick="window.appActions.confirmInteractiveDecision()"
+        class="w-full py-2.5 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 active:scale-[0.99] text-zinc-950 font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-sky-500/20 transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950">
+        <span id="decision-submit-text">确定</span>
+      </button>
+    </div>
+  `;
+}

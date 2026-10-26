@@ -112,6 +112,15 @@ import {
   setQuestionWriteIn,
 } from "./actions-approval.js";
 import {
+  openInteractiveDecisionModal,
+  closeInteractiveDecisionModal,
+  selectDecisionOption,
+  confirmInteractiveDecision,
+  pauseDecisionCountdown,
+  extendDecisionCountdown,
+} from "./modals.js";
+
+import {
   closePairingGuideModal,
   submitPairCodeManual,
   closeQrModal,
@@ -186,6 +195,14 @@ window.appActions = {
   toggleDenyFeedback,
   submitDenyWithFeedback,
   setQuestionWriteIn,
+
+  // 跨端桌面级交互决策问答
+  openInteractiveDecisionModal,
+  closeInteractiveDecisionModal,
+  selectDecisionOption,
+  confirmInteractiveDecision,
+  pauseDecisionCountdown,
+  extendDecisionCountdown,
 
   // 弹窗动作
   showPairingGuideModal,

@@ -328,6 +328,56 @@ class OpenCodeHttpBridge:
         return {}
 
 
+    def fetch_pending_forms(self, session_id: str) -> list[dict[str, Any]]:
+        """获取指定会话中挂起等待决策的交互表单列表（对接 GET /api/session/:id/form）。"""
+        try:
+            req = self._make_request(f"/api/session/{session_id}/form", method="GET")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    doc = json.loads(raw)
+                    data = doc.get("data")
+                    if isinstance(data, list):
+                        return data
+        except (urllib.error.URLError, TimeoutError, OSError):
+            pass
+        except Exception as exc:
+            logger.debug(f"获取 OpenCode 会话待决议表单异常 ({session_id[:8]}): {exc}")
+        return []
+
+    def reply_form(self, session_id: str, form_id: str, answer_dict: dict[str, Any]) -> bool:
+        """向 OpenCode 官方 API 交付表单答复，解冻挂起的交互式问答任务（POST /api/session/:id/form/:id/reply）。"""
+        payload = json.dumps({"answer": answer_dict}).encode("utf-8")
+        req = self._make_request(
+            f"/api/session/{session_id}/form/{form_id}/reply",
+            data=payload,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
+                if resp.status in (200, 204):
+                    logger.info(f"已成功交付 OpenCode 交互式表单答复: session={session_id[:8]} form={form_id}")
+                    return True
+        except urllib.error.HTTPError as exc:
+            # 409 FormAlreadySettledError 说明表单已由另一端解决，属幂等成功态
+            if exc.code == 409:
+                logger.info(f"OpenCode 表单已结案 (409 FormAlreadySettledError)，视为成功: form={form_id}")
+                return True
+            log_structured_error(
+                problem=f"交付 OpenCode 表单答复 HTTP 错误 ({exc.code})",
+                cause=str(exc),
+                fix="请检查表单字段是否与选项匹配。",
+                exc=exc,
+            )
+        except Exception as exc:
+            log_structured_error(
+                problem=f"交付 OpenCode 表单答复网络异常 ({form_id})",
+                cause=str(exc),
+                fix="系统将执行重试或退避策略。",
+                exc=exc,
+            )
+        return False
+
     def abort_session(self, session_id: str) -> bool:
         """调用官方 OpenCode API 中断指定会话正在运行的任务（遵循官方 POST /api/session/:id/interrupt 规范）。"""
         for path in (

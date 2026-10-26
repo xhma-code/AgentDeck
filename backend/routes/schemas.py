@@ -89,3 +89,9 @@ class MarkAllViewedRequest(BaseModel):
 
 class SyncViewedRequest(BaseModel):
     viewed_sessions: dict[str, Union[str, int, float]] = Field(default_factory=dict, description="会话ID到时间戳的字典")
+
+class FormReplyRequest(BaseModel):
+    """交互式决策表单答复请求体。"""
+
+    answer: dict[str, Any]
+    source: Optional[str] = "user"

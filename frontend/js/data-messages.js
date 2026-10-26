@@ -81,6 +81,20 @@ export async function loadSessionMessages(unifiedId, options = false) {
     const hasMore = Boolean(data.has_more);
     const totalCount = data.total_count || incoming.length;
 
+    // 交互式决策问答强弹窗跨端联动
+    if (data.pending_form && unifiedId === state.selectedSessionId) {
+      if (window.appActions?.openInteractiveDecisionModal) {
+        window.appActions.openInteractiveDecisionModal(data.pending_form);
+      }
+    } else if (!data.pending_form && unifiedId === state.selectedSessionId) {
+      const dModal = document.getElementById("interactive-decision-modal");
+      if (dModal && !dModal.classList.contains("hidden")) {
+        if (window.appActions?.closeInteractiveDecisionModal) {
+          window.appActions.closeInteractiveDecisionModal();
+        }
+      }
+    }
+
     // 检查后端返回的活跃执行态并联动思考计时器
     if (data.is_running) {
       if (!state.pendingTurnThinking[unifiedId]) {

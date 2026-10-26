@@ -19,6 +19,7 @@ from backend.adapters.models import (
 from backend.adapters.tool_utils import (
     classify_tool_risk,
     count_diff_lines,
+    extract_interactive_questions,
     extract_tool_file_path,
     extract_tool_summary_and_diff,
     truncate_large_output,
@@ -136,6 +137,7 @@ def parse_session_message_rows(
             text_chunks: list[str] = []
             thinking_chunks: list[str] = []
             tool_calls: list[UnifiedToolCall] = []
+            parsed_questions: list[dict[str, Any]] = []
 
             for block in contents:
                 if not isinstance(block, dict):
@@ -178,6 +180,9 @@ def parse_session_message_rows(
                             call_status=call_status,
                         )
                     )
+                    q_items = extract_interactive_questions(tname, tinput)
+                    if q_items:
+                        parsed_questions.extend(q_items)
 
             content_str = "\n\n".join(text_chunks).strip()
             thinking_str = "\n\n".join(thinking_chunks).strip()
@@ -193,6 +198,7 @@ def parse_session_message_rows(
                     content=content_str,
                     thinking=thinking_str,
                     tool_calls=tool_calls,
+                    questions=parsed_questions,
                 )
             )
         elif mtype == "idle":
@@ -270,6 +276,7 @@ def parse_messages_from_rows(
         text_chunks: list[str] = []
         thinking_chunks: list[str] = []
         tool_calls: list[UnifiedToolCall] = []
+        parsed_questions: list[dict[str, Any]] = []
 
         for p in msg_parts:
             ptype = str(p.get("type") or "")
@@ -294,6 +301,9 @@ def parse_messages_from_rows(
                         raw_output=str(toutput),
                     )
                 )
+                q_items = extract_interactive_questions(tname, tinput)
+                if q_items:
+                    parsed_questions.extend(q_items)
 
         if text_chunks or thinking_chunks or tool_calls:
             joined_content = "\n\n".join(text_chunks).strip()
@@ -334,6 +344,7 @@ def parse_messages_from_rows(
                     content=joined_content,
                     thinking="\n\n".join(thinking_chunks),
                     tool_calls=tool_calls,
+                    questions=parsed_questions,
                 )
             )
 

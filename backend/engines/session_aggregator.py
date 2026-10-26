@@ -406,6 +406,47 @@ def fetch_session_detail(
             ):
                 is_active = True
 
+    pending_form = None
+    if adapter and hasattr(adapter, "fetch_pending_forms"):
+        try:
+            p_forms = adapter.fetch_pending_forms(actual_raw_id)
+            if p_forms:
+                pending_form = p_forms[0]
+        except Exception as exc:
+            logger.debug(f"获取待决议表单异常: {exc}")
+
+    if not pending_form and messages:
+        last_msg = messages[-1]
+        last_tcs = last_msg.get("tool_calls") or []
+        has_running_question = any(
+            tc.get("name") in ("ask_question", "askuserquestion", "question", "form")
+            and tc.get("status") in ("RUNNING", "PENDING")
+            for tc in last_tcs
+            if isinstance(tc, dict)
+        )
+        if (has_running_question or last_msg.get("status") == "RUNNING") and last_msg.get("questions"):
+            pending_form = {
+                "id": f"syn_{last_msg.get('item_id', 'q')}",
+                "sessionID": actual_raw_id,
+                "title": "交互式决策问答",
+                "fields": [
+                    {
+                        "key": q.get("key") or f"q{qi}",
+                        "title": q.get("header") or f"问题 {qi+1}",
+                        "description": q.get("question") or "",
+                        "options": [
+                            {"value": opt.split(" — ")[0].strip(), "label": opt}
+                            for opt in q.get("options", [])
+                        ],
+                        "is_multi_select": q.get("is_multi_select", False),
+                    }
+                    for qi, q in enumerate(last_msg["questions"])
+                ],
+            }
+
+    if pending_form:
+        is_active = True
+
     result = {
         "unified_id": actual_unified_id,
         "original_unified_id": unified_id,
@@ -416,12 +457,14 @@ def fetch_session_detail(
         "is_pinned": overrides.get("is_pinned", 0),
         "is_running": is_active,
         "pending_approval": pa.to_dict() if pa else None,
+        "pending_form": pending_form,
+        "is_waiting_interaction": bool(pending_form),
         "token_usage": token_usage,
         "total_count": total_count,
         "has_more": has_more,
         "messages": messages,
     }
-    if not is_active and before_step is None and since_step is None and pa is None:
+    if not is_active and before_step is None and since_step is None and pa is None and not pending_form:
         _DETAIL_CACHE[cache_key] = (time.monotonic(), result)
         if len(_DETAIL_CACHE) > 50:
             try:

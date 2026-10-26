@@ -216,6 +216,14 @@ class BaseAgentAdapter(ABC):
         """尝试从原生持久化存储中物理删除该会话（包括数据库行或日志文件）。默认返回 False。"""
         return False
 
+    def fetch_pending_forms(self, raw_session_id: str) -> list[dict[str, Any]]:
+        """获取当前会话待决策的交互式表单（默认空）。"""
+        return []
+
+    def reply_form(self, raw_session_id: str, form_id: str, answer_dict: dict[str, Any]) -> bool:
+        """交付交互式决策表单答复（默认不支持返回 False）。"""
+        return False
+
     def respond_permission(
         self,
         raw_session_id: str,

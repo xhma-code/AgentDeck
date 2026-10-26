@@ -750,6 +750,14 @@
     </div>
   </div>
 
+  <!-- 模态框 5：跨端桌面级交互式决策问答强弹窗 -->
+  <div id="interactive-decision-modal" role="dialog" aria-modal="true" aria-labelledby="decision-modal-title"
+    class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+    <div id="interactive-decision-card" class="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-lg p-4 sm:p-5 space-y-4 shadow-2xl relative max-h-[90vh] flex flex-col">
+      <!-- 动态由 renderInteractiveDecisionModalHtml 注入 -->
+    </div>
+  </div>
+
   <!-- 跨网络自愈与漫游浮动提示条 -->
   <div id="roaming-banner" class="hidden fixed top-3 left-1/2 -translate-x-1/2 z-[100] max-w-[92vw] w-max px-3.5 py-2 rounded-full bg-sky-950/90 border border-sky-500/40 text-sky-200 text-xs font-medium shadow-2xl backdrop-blur-md flex items-center gap-2 transition-all duration-300">
     <span class="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>

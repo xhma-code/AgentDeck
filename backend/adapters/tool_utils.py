@@ -255,11 +255,11 @@ def extract_tool_summary_and_diff(tool_name: str, raw_args: Any) -> tuple[str, s
 
 def extract_interactive_questions(tool_name: str, raw_args: Any) -> list[dict[str, Any]]:
     """
-    从 Antigravity `ask_question` 或 Claude Code `AskUserQuestion` 工具参数中
-    提取结构化单选/多选问题列表，供手机端渲染可点选的交互式答题卡片。
+    从 Antigravity `ask_question`、Claude Code `AskUserQuestion` 或 OpenCode `question` / `form` 工具参数中
+    提取结构化单选/多选问题列表，供手机端与 Web 端渲染桌面级交互模态弹窗与答题卡片。
     """
     lower_name = (tool_name or "").lower()
-    if lower_name not in ("ask_question", "askuserquestion"):
+    if lower_name not in ("ask_question", "askuserquestion", "question", "form"):
         return []
 
     if isinstance(raw_args, str):
@@ -273,6 +273,8 @@ def extract_interactive_questions(tool_name: str, raw_args: Any) -> list[dict[st
         return []
 
     q_list = args.get("questions")
+    if q_list is None and "fields" in args:
+        q_list = args.get("fields")
     if q_list is None and "question" in args:
         q_list = [args]
     elif isinstance(q_list, dict):
@@ -284,25 +286,34 @@ def extract_interactive_questions(tool_name: str, raw_args: Any) -> list[dict[st
     for q_obj in q_list:
         if not isinstance(q_obj, dict):
             continue
-        q_text = str(q_obj.get("question") or "").strip()
+        q_text = str(q_obj.get("question") or q_obj.get("description") or q_obj.get("title") or "").strip()
         if not q_text:
             continue
+        header = str(q_obj.get("header") or q_obj.get("title") or "").strip()
+        key = str(q_obj.get("key") or "")
         raw_opts = q_obj.get("options") or []
         clean_opts: list[str] = []
+        parsed_opts_data: list[dict[str, str]] = []
         if isinstance(raw_opts, list):
             for opt in raw_opts:
                 if isinstance(opt, str) and opt.strip():
                     clean_opts.append(opt.strip())
+                    parsed_opts_data.append({"label": opt.strip(), "value": opt.strip(), "description": ""})
                 elif isinstance(opt, dict):
-                    lbl = str(opt.get("label") or opt.get("text") or opt.get("id") or "").strip()
+                    lbl = str(opt.get("label") or opt.get("value") or opt.get("text") or opt.get("id") or "").strip()
+                    val = str(opt.get("value") or lbl).strip()
                     desc = str(opt.get("description") or "").strip()
                     if lbl:
                         clean_opts.append(f"{lbl} — {desc}" if desc else lbl)
+                        parsed_opts_data.append({"label": lbl, "value": val, "description": desc})
         is_multi = bool(q_obj.get("is_multi_select") or q_obj.get("multiSelect"))
         extracted.append(
             {
+                "key": key,
+                "header": header,
                 "question": q_text,
                 "options": clean_opts,
+                "options_data": parsed_opts_data,
                 "is_multi_select": is_multi,
             }
         )

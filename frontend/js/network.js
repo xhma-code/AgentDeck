@@ -6,7 +6,7 @@ import { state, markSessionCompletedUnread, saveLastViewedTimes, clearAllUnreadC
 import { triggerAlertNotification } from "./utils.js";
 import { showToast, showPairingGuideModal } from "./api.js";
 import { FORK_TO_CLI_FALLBACK_NOTICE } from "./config.js";
-import { selectSession } from "./data-session-selection.js";
+
 import {
   loadSessions,
   loadSessionMessages,
@@ -389,6 +389,9 @@ export function handleRealtimeEvent(envelope) {
       renderSessionList();
       if (uid === state.selectedSessionId) {
         renderCurrentSessionHeader();
+        if (payload.is_waiting_interaction || payload.meta?.is_waiting_interaction) {
+          loadSessionMessages(uid, true);
+        }
       }
     }
     loadSessions(true);
@@ -412,6 +415,37 @@ export function handleRealtimeEvent(envelope) {
     // 正在看旧 IDE 会话的设备自动跟随到接力的新会话（旧会话不会再有新进展）
     if (newId && oldId && state.selectedSessionId === oldId) {
       selectSession(newId).catch((e) => console.warn("跟随接力会话失败:", e));
+    }
+    loadSessions(true);
+    return;
+  }
+
+  if (type === "FORM_PENDING") {
+    const uid = payload && payload.unified_id;
+    if (uid && payload.form) {
+      if (!payload.form.unifiedId) payload.form.unifiedId = uid;
+      if (uid === state.selectedSessionId || !state.selectedSessionId) {
+        if (!state.selectedSessionId && window.appActions?.selectSession) {
+          window.appActions.selectSession(uid);
+        }
+        if (window.appActions?.openInteractiveDecisionModal) {
+          window.appActions.openInteractiveDecisionModal(payload.form);
+        }
+      } else {
+        showToast("有会话等待交互决策，点击会话即刻处理", "info");
+      }
+    }
+    loadSessions(true);
+    return;
+  }
+
+  if (type === "FORM_ANSWERED") {
+    const uid = payload && payload.unified_id;
+    if (uid && uid === state.selectedSessionId) {
+      if (window.appActions?.closeInteractiveDecisionModal) {
+        window.appActions.closeInteractiveDecisionModal();
+      }
+      loadSessionMessages(uid, true);
     }
     loadSessions(true);
     return;

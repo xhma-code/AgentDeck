@@ -15,6 +15,7 @@ import { DEFAULT_MODELS_BY_AGENT, MODES_BY_AGENT } from "./config.js";
 import { escapeHtml, escapeJsSingleQuote } from "./utils.js";
 import { renderSessionList } from "./render-sidebar.js";
 import { renderModelOptionsForAgent, renderModeOptionsForAgent } from "./render-views.js";
+import { renderInteractiveDecisionModalHtml } from "./render-modal-views.js";
 import { dispatchCommand } from "./command-queue.js";
 
 export function bindSessionListScrollGuardian() {
@@ -833,6 +834,8 @@ export async function confirmCreateNewSession() {
     // 2. 直接调用轻量 RESTful API 瞬时创建（<10ms）
     res = await apiFetch("/api/v1/sessions", {
       method: "POST",
+      // 创建含首轮派发（LS 注入在 IDE 忙碌时可能 >8s），8s 默认超时会误报失败
+      timeout: 25000,
       body: JSON.stringify({
         agent_type: agentType,
         project_path: finalPath,
@@ -907,5 +910,266 @@ export async function confirmCreateNewSession() {
     loadSessions(true).catch(() => {});
   } else {
     await loadSessions();
+  }
+}
+
+
+// --- 交互式决策问答桌面级原生模态框逻辑 ---
+let decisionCountdownTimer = null;
+let decisionSecondsRemaining = 45;
+let decisionMaxSeconds = 45;
+let decisionIsPaused = false;
+let currentDecisionForm = null;
+let decisionSelections = {};
+let decisionKeyHandlerBound = false;
+
+function onDecisionKeyDown(e) {
+  const modal = document.getElementById("interactive-decision-modal");
+  if (!modal || modal.classList.contains("hidden") || !currentDecisionForm) return;
+
+  if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey) {
+    e.preventDefault();
+    confirmInteractiveDecision("user");
+    return;
+  }
+  if (e.key === "Escape") {
+    pauseDecisionCountdown("已按 Escape 暂停");
+    return;
+  }
+  if (e.key >= "1" && e.key <= "9") {
+    const oIdx = parseInt(e.key, 10) - 1;
+    const fields = currentDecisionForm.fields || [];
+    const targetField = fields.find((f, i) => !decisionSelections[f.key || `q${i}`]?.length) || fields[0];
+    if (targetField && targetField.options && targetField.options[oIdx]) {
+      e.preventDefault();
+      const opt = targetField.options[oIdx];
+      const val = typeof opt === "string" ? opt.split(" — ")[0].trim() : (opt.value || opt.label || "");
+      const fKey = targetField.key || "q0";
+      const isMulti = targetField.is_multi_select || targetField.type === "multiselect";
+      selectDecisionOption(fKey, val, !!isMulti);
+    }
+  }
+}
+
+export function openInteractiveDecisionModal(formPayload) {
+  if (!formPayload) return;
+  if (currentDecisionForm && currentDecisionForm.id === formPayload.id) {
+    return;
+  }
+  if (!formPayload.unifiedId && state.selectedSessionId) {
+    formPayload.unifiedId = state.selectedSessionId;
+  }
+  currentDecisionForm = formPayload;
+  decisionSelections = {};
+  decisionIsPaused = false;
+  decisionSecondsRemaining = 45;
+
+  (formPayload.fields || []).forEach((field, fIdx) => {
+    const fKey = field.key || `q${fIdx}`;
+    let recVal = "";
+    (field.options || []).forEach((opt, oIdx) => {
+      let label = typeof opt === "string" ? opt : (opt.label || opt.value || "");
+      let value = typeof opt === "string" ? opt.split(" — ")[0].trim() : (opt.value || opt.label || "");
+      if (label.includes("(Recommended)") || value.includes("(Recommended)")) {
+        recVal = value;
+      } else if (oIdx === 0 && !recVal) {
+        recVal = value;
+      }
+    });
+    if (recVal) {
+      decisionSelections[fKey] = [recVal];
+    }
+  });
+
+  const card = document.getElementById("interactive-decision-card");
+  const modal = document.getElementById("interactive-decision-modal");
+  if (card && modal) {
+    card.innerHTML = renderInteractiveDecisionModalHtml(formPayload, decisionSelections);
+    modal.classList.remove("hidden");
+  }
+
+  startDecisionCountdown();
+  if (!decisionKeyHandlerBound) {
+    document.addEventListener("keydown", onDecisionKeyDown);
+    decisionKeyHandlerBound = true;
+  }
+}
+
+export function closeInteractiveDecisionModal() {
+  if (decisionCountdownTimer) {
+    clearInterval(decisionCountdownTimer);
+    decisionCountdownTimer = null;
+  }
+  currentDecisionForm = null;
+  decisionSelections = {};
+  decisionIsPaused = false;
+  const modal = document.getElementById("interactive-decision-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+export function selectDecisionOption(fKey, value, isMulti) {
+  pauseDecisionCountdown("已暂停自动推进");
+  if (!decisionSelections[fKey]) {
+    decisionSelections[fKey] = [];
+  }
+  if (isMulti) {
+    if (decisionSelections[fKey].includes(value)) {
+      decisionSelections[fKey] = decisionSelections[fKey].filter((x) => x !== value);
+    } else {
+      decisionSelections[fKey].push(value);
+    }
+  } else {
+    decisionSelections[fKey] = [value];
+  }
+  const card = document.getElementById("interactive-decision-card");
+  if (card && currentDecisionForm) {
+    card.innerHTML = renderInteractiveDecisionModalHtml(currentDecisionForm, decisionSelections);
+    updateDecisionCountdownUI();
+  }
+}
+
+export function pauseDecisionCountdown(reasonText = "已暂停自动推进") {
+  decisionIsPaused = true;
+  if (decisionCountdownTimer) {
+    clearInterval(decisionCountdownTimer);
+    decisionCountdownTimer = null;
+  }
+  const badge = document.getElementById("decision-countdown-badge");
+  const timerText = document.getElementById("decision-countdown-timer");
+  const pbar = document.getElementById("decision-progress-bar");
+  if (badge && timerText) {
+    badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-400 font-mono text-[11px] shadow-sm";
+    timerText.textContent = reasonText;
+  }
+  if (pbar) {
+    pbar.className = "h-full bg-zinc-700 transition-all duration-300";
+  }
+}
+
+function ensureDecisionTicker() {
+  if (decisionCountdownTimer) return;
+  decisionCountdownTimer = setInterval(() => {
+    if (decisionIsPaused) return;
+    decisionSecondsRemaining--;
+    updateDecisionCountdownUI();
+    if (decisionSecondsRemaining <= 0) {
+      clearInterval(decisionCountdownTimer);
+      decisionCountdownTimer = null;
+      confirmInteractiveDecision("auto_timeout");
+    }
+  }, 1000);
+}
+
+function startDecisionCountdown(seconds = 45) {
+  if (decisionCountdownTimer) {
+    clearInterval(decisionCountdownTimer);
+    decisionCountdownTimer = null;
+  }
+  decisionSecondsRemaining = seconds;
+  decisionMaxSeconds = Math.max(decisionMaxSeconds, seconds);
+  decisionIsPaused = false;
+  updateDecisionCountdownUI();
+  ensureDecisionTicker();
+}
+
+export function extendDecisionCountdown(seconds = 60) {
+  if (!currentDecisionForm) return;
+  decisionSecondsRemaining += seconds;
+  if (decisionSecondsRemaining > decisionMaxSeconds) {
+    decisionMaxSeconds = decisionSecondsRemaining;
+  }
+  decisionIsPaused = false;
+
+  const badge = document.getElementById("decision-countdown-badge");
+  const pbar = document.getElementById("decision-progress-bar");
+  if (badge) {
+    badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-950/80 hover:bg-amber-900/80 border border-amber-500/40 text-amber-300 font-mono text-[11px] shadow-sm cursor-pointer select-none transition active:scale-95";
+  }
+  if (pbar) {
+    pbar.className = "h-full bg-amber-500 transition-all duration-1000 ease-linear";
+  }
+
+  ensureDecisionTicker();
+  updateDecisionCountdownUI();
+  showToast(`已延长决策时间 +${seconds}s`, "info");
+}
+
+function updateDecisionCountdownUI() {
+  const timerText = document.getElementById("decision-countdown-timer");
+  const pbar = document.getElementById("decision-progress-bar");
+  if (timerText && !decisionIsPaused) {
+    timerText.textContent = `${decisionSecondsRemaining}s 后自动推荐`;
+  }
+  if (pbar && !decisionIsPaused) {
+    const base = decisionMaxSeconds > 0 ? decisionMaxSeconds : 45;
+    const pct = Math.max(0, Math.min(100, (decisionSecondsRemaining / base) * 100));
+    pbar.style.width = `${pct}%`;
+  }
+}
+
+export async function confirmInteractiveDecision(source = "user") {
+  if (!currentDecisionForm) return;
+  const formId = currentDecisionForm.id;
+  const sessionUnifiedId = currentDecisionForm.unifiedId || currentDecisionForm.sessionID || state.selectedSessionId;
+  const answer = {};
+
+  (currentDecisionForm.fields || []).forEach((field, fIdx) => {
+    const fKey = field.key || `q${fIdx}`;
+    const chosen = decisionSelections[fKey] || [];
+    const isMulti = field.is_multi_select || field.type === "multiselect";
+    if (isMulti) {
+      answer[fKey] = chosen;
+    } else {
+      answer[fKey] = chosen.length > 0 ? chosen[0] : "";
+    }
+  });
+
+  const submitBtn = document.getElementById("decision-submit-btn");
+  const submitText = document.getElementById("decision-submit-text");
+  const retryStatus = document.getElementById("decision-retry-status");
+  if (submitBtn) submitBtn.disabled = true;
+
+  const maxRetries = 3;
+  let success = false;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      if (submitText) {
+        submitText.textContent = attempt === 1 ? "正在同步决策..." : `重试同步中 (${attempt}/${maxRetries})...`;
+      }
+      if (retryStatus && attempt > 1) {
+        retryStatus.textContent = `第 ${attempt}/${maxRetries} 次重试中...`;
+      }
+      const res = await apiFetch(`/api/v1/sessions/${encodeURIComponent(sessionUnifiedId)}/form/${formId}/reply`, {
+        method: "POST",
+        body: JSON.stringify({ answer, source }),
+      });
+      if (res && (res.ok || res.status === 409 || res.status_code === 409)) {
+        success = true;
+        break;
+      }
+    } catch (err) {
+      console.warn(`[交互决策] 提交异常 (第 ${attempt} 次):`, err);
+      if (err?.status === 409 || err?.message?.includes("409")) {
+        success = true;
+        break;
+      }
+      if (attempt < maxRetries) {
+        const backoffMs = Math.pow(2, attempt - 1) * 1000;
+        await new Promise((r) => setTimeout(r, backoffMs));
+      }
+    }
+  }
+
+  if (success) {
+    showToast("决策已生效，会话继续推进", "success");
+    closeInteractiveDecisionModal();
+    if (window.appActions?.loadSessionMessages) {
+      window.appActions.loadSessionMessages(sessionUnifiedId);
+    }
+  } else {
+    if (submitBtn) submitBtn.disabled = false;
+    if (submitText) submitText.textContent = "确定 (重试)";
+    if (retryStatus) retryStatus.textContent = "同步失败，请检查网络后点击重试";
+    showToast("决策同步失败，请点击重试", "error");
   }
 }

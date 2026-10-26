@@ -400,6 +400,18 @@ class OpenCodeAdapter(BaseAgentAdapter):
         cmd.append(prompt)
         return cmd
 
+    def fetch_pending_forms(self, raw_session_id: str) -> list[dict[str, Any]]:
+        """通过本地 HTTP Bridge 获取当前会话中等待决策的表单。"""
+        if self.http_bridge.is_server_running():
+            return self.http_bridge.fetch_pending_forms(raw_session_id)
+        return []
+
+    def reply_form(self, raw_session_id: str, form_id: str, answer_dict: dict[str, Any]) -> bool:
+        """通过本地 HTTP Bridge 交付交互式决策表单答复。"""
+        if self.http_bridge.is_server_running():
+            return self.http_bridge.reply_form(raw_session_id, form_id, answer_dict)
+        return False
+
     def respond_permission(
         self,
         raw_session_id: str,

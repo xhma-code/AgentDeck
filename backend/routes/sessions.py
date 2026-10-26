@@ -25,6 +25,7 @@ from backend.routes.schemas import (
     SwitchSessionModeRequest,
     SwitchSessionModelRequest,
     ToolApprovalDecisionRequest,
+    FormReplyRequest,
     MarkAllViewedRequest,
     SyncViewedRequest,
     check_etag_matches,
@@ -377,6 +378,24 @@ async def abort_session_execution(
     orchestrator = get_orchestrator(request)
     await orchestrator.abort_session(unified_id, reason="手机端手动触发紧急中断 (SIGINT)")
     return {"ok": True, "unified_id": unified_id, "status": "aborted"}
+
+
+@router.post("/{unified_id:path}/form/{form_id}/reply")
+async def reply_interactive_form(
+    unified_id: str,
+    form_id: str,
+    req: FormReplyRequest,
+    request: Request,
+    _auth: bool = Depends(verify_request_auth),
+) -> dict[str, Any]:
+    """提交交互决策表单答复并解冻挂起任务。"""
+    orchestrator = get_orchestrator(request)
+    return await orchestrator.reply_interactive_form(
+        unified_id=unified_id,
+        form_id=form_id,
+        answer=req.answer,
+        source=req.source or "user",
+    )
 
 
 @router.get("/{unified_id:path}/steps/{step_index}/full")

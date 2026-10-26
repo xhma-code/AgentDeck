@@ -284,13 +284,39 @@ class AgentOrchestrator:
         self.bump_version()
 
         if initial_prompt.strip():
-            await self.send_prompt_to_session(
-                unified_id=unified_id,
-                prompt=initial_prompt.strip(),
-                project_path=workdir,
-                execution_mode=norm_mode,
-                model_name=model_name.strip() if model_name else None,
-            )
+            # 首轮 prompt 改为后台异步派发：
+            # 同步链路（StartCascade→改题→LS 直发）在 IDE 忙碌时常超 8s，手机端 apiFetch
+            # 默认 8s 超时中断请求后，派发未落地 → 会话“建了但不跑”。后台化后创建响应
+            # 立即返回，派发失败也不再静默。
+            prompt_text = initial_prompt.strip()
+
+            async def _dispatch_first_prompt() -> None:
+                try:
+                    send_res = await self.send_prompt_to_session(
+                        unified_id=unified_id,
+                        prompt=prompt_text,
+                        project_path=workdir,
+                        execution_mode=norm_mode,
+                        model_name=model_name.strip() if model_name else None,
+                        auto_fork_ide=True,
+                    )
+                    if not send_res.get("ok", False):
+                        log_structured_error(
+                            problem=f"新建会话首轮指令派发失败 ({unified_id})",
+                            cause=str(send_res.get("error") or "直发通道返回失败"),
+                            fix="可在该会话中重新发送首轮指令，或检查 Antigravity 桌面端是否在线。",
+                        )
+                except Exception as exc:
+                    log_structured_error(
+                        problem=f"新建会话首轮指令派发异常 ({unified_id})",
+                        cause=f"{type(exc).__name__}: {exc}",
+                        fix="请确认 IDE/CLI 通道可用后在会话中重试发送。",
+                        exc=exc,
+                    )
+
+            fp_task = asyncio.create_task(_dispatch_first_prompt())
+            self.background_tasks.add(fp_task)
+            fp_task.add_done_callback(self.background_tasks.discard)
 
         return unified_id, meta
 
@@ -490,6 +516,63 @@ class AgentOrchestrator:
 
     async def resolve_tool_approval(self, unified_id: str, decision: str, feedback: str = "") -> dict[str, Any]:
         return await self.approval_coordinator.resolve(unified_id=unified_id, decision=decision, feedback=feedback)
+
+    async def reply_interactive_form(
+        self,
+        unified_id: str,
+        form_id: str,
+        answer: dict[str, Any],
+        source: str = "user",
+    ) -> dict[str, Any]:
+        """向会话交付交互决策表单答复。"""
+        agent_type = unified_id.split(":", 1)[0] if ":" in unified_id else ""
+        raw_session_id = unified_id.split(":", 1)[1] if ":" in unified_id else unified_id
+        adapter = self.adapters.get(agent_type)
+        if not adapter:
+            raise HTTPException(status_code=400, detail=f"未找到适配器: {agent_type}")
+
+        # 清洗 answer 中的选项值：若包含 " — " 则截取实际 value 传给底层引擎
+        clean_answer = {}
+        for k, v in answer.items():
+            if isinstance(v, str) and " — " in v:
+                clean_answer[k] = v.split(" — ")[0].strip()
+            elif isinstance(v, list):
+                clean_answer[k] = [
+                    (item.split(" — ")[0].strip() if isinstance(item, str) and " — " in item else item)
+                    for item in v
+                ]
+            else:
+                clean_answer[k] = v
+
+        success = False
+        if hasattr(adapter, "reply_form") and not form_id.startswith("syn_"):
+            success = adapter.reply_form(raw_session_id, form_id, clean_answer)
+
+        # 若是合成表单 (syn_) 或 Antigravity / Claude Code，通过上下文 Prompt 交付
+        if not success and (form_id.startswith("syn_") or agent_type in ("agy_ide", "agy_cli", "claude_code")):
+            lines = []
+            for k, v in answer.items():
+                val_str = ", ".join(v) if isinstance(v, list) else str(v)
+                lines.append(f"{val_str}")
+            prompt_text = "\n".join(lines) if lines else "确认"
+            res = await self.send_prompt_to_session(unified_id=unified_id, prompt=prompt_text)
+            success = res.get("ok", False)
+
+        if success:
+            logger.info(f"交互式决策已生效 ({source}): unified_id={unified_id} form_id={form_id}")
+            self.broadcast_event(
+                "FORM_ANSWERED",
+                {
+                    "unified_id": unified_id,
+                    "form_id": form_id,
+                    "answer": answer,
+                    "source": source,
+                },
+            )
+            self.bump_version()
+            return {"ok": True, "unified_id": unified_id, "form_id": form_id}
+
+        return {"ok": False, "error": "交付表单答复失败，请检查 Agent 服务是否在线"}
 
     def search_sessions(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
         """全量跨 Agent 会话内容与元数据高速穿透检索。"""

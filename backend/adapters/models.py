@@ -31,6 +31,7 @@ class SessionStatus(StrEnum):
     IDLE = "idle"
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
+    WAITING_INTERACTION = "waiting_interaction"
     DESKTOP_ACTIVE = "desktop_active"
     ERROR = "error"
 
@@ -88,6 +89,51 @@ class UnifiedMessageItem:
                     self.thinking[:80] + f" ... (共{len(self.thinking)}字)"
                 )
         return d
+
+
+@dataclass
+class UnifiedInteractiveOption:
+    """交互表单单个可选项。"""
+
+    value: str
+    label: str
+    description: str = ""
+    is_default: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class UnifiedInteractiveField:
+    """交互表单单个输入/选择字段。"""
+
+    key: str
+    title: str
+    description: str = ""
+    options: list[dict[str, Any]] = field(default_factory=list)
+    is_multi_select: bool = False
+    required: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class UnifiedInteractiveForm:
+    """跨引擎统一交互决策表单/问答模型。"""
+
+    form_id: str
+    session_id: str
+    title: str
+    fields: list[dict[str, Any]] = field(default_factory=list)
+    questions: list[dict[str, Any]] = field(default_factory=list)
+    status: str = "pending"  # "pending" | "answered" | "cancelled"
+    source_engine: str = "opencode"
+    created_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
