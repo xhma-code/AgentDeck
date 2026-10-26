@@ -21,6 +21,7 @@ import {
 import { openNewSessionModal } from "./modals.js";
 import { renderModelPicker, renderModePicker } from "./render-views.js";
 import { selectSession } from "./data-session-selection.js";
+import { FORK_TO_CLI_FALLBACK_NOTICE } from "./config.js";
 import { dispatchCommand } from "./command-queue.js";
 
 export async function handleSendPrompt(customPrompt = null) {
@@ -97,10 +98,15 @@ export async function handleSendPrompt(customPrompt = null) {
       // WS 广播（SESSION_FORKED）先于本响应到达时已弹过提示，避免双 toast
       if (data.unified_id !== state.lastForkNoticeId) {
         state.lastForkNoticeId = data.unified_id;
-        showToast(data.notice || "桌面端 IDE 未响应，已自动克隆至 AGY CLI 继续执行", "info");
+        showToast(data.notice || FORK_TO_CLI_FALLBACK_NOTICE, "info");
       }
-      await loadSessions();
-      await selectSession(data.unified_id);
+      try {
+        await loadSessions(true);
+        await selectSession(data.unified_id);
+      } catch (navErr) {
+        console.warn("切换到克隆会话失败:", navErr);
+        showToast("已克隆至 AGY CLI 执行，但自动跳转失败，请在会话列表手动查看", "info");
+      }
       return;
     }
     // 始终在原会话执行，保持当前选中会话不变

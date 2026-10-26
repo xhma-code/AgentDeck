@@ -103,8 +103,46 @@ class StreamRunner:
             approved_tools=approved_tools,
         )
 
-    def _fork_ide_session_to_cli(self, raw_session_id: str, meta_db: Optional[MetaDatabase] = None) -> Optional[dict[str, Any]]:
-        """桌面端 IDE 不可达时，将 agy_ide 会话单向安全克隆至 agy_cli 存储（Fork-to-CLI）。"""
+    @staticmethod
+    def _upsert_meta_and_bump(
+        target_db: Optional[MetaDatabase],
+        target_bump: Optional[Callable[[], None]],
+        *,
+        unified_id: str,
+        agent_type: str,
+        raw_session_id: str,
+        parent_unified_id: Optional[str] = None,
+        project_path: str = "",
+        execution_mode: str = "auto",
+        model_name: str = "",
+    ) -> None:
+        """统一落库会话元数据并触发版本自增（DB 或回调缺省时安全跳过）。"""
+        if target_db:
+            target_db.upsert_session_meta(
+                unified_id=unified_id,
+                agent_type=agent_type,
+                raw_session_id=raw_session_id,
+                parent_unified_id=parent_unified_id,
+                project_path=project_path,
+                execution_mode=execution_mode,
+                model_name=model_name,
+            )
+        if target_bump:
+            target_bump()
+
+    def _fork_fallback_to_cli(
+        self,
+        *,
+        old_unified_id: str,
+        raw_session_id: str,
+        project_path: str,
+        execution_mode: Optional[str],
+        model_name: str,
+        target_db: Optional[MetaDatabase],
+        target_bump: Optional[Callable[[], None]],
+        normalize_mode_fn: Optional[Callable[[str, Optional[str]], str]],
+    ) -> Optional[tuple[str, str, str]]:
+        """桌面端 IDE 不可达时的 Fork-to-CLI 接力：安全克隆、落库元数据并返回 (新 unified_id, 新 raw_id, 归一化模式)。"""
         ide_adapter = self.adapters.get("agy_ide")
         cli_adapter = self.adapters.get("agy_cli")
         if not ide_adapter or not cli_adapter or not raw_session_id:
@@ -115,17 +153,35 @@ class StreamRunner:
                     raw_session_id=raw_session_id,
                     ide_root=ide_adapter.root_dir,
                     cli_root=cli_adapter.root_dir,
-                    meta_db=meta_db or self.meta_db,
+                    meta_db=target_db or self.meta_db,
                 )
             )
-            if res.get("ok") and res.get("cli_unified_id") and res.get("cli_raw_session_id"):
-                return res
-            logger.warning(
-                f"Fork-to-CLI 安全克隆失败 ({raw_session_id[:8]}): {res.get('message') or '未知原因'}"
+            if not (res.get("ok") and res.get("cli_unified_id") and res.get("cli_raw_session_id")):
+                logger.warning(
+                    f"Fork-to-CLI 安全克隆失败 ({raw_session_id[:8]}): {res.get('message') or '未知原因'}"
+                )
+                return None
+            new_uid = str(res["cli_unified_id"])
+            new_raw = str(res["cli_raw_session_id"])
+            norm_mode = normalize_mode_fn("agy_cli", execution_mode) if normalize_mode_fn else "auto"
+            self._upsert_meta_and_bump(
+                target_db,
+                target_bump,
+                unified_id=new_uid,
+                agent_type="agy_cli",
+                raw_session_id=new_raw,
+                parent_unified_id=old_unified_id,
+                project_path=project_path,
+                execution_mode=norm_mode,
+                model_name=model_name,
             )
+            logger.info(
+                f"桌面端 IDE 不可达，已将 {old_unified_id} 安全克隆至 {new_uid} 继续 CLI 接力执行"
+            )
+            return new_uid, new_raw, norm_mode
         except Exception as exc:
             logger.warning(f"Fork-to-CLI 安全克隆异常 ({raw_session_id[:8]}): {exc}")
-        return None
+            return None
 
     async def dispatch_prompt(
         self,
@@ -167,7 +223,9 @@ class StreamRunner:
         def_model = target_res(actual_agent_type) if target_res else ""
         chosen_model = model_name or def_model
 
-        target_db.upsert_session_meta(
+        self._upsert_meta_and_bump(
+            target_db,
+            target_bump,
             unified_id=actual_unified_id,
             agent_type=actual_agent_type,
             raw_session_id=actual_raw_id,
@@ -175,8 +233,6 @@ class StreamRunner:
             execution_mode=norm_mode,
             model_name=chosen_model,
         )
-        if target_bump:
-            target_bump()
 
         # 1. 优先尝试原生直发通道（如 Antigravity LS Connect-RPC 或 OpenCode HTTP Bridge）
         forked_to_cli = False
@@ -211,40 +267,33 @@ class StreamRunner:
                 }
 
             # 桌面端 IDE 不可达：透明安全克隆至 AGY CLI 继续执行（Fork-to-CLI 防双写脑裂）
-            if auto_fork_ide:
-                fork_res = self._fork_ide_session_to_cli(actual_raw_id, meta_db=target_db)
-                if fork_res:
-                    old_unified_id = actual_unified_id
-                    actual_unified_id = str(fork_res["cli_unified_id"])
-                    actual_agent_type = "agy_cli"
-                    actual_raw_id = str(fork_res["cli_raw_session_id"])
-                    adapter = self.adapters.get("agy_cli") or adapter
-                    norm_mode = target_norm(actual_agent_type, execution_mode) if target_norm else "auto"
-                    if target_db:
-                        target_db.upsert_session_meta(
-                            unified_id=actual_unified_id,
-                            agent_type=actual_agent_type,
-                            raw_session_id=actual_raw_id,
-                            parent_unified_id=old_unified_id,
-                            project_path=workdir,
-                            execution_mode=norm_mode,
-                            model_name=chosen_model,
-                        )
-                    if target_bump:
-                        target_bump()
-                    forked_to_cli = True
-                    logger.info(
-                        f"桌面端 IDE 不可达，已将 {old_unified_id} 安全克隆至 {actual_unified_id} 继续 CLI 接力执行"
-                    )
-                else:
+            fork_target = (
+                self._fork_fallback_to_cli(
+                    old_unified_id=actual_unified_id,
+                    raw_session_id=actual_raw_id,
+                    project_path=workdir,
+                    execution_mode=execution_mode,
+                    model_name=chosen_model,
+                    target_db=target_db,
+                    target_bump=target_bump,
+                    normalize_mode_fn=target_norm,
+                )
+                if auto_fork_ide
+                else None
+            )
+            if not fork_target:
+                if auto_fork_ide:
                     ls_err += " 自动克隆至 AGY CLI 接力失败，请检查磁盘与 ~/.gemini/antigravity-cli 目录。"
-
-            if not forked_to_cli:
                 return {
                     "ok": False,
                     "unified_id": actual_unified_id,
                     "error": ls_err,
                 }
+
+            actual_unified_id, actual_raw_id, norm_mode = fork_target
+            actual_agent_type = "agy_cli"
+            adapter = self.adapters.get(actual_agent_type) or adapter
+            forked_to_cli = True
 
         if hasattr(adapter, "try_direct_dispatch"):
             try:
@@ -305,7 +354,7 @@ class StreamRunner:
                     },
                 )
             except Exception as exc:
-                logger.debug(f"广播 SESSION_FORKED 事件异常: {exc}")
+                logger.warning(f"广播 SESSION_FORKED 事件异常: {exc}")
         return ret
 
     async def watch_direct_turn_progress(

@@ -5,6 +5,7 @@
 import { state, markSessionCompletedUnread, saveLastViewedTimes, clearAllUnreadCompletedSessions } from "./state.js";
 import { triggerAlertNotification } from "./utils.js";
 import { showToast, showPairingGuideModal } from "./api.js";
+import { FORK_TO_CLI_FALLBACK_NOTICE } from "./config.js";
 import {
   loadSessions,
   loadSessionMessages,
@@ -394,14 +395,18 @@ export function handleRealtimeEvent(envelope) {
   }
 
   if (type === "SESSION_FORKED") {
-    // 发起端已随 HTTP 响应弹过提示（state.lastForkNoticeId 去重），此处仅通知其他在线端
+    // 发起端已随 HTTP 响应弹过提示（state.lastForkNoticeId 去重），此处通知其他在线端
     const newId = (payload && payload.new_unified_id) || "";
     if (newId && newId === state.lastForkNoticeId) {
       loadSessions(true);
       return;
     }
     state.lastForkNoticeId = newId;
-    showToast((payload && payload.notice) || "桌面端 IDE 未响应，已自动克隆至 AGY CLI 继续执行", "info");
+    const shortId = newId.includes(":") ? newId.split(":")[1].slice(0, 8) : "";
+    showToast(
+      ((payload && payload.notice) || FORK_TO_CLI_FALLBACK_NOTICE) + (shortId ? `（新会话 ${shortId}）` : ""),
+      "info"
+    );
     loadSessions(true);
     return;
   }
