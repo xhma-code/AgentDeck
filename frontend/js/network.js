@@ -393,6 +393,19 @@ export function handleRealtimeEvent(envelope) {
     return;
   }
 
+  if (type === "SESSION_FORKED") {
+    // 发起端已随 HTTP 响应弹过提示（state.lastForkNoticeId 去重），此处仅通知其他在线端
+    const newId = (payload && payload.new_unified_id) || "";
+    if (newId && newId === state.lastForkNoticeId) {
+      loadSessions(true);
+      return;
+    }
+    state.lastForkNoticeId = newId;
+    showToast((payload && payload.notice) || "桌面端 IDE 未响应，已自动克隆至 AGY CLI 继续执行", "info");
+    loadSessions(true);
+    return;
+  }
+
   if (type === "SESSION_REMAPPED") {
     const oldId = payload && payload.old_unified_id;
     const newId = payload && payload.new_unified_id;

@@ -20,6 +20,7 @@ import {
 } from "./render.js";
 import { openNewSessionModal } from "./modals.js";
 import { renderModelPicker, renderModePicker } from "./render-views.js";
+import { selectSession } from "./data-session-selection.js";
 import { dispatchCommand } from "./command-queue.js";
 
 export async function handleSendPrompt(customPrompt = null) {
@@ -89,6 +90,17 @@ export async function handleSendPrompt(customPrompt = null) {
     const data = (res && res.result) ? res.result : (res || {});
     if (data && data.error) {
       showToast(data.error, "error");
+      return;
+    }
+    // 桌面端 IDE 不可达：后端已透明克隆至 AGY CLI 接力执行，切换到新会话跟踪进度
+    if (data && data.forked_to_cli && data.unified_id && data.unified_id !== state.selectedSessionId) {
+      // WS 广播（SESSION_FORKED）先于本响应到达时已弹过提示，避免双 toast
+      if (data.unified_id !== state.lastForkNoticeId) {
+        state.lastForkNoticeId = data.unified_id;
+        showToast(data.notice || "桌面端 IDE 未响应，已自动克隆至 AGY CLI 继续执行", "info");
+      }
+      await loadSessions();
+      await selectSession(data.unified_id);
       return;
     }
     // 始终在原会话执行，保持当前选中会话不变

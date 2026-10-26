@@ -73,6 +73,7 @@ export const state = {
   streamingBuffer: {}, // unified_id -> string
   pendingTurnThinking: {}, // unified_id -> timestamp (ms)
   optimisticMessages: {}, // unified_id -> array of unconfirmed user message objects
+  lastForkNoticeId: "", // 最近一次 Fork-to-CLI 提示的新会话 ID（HTTP 响应与 WS 广播双通道去重）
   autoScrollLocked: false,
   stickyPromptExpanded: true, // 悬浮指令默认展示全部内容
   stickyPromptActiveIndex: 0, // 当前悬浮展示的提问下标

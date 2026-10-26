@@ -283,7 +283,7 @@ class CommandBus:
         project_path = payload.get("project_path")
         execution_mode = payload.get("execution_mode")
         model_name = payload.get("model_name")
-        auto_fork_ide = bool(payload.get("auto_fork_ide", False))
+        auto_fork_ide = bool(payload.get("auto_fork_ide", True))
 
         lock = self._get_session_lock(session_id)
         async with lock:

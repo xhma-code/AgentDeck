@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional
 
+from backend.adapters.antigravity_fork import fork_ide_session_to_cli
 from backend.adapters.base import (
     BaseAgentAdapter,
     ExecutionMode,
@@ -102,6 +103,30 @@ class StreamRunner:
             approved_tools=approved_tools,
         )
 
+    def _fork_ide_session_to_cli(self, raw_session_id: str, meta_db: Optional[MetaDatabase] = None) -> Optional[dict[str, Any]]:
+        """桌面端 IDE 不可达时，将 agy_ide 会话单向安全克隆至 agy_cli 存储（Fork-to-CLI）。"""
+        ide_adapter = self.adapters.get("agy_ide")
+        cli_adapter = self.adapters.get("agy_cli")
+        if not ide_adapter or not cli_adapter or not raw_session_id:
+            return None
+        try:
+            res = dict(
+                fork_ide_session_to_cli(
+                    raw_session_id=raw_session_id,
+                    ide_root=ide_adapter.root_dir,
+                    cli_root=cli_adapter.root_dir,
+                    meta_db=meta_db or self.meta_db,
+                )
+            )
+            if res.get("ok") and res.get("cli_unified_id") and res.get("cli_raw_session_id"):
+                return res
+            logger.warning(
+                f"Fork-to-CLI 安全克隆失败 ({raw_session_id[:8]}): {res.get('message') or '未知原因'}"
+            )
+        except Exception as exc:
+            logger.warning(f"Fork-to-CLI 安全克隆异常 ({raw_session_id[:8]}): {exc}")
+        return None
+
     async def dispatch_prompt(
         self,
         unified_id: str,
@@ -154,41 +179,71 @@ class StreamRunner:
             target_bump()
 
         # 1. 优先尝试原生直发通道（如 Antigravity LS Connect-RPC 或 OpenCode HTTP Bridge）
+        forked_to_cli = False
         if actual_agent_type == "agy_ide" and hasattr(adapter, "send_prompt_via_ls"):
+            ls_model = chosen_model if (chosen_model and chosen_model != "default") else ""
+            ls_ok = False
+            ls_err = "Antigravity IDE 实例未响应或未持有该会话，请确保桌面端当前已打开该会话。"
             try:
-                ls_model = chosen_model if (chosen_model and chosen_model != "default") else ""
-                ok = adapter.send_prompt_via_ls(
+                ls_ok = adapter.send_prompt_via_ls(
                     raw_session_id=actual_raw_id,
                     prompt=prompt,
                     model_id=ls_model,
                 )
-                if ok:
-                    if actual_unified_id in self.active_direct_tasks:
-                        old_task = self.active_direct_tasks[actual_unified_id]
-                        if not old_task.done():
-                            old_task.cancel()
-                    self.active_direct_tasks[actual_unified_id] = asyncio.create_task(
-                        self.watch_direct_turn_progress(
-                            actual_unified_id, actual_agent_type, actual_raw_id
-                        )
-                    )
-                    return {
-                        "ok": True,
-                        "unified_id": actual_unified_id,
-                        "via_direct_ls": True,
-                        "status": "sent_to_language_server",
-                    }
-                else:
-                    return {
-                        "ok": False,
-                        "unified_id": actual_unified_id,
-                        "error": "Antigravity IDE 实例未响应或未持有该会话，请确保桌面端当前已打开该会话。",
-                    }
             except Exception as exc:
+                ls_err = f"连接 Antigravity IDE 异常: {exc}"
+
+            if ls_ok:
+                if actual_unified_id in self.active_direct_tasks:
+                    old_task = self.active_direct_tasks[actual_unified_id]
+                    if not old_task.done():
+                        old_task.cancel()
+                self.active_direct_tasks[actual_unified_id] = asyncio.create_task(
+                    self.watch_direct_turn_progress(
+                        actual_unified_id, actual_agent_type, actual_raw_id
+                    )
+                )
+                return {
+                    "ok": True,
+                    "unified_id": actual_unified_id,
+                    "via_direct_ls": True,
+                    "status": "sent_to_language_server",
+                }
+
+            # 桌面端 IDE 不可达：透明安全克隆至 AGY CLI 继续执行（Fork-to-CLI 防双写脑裂）
+            if auto_fork_ide:
+                fork_res = self._fork_ide_session_to_cli(actual_raw_id, meta_db=target_db)
+                if fork_res:
+                    old_unified_id = actual_unified_id
+                    actual_unified_id = str(fork_res["cli_unified_id"])
+                    actual_agent_type = "agy_cli"
+                    actual_raw_id = str(fork_res["cli_raw_session_id"])
+                    adapter = self.adapters.get("agy_cli") or adapter
+                    norm_mode = target_norm(actual_agent_type, execution_mode) if target_norm else "auto"
+                    if target_db:
+                        target_db.upsert_session_meta(
+                            unified_id=actual_unified_id,
+                            agent_type=actual_agent_type,
+                            raw_session_id=actual_raw_id,
+                            parent_unified_id=old_unified_id,
+                            project_path=workdir,
+                            execution_mode=norm_mode,
+                            model_name=chosen_model,
+                        )
+                    if target_bump:
+                        target_bump()
+                    forked_to_cli = True
+                    logger.info(
+                        f"桌面端 IDE 不可达，已将 {old_unified_id} 安全克隆至 {actual_unified_id} 继续 CLI 接力执行"
+                    )
+                else:
+                    ls_err += " 自动克隆至 AGY CLI 接力失败，请检查磁盘与 ~/.gemini/antigravity-cli 目录。"
+
+            if not forked_to_cli:
                 return {
                     "ok": False,
                     "unified_id": actual_unified_id,
-                    "error": f"连接 Antigravity IDE 异常: {exc}",
+                    "error": ls_err,
                 }
 
         if hasattr(adapter, "try_direct_dispatch"):
@@ -237,6 +292,20 @@ class StreamRunner:
         ret: dict[str, Any] = {"ok": True, "unified_id": actual_unified_id, "status": "stream_started"}
         if actual_unified_id != unified_id:
             ret["forked_from"] = unified_id
+        if forked_to_cli:
+            ret["forked_to_cli"] = True
+            ret["notice"] = "桌面端 IDE 未响应，已自动克隆至 AGY CLI 继续执行"
+            try:
+                await self.broadcast_event(
+                    "SESSION_FORKED",
+                    {
+                        "old_unified_id": unified_id,
+                        "new_unified_id": actual_unified_id,
+                        "notice": ret["notice"],
+                    },
+                )
+            except Exception as exc:
+                logger.debug(f"广播 SESSION_FORKED 事件异常: {exc}")
         return ret
 
     async def watch_direct_turn_progress(
