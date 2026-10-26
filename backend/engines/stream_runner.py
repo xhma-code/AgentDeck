@@ -283,7 +283,7 @@ class StreamRunner:
             )
             if not fork_target:
                 if auto_fork_ide:
-                    ls_err += " 自动改用 AGY 命令行继续执行也失败了，请检查磁盘空间后重试。"
+                    ls_err += " 改用 AGY 命令行也失败，请检查磁盘空间"
                 return {
                     "ok": False,
                     "unified_id": actual_unified_id,
@@ -343,7 +343,7 @@ class StreamRunner:
             ret["forked_from"] = unified_id
         if forked_to_cli:
             ret["forked_to_cli"] = True
-            ret["notice"] = "电脑端 Antigravity 没响应，已自动改用 AGY 命令行继续跑"
+            ret["notice"] = "电脑端没响应，已改用 AGY 命令行继续跑"
             try:
                 await self.broadcast_event(
                     "SESSION_FORKED",
