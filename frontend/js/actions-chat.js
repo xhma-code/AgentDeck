@@ -105,7 +105,7 @@ export async function handleSendPrompt(customPrompt = null) {
         await selectSession(data.unified_id);
       } catch (navErr) {
         console.warn("切换到克隆会话失败:", navErr);
-        showToast("已克隆至 AGY CLI 执行，但自动跳转失败，请在会话列表手动查看", "info");
+        showToast("已改用 AGY 命令行继续执行，但没能自动跳转，请在会话列表里手动点开查看", "info");
       }
       return;
     }

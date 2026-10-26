@@ -19,7 +19,7 @@ const DEFAULT_AGY_MODELS = [
 ];
 
 // Fork-to-CLI 兜底提示文案：后端 notice 字段缺失时前端统一使用，避免多处硬编码
-export const FORK_TO_CLI_FALLBACK_NOTICE = "桌面端 IDE 未响应，已自动克隆至 AGY CLI 继续执行";
+export const FORK_TO_CLI_FALLBACK_NOTICE = "电脑端 Antigravity 没响应，已自动改用 AGY 命令行继续跑";
 
 export const DEFAULT_MODELS_BY_AGENT = {
   agy_cli: DEFAULT_AGY_MODELS.map((m) => ({ ...m })),
