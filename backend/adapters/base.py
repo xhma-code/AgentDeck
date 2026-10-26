@@ -10,10 +10,11 @@
 from __future__ import annotations
 
 import difflib
+import json
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from backend.adapters.models import (
     DEFAULT_MODEL_CONTEXT_LIMIT,
@@ -53,6 +54,7 @@ from backend.core.workspace import (
     get_git_workspace_status,
     normalize_project_path,
 )
+from backend.core.logger import log_structured_error, logger
 
 
 class BoundedLRUCache(OrderedDict):
@@ -90,6 +92,102 @@ class BoundedLRUCache(OrderedDict):
     def update(self, *args: Any, **kwargs: Any) -> None:
         for k, v in dict(*args, **kwargs).items():
             self[k] = v
+
+
+def read_incremental_jsonl_stream(
+    fpath: Path,
+    cache_key: str,
+    messages_cache: BoundedLRUCache,
+    family_label: str,
+    parse_record: Callable[[dict[str, Any], list[UnifiedMessageItem], int, Any], None],
+    restore_state: Optional[Callable[[list[UnifiedMessageItem], tuple], Any]] = None,
+    limit: int = 120,
+    failure_hint: str = "系统将在下次文件刷新时自动重试。",
+) -> list[UnifiedMessageItem]:
+    """
+    各 Agent 家族共享的「缓存命中 → 增量 seek → 逐行解码 → 解析回调 → 回写缓存」读取骨架。
+
+    家族差异（解析函数、跨文件解析状态）通过钩子注入：
+    - `parse_record(rec, items, line_index, state)`：单行解析回调，mutating items/state；
+    - `restore_state(items, tail)`：从缓存尾部元组恢复解析状态并返回新状态。
+      状态类型由家族自决（可为元组或可变列表容器），骨架仅透传不持有；
+      未提供时默认空状态 `()`（无跨行解析上下文的家族足够使用）。
+
+    缓存元组形态统一为 `(mtime_ns, fsize, items, consumed_bytes, *state_tail)`。
+    `line_index` 为原始文件内近似绝对行号（增量分支为 `len(items) + 相对偏移`）。
+    """
+
+    def consume_lines(lines: list[bytes], start_index: int, items: list[UnifiedMessageItem], state: Any) -> int:
+        """逐行解码→全部解析，返回已消费字节数。半截末行（无换行/json 不完整）安全忽略且不推进游标。"""
+        consumed = 0
+        total = len(lines)
+        for idx, b_line in enumerate(lines):
+            u_line = b_line.decode("utf-8", errors="replace").strip()
+            if not u_line:
+                consumed += len(b_line)
+                continue
+            try:
+                rec_obj = json.loads(u_line)
+            except json.JSONDecodeError:
+                if idx == total - 1:
+                    break
+                consumed += len(b_line)
+                continue
+
+            consumed += len(b_line)
+            parse_record(rec_obj, items, start_index + idx, state)
+        return consumed
+
+    try:
+        st = fpath.stat()
+        mtime_ns = st.st_mtime_ns
+        fsize = st.st_size
+    except OSError:
+        return []
+
+    cached = messages_cache.get(cache_key)
+    if cached and cached[0] == mtime_ns and cached[1] == fsize:
+        items: list[UnifiedMessageItem] = cached[2]
+        return items[-limit:] if limit > 0 else items
+
+    if cached and cached[1] <= fsize:
+        # 增量分支：从上次游标 seek 追加部分
+        try:
+            items = list(cached[2])
+            state = restore_state(items, tuple(cached[4:])) if restore_state else ()
+            with open(fpath, "rb") as f:
+                f.seek(cached[3])
+                inc_data = f.read()
+
+            inc_lines = inc_data.splitlines(keepends=True)
+            consumed_bytes = cached[3] + consume_lines(inc_lines, len(items), items, state)
+
+            messages_cache[cache_key] = (mtime_ns, fsize, items, consumed_bytes, *state)
+            return items[-limit:] if limit > 0 else items
+        except Exception as inc_exc:
+            logger.debug(f"增量读取 {family_label} 异常，回退全量: {inc_exc}")
+
+    # 全量读取
+    items = []
+    state = restore_state([], ()) if restore_state else ()
+    try:
+        with open(fpath, "rb") as f:
+            all_raw = f.read()
+        raw_b_lines = all_raw.splitlines(keepends=True)
+        if raw_b_lines and not raw_b_lines[-1].endswith((b"\n", b"\r")):
+            raw_b_lines = raw_b_lines[:-1]
+    except Exception as exc:
+        log_structured_error(
+            problem=f"读取 {family_label} 会话日志失败 ({cache_key[:8]})",
+            cause=str(exc),
+            fix=failure_hint,
+            exc=exc,
+        )
+        return []
+
+    consumed_bytes = consume_lines(raw_b_lines, 0, items, state)
+    messages_cache[cache_key] = (mtime_ns, fsize, items, consumed_bytes, *state)
+    return items[-limit:] if limit > 0 else items
 
 
 class BaseAgentAdapter(ABC):

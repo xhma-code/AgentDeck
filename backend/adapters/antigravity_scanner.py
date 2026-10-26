@@ -24,11 +24,152 @@ from backend.adapters.base import (
     UnifiedSession,
     decode_workspace_uri,
     evaluate_project_dir,
+    read_incremental_jsonl_stream,
 )
 from backend.core.database import safe_query_external_sqlite, utc_now_iso
 from backend.core.logger import log_structured_error, logger
 
 _logged_agy_error_sids: set[str] = set()
+
+
+def _transcript_path(brain_dir: Path, cid: str) -> Path:
+    """brain 目录下某会话的 transcript.jsonl 标准路径。"""
+    return brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+
+
+def _subagent_row_is_active(sub_row: dict, brain_dir: Path) -> bool:
+    """判定单个子会话行是否处于真实活跃态（SQLite 字段 + transcript 尾部双重校验）。"""
+    s_not_idle = bool(sub_row.get("not_fully_idle"))
+    s_raw = str(sub_row.get("status") or "")
+    if not (s_not_idle or "RUNNING" in s_raw.upper()):
+        return False
+    s_ctarget = str(sub_row.get("conversation_id") or "")
+    s_tp = _transcript_path(brain_dir, s_ctarget)
+    s_active = True
+    if s_tp.is_file():
+        try:
+            s_active, _ = inspect_transcript_tail_status(s_tp)
+        except OSError:
+            s_active = True
+    return s_active
+
+
+def _raw_agy_status(agent_type: str, not_idle: bool, raw_status: str) -> str:
+    """SQLite 表内字段 → 候选运行状态。"""
+    if agent_type == "agy_ide" and not_idle:
+        return "desktop_active"
+    if not_idle or "RUNNING" in raw_status.upper():
+        return "running"
+    return "idle"
+
+
+def _calibrate_agy_status(
+    agent_type: str,
+    not_idle: bool,
+    raw_status: str,
+    brain_dir: Path,
+    cid: str,
+    has_active_sub: bool,
+) -> str:
+    """状态权威性校准：若会话 transcript 明确已结束，绝不被滞后的 SQLite 表误判为活跃；
+    但若名下存在活跃子进程，父会话必须保持活跃态。"""
+    status = _raw_agy_status(agent_type, not_idle, raw_status)
+    if status in ("desktop_active", "running"):
+        tp = _transcript_path(brain_dir, cid)
+        if tp.is_file():
+            try:
+                is_active, s_status = inspect_transcript_tail_status(tp)
+                if not is_active:
+                    if s_status == "error":
+                        status = "error"
+                        if cid not in _logged_agy_error_sids:
+                            _logged_agy_error_sids.add(cid)
+                            logger.warning(f"Antigravity 会话检测到异常中断/额度耗尽: sid={cid[:8]}")
+                    else:
+                        status = "desktop_active" if has_active_sub else "idle"
+                elif agent_type != "agy_ide":
+                    status = s_status
+            except OSError:
+                pass
+    elif has_active_sub:
+        status = "desktop_active" if agent_type == "agy_ide" else "running"
+    return status
+
+
+def _agy_row_to_unified_session(
+    r: dict,
+    *,
+    agent_type: str,
+    agent_label: str,
+    brain_dir: Path,
+    now_iso: str,
+    has_parent_col: bool,
+    has_depth_col: bool,
+    not_idle: bool,
+    has_active_sub: bool,
+    active_sub_count: int,
+    probe_filter: bool = True,
+) -> Optional[UnifiedSession]:
+    """单条 conversation_summaries 行 → UnifiedSession（列表与单会话查询共享同一份映射知识）。"""
+    cid = str(r.get("conversation_id") or "")
+    if not cid:
+        return None
+
+    status = _calibrate_agy_status(
+        agent_type=agent_type,
+        not_idle=not_idle,
+        raw_status=str(r.get("status") or ""),
+        brain_dir=brain_dir,
+        cid=cid,
+        has_active_sub=has_active_sub,
+    )
+
+    title = (r.get("title") or "").strip()
+    preview = (r.get("preview") or "").strip()
+    if not title and preview:
+        clean_p = preview.split("\n")[0].strip()
+        clean_p = clean_p.replace("<USER_REQUEST>", "").replace("</USER_REQUEST>", "").strip()
+        if clean_p:
+            title = clean_p[:40]
+    raw_paths = r.get("workspace_uris") or r.get("workspace_paths") or ""
+    p_path = decode_workspace_uri(str(raw_paths))
+    raw_up = r.get("last_modified_time") or r.get("updated_at")
+    if isinstance(raw_up, (int, float)):
+        val = float(raw_up)
+        if val > 1e11:
+            val /= 1000.0
+        up_iso = datetime.fromtimestamp(val, tz=timezone.utc).isoformat()
+    else:
+        up_iso = str(raw_up or now_iso).replace(" ", "T")
+
+    if probe_filter and is_temporary_probe_session(title=title, preview=preview, project_path=p_path):
+        return None
+
+    parent_cid = str(r.get("parent_conversation_id") or "").strip() if has_parent_col else ""
+    nesting_depth = int(r.get("nesting_depth") or 0) if has_depth_col else 0
+    is_sub = bool(parent_cid) or nesting_depth > 0
+    parent_uid = f"{agent_type}:{parent_cid}" if parent_cid else None
+
+    is_proj, norm_p, p_name = evaluate_project_dir(p_path)
+    return UnifiedSession(
+        unified_id=f"{agent_type}:{cid}",
+        agent_type=agent_type,
+        agent_label=agent_label,
+        raw_session_id=cid,
+        title=title or f"会话 {cid[:8]}",
+        preview=preview or title or "暂无内容",
+        project_path=p_path,
+        status=status,
+        step_count=int(r.get("step_count") or 1),
+        updated_at=up_iso,
+        is_project=is_proj,
+        project_name=p_name,
+        desktop_locked=(agent_type == "agy_ide" and (not_idle or has_active_sub)),
+        parent_unified_id=parent_uid,
+        is_subagent=is_sub,
+        has_active_subagent=has_active_sub,
+        active_subagents_count=active_sub_count,
+    )
 
 
 def query_session_model(
@@ -110,19 +251,8 @@ def query_antigravity_sessions(
                     if s_cid:
                         all_known_subagent_ids.add(s_cid)
                         known_parent_map[s_cid] = p_cid
-                        if p_cid:
-                            s_not_idle = bool(sr.get("not_fully_idle"))
-                            s_raw_status = str(sr.get("status") or "")
-                            if s_not_idle or "RUNNING" in s_raw_status.upper():
-                                s_tp = brain_dir / s_cid / ".system_generated" / "logs" / "transcript.jsonl"
-                                s_active = True
-                                if s_tp.is_file():
-                                    try:
-                                        s_active, _ = inspect_transcript_tail_status(s_tp)
-                                    except OSError:
-                                        s_active = True
-                                if s_active:
-                                    active_subagents_by_parent[p_cid] = active_subagents_by_parent.get(p_cid, 0) + 1
+                        if p_cid and _subagent_row_is_active(sr, brain_dir):
+                            active_subagents_by_parent[p_cid] = active_subagents_by_parent.get(p_cid, 0) + 1
             except Exception as e:
                 logger.debug(f"读取 Antigravity 子会话映射关系忽略容错: {e}")
 
@@ -141,89 +271,31 @@ def query_antigravity_sessions(
             cid = str(r.get("conversation_id") or "")
             if not cid:
                 continue
-            not_idle = bool(r.get("not_fully_idle"))
-            raw_status = str(r.get("status") or "")
-            if agent_type == "agy_ide" and not_idle:
-                status = "desktop_active"
-            elif not_idle or "RUNNING" in raw_status.upper():
-                status = "running"
-            else:
-                status = "idle"
 
             # 内存秒级映射名下活跃子进程数量（0ms 无磁盘开销）
             active_sub_count = active_subagents_by_parent.get(cid, 0)
             has_active_sub = active_sub_count > 0
 
-            # 状态权威性校准：若会话 transcript 明确已结束，绝不被滞后的 SQLite 表误判为活跃；
-            # 但若名下存在活跃子进程，父会话必须保持活跃态
-            if status in ("desktop_active", "running"):
-                tp = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
-                if tp.is_file():
-                    try:
-                        is_active, s_status = inspect_transcript_tail_status(tp)
-                        if not is_active:
-                            if s_status == "error":
-                                status = "error"
-                                if cid not in _logged_agy_error_sids:
-                                    _logged_agy_error_sids.add(cid)
-                                    logger.warning(f"Antigravity 会话检测到异常中断/额度耗尽: sid={cid[:8]}")
-                            else:
-                                status = "desktop_active" if has_active_sub else "idle"
-                        elif agent_type != "agy_ide":
-                            status = s_status
-                    except OSError:
-                        pass
-            elif has_active_sub:
-                status = "desktop_active" if agent_type == "agy_ide" else "running" 
-
-            title = (r.get("title") or "").strip()
-            preview = (r.get("preview") or "").strip()
-            if not title and preview:
-                clean_p = preview.split("\n")[0].strip()
-                clean_p = clean_p.replace("<USER_REQUEST>", "").replace("</USER_REQUEST>", "").strip()
-                if clean_p:
-                    title = clean_p[:40]
-            raw_paths = r.get("workspace_uris") or r.get("workspace_paths") or ""
-            p_path = decode_workspace_uri(str(raw_paths))
-            raw_up = r.get("last_modified_time") or r.get("updated_at")
-            if isinstance(raw_up, (int, float)):
-                val = float(raw_up)
-                if val > 1e11:
-                    val /= 1000.0
-                up_iso = datetime.fromtimestamp(val, tz=timezone.utc).isoformat()
-            else:
-                up_iso = str(raw_up or now_iso).replace(" ", "T")
-
-            if is_temporary_probe_session(title=title, preview=preview, project_path=p_path):
-                continue
-
-            parent_cid = str(r.get("parent_conversation_id") or "").strip()
-            nesting_depth = int(r.get("nesting_depth") or 0)
-            is_sub = bool(parent_cid) or nesting_depth > 0
-            parent_uid = f"{agent_type}:{parent_cid}" if parent_cid else None
-            if parent_cid:
-                known_parent_map[cid] = parent_cid
-
-            is_proj, norm_p, p_name = evaluate_project_dir(p_path)
-            sessions_map[cid] = UnifiedSession(
-                unified_id=f"{agent_type}:{cid}",
+            sess = _agy_row_to_unified_session(
+                r,
                 agent_type=agent_type,
                 agent_label=agent_label,
-                raw_session_id=cid,
-                title=title or f"会话 {cid[:8]}",
-                preview=preview or title or "暂无内容",
-                project_path=p_path,
-                status=status,
-                step_count=int(r.get("step_count") or 1),
-                updated_at=up_iso,
-                is_project=is_proj,
-                project_name=p_name,
-                desktop_locked=(agent_type == "agy_ide" and (not_idle or has_active_sub)),
-                parent_unified_id=parent_uid,
-                is_subagent=is_sub,
-                has_active_subagent=has_active_sub,
-                active_subagents_count=active_sub_count,
+                brain_dir=brain_dir,
+                now_iso=now_iso,
+                has_parent_col=has_parent_col,
+                has_depth_col=has_depth_col,
+                not_idle=bool(r.get("not_fully_idle")),
+                has_active_sub=has_active_sub,
+                active_sub_count=active_sub_count,
             )
+            if sess is None:
+                continue
+
+            # probe 会话已在映射器内被过滤，此处再登记父子关系（与旧行为一致：过滤后才入册）
+            parent_cid = str(r.get("parent_conversation_id") or "").strip() if has_parent_col else ""
+            if parent_cid:
+                known_parent_map[cid] = parent_cid
+            sessions_map[cid] = sess
 
     # 2. 补漏 brain 目录
     if brain_dir.is_dir():
@@ -473,104 +545,32 @@ def read_antigravity_messages(
     messages_cache: BoundedLRUCache,
     limit: int = 120,
 ) -> list[UnifiedMessageItem]:
-    """增量/全量解析 transcript.jsonl 并映射追加结构化卡片流。"""
-    try:
-        st = transcript_path.stat()
-        mtime_ns = st.st_mtime_ns
-        fsize = st.st_size
-    except OSError:
-        return []
+    """增量/全量解析 transcript.jsonl 并映射追加结构化卡片流（共享读取骨架 + Antigravity 解析钩子）。"""
 
-    cached = messages_cache.get(raw_session_id)
-    if cached and cached[0] == mtime_ns and cached[1] == fsize:
-        items: list[UnifiedMessageItem] = cached[2]
-        return items[-limit:] if limit > 0 else items
+    def restore_state(items: list[UnifiedMessageItem], _tail: tuple) -> list:
+        # 每次都从 items 尾部重推导：parse_agy_step_dict 会回写 container[0]，容器必须为 list
+        last_item = items[-1] if items else None
+        return [last_item if (last_item is not None and last_item.role == "assistant") else None]
 
-    if cached and cached[1] <= fsize:
-        try:
-            items = list(cached[2])
-            last_assistant_box: list[Optional[UnifiedMessageItem]] = [
-                items[-1] if (items and items[-1].role == "assistant") else None
-            ]
-            with open(transcript_path, "rb") as f:
-                f.seek(cached[3])
-                inc_data = f.read()
-
-            inc_lines = inc_data.splitlines(keepends=True)
-            start_idx = len(items)
-            consumed_bytes = cached[3]
-            for idx_offset, b_line in enumerate(inc_lines):
-                u_line = b_line.decode("utf-8", errors="replace").strip()
-                if not u_line:
-                    consumed_bytes += len(b_line)
-                    continue
-
-                try:
-                    step_obj = json.loads(u_line)
-                except json.JSONDecodeError:
-                    if idx_offset == len(inc_lines) - 1:
-                        break
-                    consumed_bytes += len(b_line)
-                    continue
-
-                consumed_bytes += len(b_line)
-                parse_agy_step_dict(
-                    step=step_obj,
-                    raw_session_id=raw_session_id,
-                    fallback_idx=start_idx + idx_offset,
-                    items=items,
-                    last_assistant_container=last_assistant_box,
-                )
-
-            messages_cache[raw_session_id] = (mtime_ns, fsize, items, consumed_bytes)
-            return items[-limit:] if limit > 0 else items
-        except Exception as inc_exc:
-            logger.debug(f"增量读取 Antigravity 异常，回退全量: {inc_exc}")
-
-    # 全量读取
-    items = []
-    last_assistant_box = [None]
-    try:
-        with open(transcript_path, "rb") as f:
-            all_raw = f.read()
-        raw_b_lines = all_raw.splitlines(keepends=True)
-        if raw_b_lines and not raw_b_lines[-1].endswith((b"\n", b"\r")):
-            raw_b_lines = raw_b_lines[:-1]
-    except Exception as exc:
-        log_structured_error(
-            problem=f"读取 {agent_label} 会话日志失败 ({raw_session_id[:8]})",
-            cause=str(exc),
-            fix="系统将在下次文件刷新时自动重试。",
-            exc=exc,
-        )
-        return []
-
-    consumed_bytes = 0
-    for idx, b_line in enumerate(raw_b_lines):
-        u_line = b_line.decode("utf-8", errors="replace").strip()
-        if not u_line:
-            consumed_bytes += len(b_line)
-            continue
-
-        try:
-            step_obj = json.loads(u_line)
-        except json.JSONDecodeError:
-            if idx == len(raw_b_lines) - 1:
-                break
-            consumed_bytes += len(b_line)
-            continue
-
-        consumed_bytes += len(b_line)
+    def parse_record(step_obj: dict, items: list[UnifiedMessageItem], line_index: int, state: list) -> None:
         parse_agy_step_dict(
             step=step_obj,
             raw_session_id=raw_session_id,
-            fallback_idx=idx,
+            fallback_idx=line_index,
             items=items,
-            last_assistant_container=last_assistant_box,
+            last_assistant_container=state,
         )
 
-    messages_cache[raw_session_id] = (mtime_ns, fsize, items, consumed_bytes)
-    return items[-limit:] if limit > 0 else items
+    return read_incremental_jsonl_stream(
+        fpath=transcript_path,
+        cache_key=raw_session_id,
+        messages_cache=messages_cache,
+        family_label=agent_label,
+        parse_record=parse_record,
+        restore_state=restore_state,
+        limit=limit,
+        failure_hint="系统将在下次文件刷新时自动重试。",
+    )
 
 
 def query_antigravity_single_session(
@@ -611,13 +611,6 @@ def query_antigravity_single_session(
         if rows:
             r = rows[0]
             not_idle = bool(r.get("not_fully_idle"))
-            raw_status = str(r.get("status") or "")
-            if agent_type == "agy_ide" and not_idle:
-                status = "desktop_active"
-            elif not_idle or "RUNNING" in raw_status.upper():
-                status = "running"
-            else:
-                status = "idle"
 
             # 检查名下是否有处于活跃态的子进程
             has_active_sub = False
@@ -631,90 +624,30 @@ def query_antigravity_single_session(
                     )
                     for sr in sub_rows:
                         s_cid = str(sr.get("conversation_id") or "")
-                        s_not_idle = bool(sr.get("not_fully_idle"))
-                        s_raw = str(sr.get("status") or "")
-                        if s_not_idle or "RUNNING" in s_raw.upper():
-                            s_tp = brain_dir / s_cid / ".system_generated" / "logs" / "transcript.jsonl"
-                            s_active = True
-                            if s_tp.is_file():
-                                try:
-                                    s_active, _ = inspect_transcript_tail_status(s_tp)
-                                except OSError:
-                                    s_active = True
-                            if s_active:
-                                has_active_sub = True
-                                active_sub_count += 1
+                        if s_cid and _subagent_row_is_active(sr, brain_dir):
+                            has_active_sub = True
+                            active_sub_count += 1
                 except Exception as e:
                     logger.debug(f"单会话检查子进程活跃容错: {e}")
 
-            # 状态权威性校准：若会话 transcript 明确已结束，绝不被滞后的 SQLite 表误判为活跃；
-            # 但若名下存在活跃子进程，父会话必须保持活跃态
-            if status in ("desktop_active", "running"):
-                tp = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
-                if tp.is_file():
-                    try:
-                        is_active, s_status = inspect_transcript_tail_status(tp)
-                        if not is_active:
-                            if s_status == "error":
-                                status = "error"
-                                if cid not in _logged_agy_error_sids:
-                                    _logged_agy_error_sids.add(cid)
-                                    logger.warning(f"Antigravity 会话检测到异常中断/额度耗尽: sid={cid[:8]}")
-                            else:
-                                status = "desktop_active" if has_active_sub else "idle"
-                        elif agent_type != "agy_ide":
-                            status = s_status
-                    except OSError:
-                        pass
-            elif has_active_sub:
-                status = "desktop_active" if agent_type == "agy_ide" else "running" 
-
-            title = (r.get("title") or "").strip()
-            preview = (r.get("preview") or "").strip()
-            if not title and preview:
-                clean_p = preview.split("\n")[0].strip()
-                clean_p = clean_p.replace("<USER_REQUEST>", "").replace("</USER_REQUEST>", "").strip()
-                if clean_p:
-                    title = clean_p[:40]
-            raw_paths = r.get("workspace_uris") or r.get("workspace_paths") or ""
-            p_path = decode_workspace_uri(str(raw_paths))
-            raw_up = r.get("last_modified_time") or r.get("updated_at")
-            if isinstance(raw_up, (int, float)):
-                val = float(raw_up)
-                if val > 1e11:
-                    val /= 1000.0
-                up_iso = datetime.fromtimestamp(val, tz=timezone.utc).isoformat()
-            else:
-                up_iso = str(raw_up or now_iso).replace(" ", "T")
-
-            parent_cid = str(r.get("parent_conversation_id") or "").strip() if has_parent_col else ""
-            nesting_depth = int(r.get("nesting_depth") or 0) if has_depth_col else 0
-            is_sub = bool(parent_cid) or nesting_depth > 0
-            parent_uid = f"{agent_type}:{parent_cid}" if parent_cid else None
-
-            is_proj, norm_p, p_name = evaluate_project_dir(p_path)
-            return UnifiedSession(
-                unified_id=f"{agent_type}:{cid}",
+            sess = _agy_row_to_unified_session(
+                r,
                 agent_type=agent_type,
                 agent_label=agent_label,
-                raw_session_id=cid,
-                title=title or f"会话 {cid[:8]}",
-                preview=preview or title or "暂无内容",
-                project_path=p_path,
-                status=status,
-                step_count=int(r.get("step_count") or 1),
-                updated_at=up_iso,
-                is_project=is_proj,
-                project_name=p_name,
-                desktop_locked=(agent_type == "agy_ide" and (not_idle or has_active_sub)),
-                parent_unified_id=parent_uid,
-                is_subagent=is_sub,
-                has_active_subagent=has_active_sub,
-                active_subagents_count=active_sub_count,
+                brain_dir=brain_dir,
+                now_iso=now_iso,
+                has_parent_col=has_parent_col,
+                has_depth_col=has_depth_col,
+                not_idle=not_idle,
+                has_active_sub=has_active_sub,
+                active_sub_count=active_sub_count,
+                probe_filter=False,
             )
+            if sess is not None:
+                return sess
 
     # 查 brain 目录
-    tp = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+    tp = _transcript_path(brain_dir, cid)
     if tp.is_file():
         try:
             st = tp.stat()

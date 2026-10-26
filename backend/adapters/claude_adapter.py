@@ -165,7 +165,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         fpath = self._find_session_file(raw_session_id)
         if not fpath or not fpath.exists():
             return None
-        active_map = self.get_active_sessions_map()
+        active_map = self.get_active_sessions()
         try:
             mtime = fpath.stat().st_mtime
             return parse_claude_session_file(

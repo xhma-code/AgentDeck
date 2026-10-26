@@ -22,10 +22,10 @@ from backend.adapters.base import (
     BoundedLRUCache,
     UnifiedMessageItem,
     UnifiedSession,
-    UnifiedToolCall,
     decode_workspace_uri,
     evaluate_project_dir,
     is_transient_probe_session,
+    read_incremental_jsonl_stream,
 )
 from backend.adapters.claude_parser import extract_record_plain_text, parse_claude_record_dict
 from backend.core.database import utc_now_iso
@@ -178,112 +178,31 @@ def read_claude_session_messages(
     messages_cache: BoundedLRUCache,
     limit: int = 120,
 ) -> list[UnifiedMessageItem]:
-    """增量/全量解析 Claude Code 的 JSONL 文件映射为卡片流。"""
-    try:
-        st = fpath.stat()
-        mtime_ns = st.st_mtime_ns
-        fsize = st.st_size
-    except OSError:
-        return []
+    """增量/全量解析 Claude Code 的 JSONL 文件映射为卡片流（共享读取骨架 + Claude 解析钩子）。"""
 
-    cached = messages_cache.get(raw_session_id)
-    if cached and cached[0] == mtime_ns and cached[1] == fsize:
-        items: list[UnifiedMessageItem] = cached[2]
-        return items[-limit:] if limit > 0 else items
+    def restore_state(items: list[UnifiedMessageItem], tail: tuple) -> tuple:
+        # 状态元组：(tool_id_map, step_idx_box)。全量读取时 tail 为空，回到初始空态。
+        if tail:
+            step_box = tail[1]
+            return (dict(tail[0]), [step_box[0] if isinstance(step_box, list) else step_box])
+        return ({}, [0])
 
-    if cached and cached[1] <= fsize:
-        try:
-            items = list(cached[2])
-            tool_id_map = dict(cached[4])
-            step_idx_box = [cached[5]]
-            with open(fpath, "rb") as f:
-                f.seek(cached[3])
-                inc_data = f.read()
-
-            inc_lines = inc_data.splitlines(keepends=True)
-            consumed_bytes = cached[3]
-            for idx, b_line in enumerate(inc_lines):
-                u_line = b_line.decode("utf-8", errors="replace").strip()
-                if not u_line:
-                    consumed_bytes += len(b_line)
-                    continue
-                try:
-                    rec_obj = json.loads(u_line)
-                except json.JSONDecodeError:
-                    if idx == len(inc_lines) - 1:
-                        break
-                    consumed_bytes += len(b_line)
-                    continue
-
-                consumed_bytes += len(b_line)
-                parse_claude_record_dict(
-                    rec=rec_obj,
-                    raw_session_id=raw_session_id,
-                    items=items,
-                    tool_id_map=tool_id_map,
-                    step_idx_container=step_idx_box,
-                )
-
-            messages_cache[raw_session_id] = (
-                mtime_ns,
-                fsize,
-                items,
-                consumed_bytes,
-                tool_id_map,
-                step_idx_box[0],
-            )
-            return items[-limit:] if limit > 0 else items
-        except Exception as inc_exc:
-            logger.debug(f"增量读取 Claude 异常，回退全量: {inc_exc}")
-
-    # 全量读取
-    items = []
-    tool_id_map: dict[str, UnifiedToolCall] = {}
-    step_idx_box = [0]
-    try:
-        with open(fpath, "rb") as f:
-            all_raw = f.read()
-        raw_b_lines = all_raw.splitlines(keepends=True)
-        if raw_b_lines and not raw_b_lines[-1].endswith((b"\n", b"\r")):
-            raw_b_lines = raw_b_lines[:-1]
-    except Exception as exc:
-        log_structured_error(
-            problem=f"读取 Claude Code 会话日志失败 ({raw_session_id[:8]})",
-            cause=str(exc),
-            fix="请确认会话文件是否被独占或具有读取权限。",
-            exc=exc,
-        )
-        return []
-
-    consumed_bytes = 0
-    for idx, b_line in enumerate(raw_b_lines):
-        u_line = b_line.decode("utf-8", errors="replace").strip()
-        if not u_line:
-            consumed_bytes += len(b_line)
-            continue
-        try:
-            rec_obj = json.loads(u_line)
-        except json.JSONDecodeError:
-            if idx == len(raw_b_lines) - 1:
-                break
-            consumed_bytes += len(b_line)
-            continue
-
-        consumed_bytes += len(b_line)
+    def parse_record(rec_obj: dict, items: list[UnifiedMessageItem], _line_index: int, state: tuple) -> None:
         parse_claude_record_dict(
             rec=rec_obj,
             raw_session_id=raw_session_id,
             items=items,
-            tool_id_map=tool_id_map,
-            step_idx_container=step_idx_box,
+            tool_id_map=state[0],
+            step_idx_container=state[1],
         )
 
-    messages_cache[raw_session_id] = (
-        mtime_ns,
-        fsize,
-        items,
-        consumed_bytes,
-        tool_id_map,
-        step_idx_box[0],
+    return read_incremental_jsonl_stream(
+        fpath=fpath,
+        cache_key=raw_session_id,
+        messages_cache=messages_cache,
+        family_label="Claude Code",
+        parse_record=parse_record,
+        restore_state=restore_state,
+        limit=limit,
+        failure_hint="请确认会话文件是否被独占或具有读取权限。",
     )
-    return items[-limit:] if limit > 0 else items

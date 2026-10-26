@@ -1902,7 +1902,7 @@ def test_incremental_seek_reading_mechanism(tmp_path: Path):
     assert items1[0].content == "你好 Antigravity"
     cached1 = adapter._messages_cache.get(cid)
     assert cached1 is not None
-    assert len(cached1) == 4  # (mtime_ns, fsize, items, byte_offset)
+    assert len(cached1) == 5  # (mtime_ns, fsize, items, byte_offset, last_assistant_state)
 
     # 2. 追加写第 2 条（触发增量 Seek）
     line2 = json.dumps({
