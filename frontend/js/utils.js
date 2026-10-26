@@ -96,9 +96,14 @@ export function getBasename(rawPath) {
 export function isLocalPreviewableLink(href) {
   const h = String(href || "").trim();
   if (!h) return false;
+  // 只认可折叠为可安全预览的本地文件形态：
+  // 1. file:// URI 与 Windows 盘符路径：任意扩展名均可（后端读取器负责敏感文件拦截）；
+  // 2. 网络路径 // 与 POSIX 绝对路径 /：需命中可读扩展名白名单（历史行为）。
+  // 裸文件名与相对路径（如工具查询参数 "GLOSSARY.md"、`(reports/x.md)`）可能是
+  // 工具参数或正文提及，不是可预览的本地文件，此前会生成假芯片导致手机端点击报"文件不存在"。
   if (h.startsWith("file://")) return true;
   if (/^[a-zA-Z]:[\\/]/.test(h)) return true;
-  if (/\.(md|markdown|mdx|py|js|ts|tsx|json|yaml|yml|toml|html|css|sh|sql|txt)(#L\d+.*)?$/i.test(h) && !/^https?:\/\//i.test(h)) {
+  if (/^(?:\\\\|\/)/.test(h) && /\.(md|markdown|mdx|py|js|ts|tsx|json|yaml|yml|toml|html|css|sh|sql|txt)(#L\d+.*)?$/i.test(h) && !/^https?:\/\//i.test(h)) {
     return true;
   }
   return false;

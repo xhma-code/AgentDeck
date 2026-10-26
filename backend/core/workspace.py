@@ -187,6 +187,10 @@ class WorkspaceDocumentReader:
         if not norm_path:
             raise ValueError("无效的文件路径")
 
+        # 只接受绝对路径/file:// URI，拒绝相对路径：避免解析到服务器 CWD 下的错误文件或路径穿越
+        if not Path(norm_path).is_absolute():
+            raise ValueError(f"不支持相对路径（缺少目录与盘符）: {norm_path}")
+
         file_obj = Path(norm_path).resolve()
         if not file_obj.exists() or not file_obj.is_file():
             raise FileNotFoundError(f"文件不存在: {file_obj.name}")
