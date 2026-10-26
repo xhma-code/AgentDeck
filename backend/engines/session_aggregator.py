@@ -445,17 +445,48 @@ def fetch_full_step_output(
         return adapter.get_full_step_output(raw_id, step_index)
     return ""
 
+def probe_ls_protocol(adapter: BaseAgentAdapter) -> Optional[dict[str, Any]]:
+    """Antigravity IDE Connect-RPC 协议探针：实例可达性 + 模型目录回读，失配即暴露协议漂移。"""
+    bridge = getattr(adapter, "ls_bridge", None)
+    if bridge is None:
+        return None
+    try:
+        instances = list(bridge._iter_reachable_instances())
+        if not instances:
+            return {"reachable": False, "detail": "未检测到运行中的 Antigravity IDE（不影响 AGY CLI 使用）"}
+        pid, port, scheme, token = instances[0]
+        ok, _raw = bridge._raw_post(
+            scheme=scheme, port=port, csrf_token=token,
+            method="GetCascadeModelConfigs", body={}, timeout=3.0,
+        )
+        if not ok:
+            return {
+                "reachable": False,
+                "detail": f"Connect-RPC 模型目录读取失败 (PID={pid}, Port={port})，疑似 LS 协议漂移，请检查 IDE 版本",
+            }
+        return {
+            "reachable": True,
+            "detail": f"Connect-RPC 正常 (PID={pid}, Port={port})，可达实例 {len(instances)} 个",
+        }
+    except Exception as exc:
+        return {"reachable": False, "detail": f"协议探针异常: {exc}"}
+
+
 def build_startup_health_report(adapters: dict[str, BaseAgentAdapter]) -> list[dict[str, Any]]:
     """生成所有已注册 Agent 适配器的启动连通性与健康状态报告列表。"""
     report: list[dict[str, Any]] = []
     for agent_key, adapter in adapters.items():
         avail, msg = adapter.is_available()
-        report.append({
+        entry: dict[str, Any] = {
             "agent_type": agent_key,
             "agent_label": adapter.agent_label,
             "ready": avail,
             "description": msg,
-        })
+        }
+        # Antigravity IDE 附加协议层探针：尽早暴露 LS 版本升级导致的 RPC 契约漂移
+        if agent_key == "agy_ide" and hasattr(adapter, "ls_bridge"):
+            entry["protocol"] = probe_ls_protocol(adapter)
+        report.append(entry)
     return report
 
 def build_system_overview(

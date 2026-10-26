@@ -6,6 +6,7 @@ import { state, markSessionCompletedUnread, saveLastViewedTimes, clearAllUnreadC
 import { triggerAlertNotification } from "./utils.js";
 import { showToast, showPairingGuideModal } from "./api.js";
 import { FORK_TO_CLI_FALLBACK_NOTICE } from "./config.js";
+import { selectSession } from "./data-session-selection.js";
 import {
   loadSessions,
   loadSessionMessages,
@@ -397,6 +398,7 @@ export function handleRealtimeEvent(envelope) {
   if (type === "SESSION_FORKED") {
     // 发起端已随 HTTP 响应弹过提示（state.lastForkNoticeId 去重），此处通知其他在线端
     const newId = (payload && payload.new_unified_id) || "";
+    const oldId = (payload && payload.old_unified_id) || "";
     if (newId && newId === state.lastForkNoticeId) {
       loadSessions(true);
       return;
@@ -407,6 +409,10 @@ export function handleRealtimeEvent(envelope) {
       ((payload && payload.notice) || FORK_TO_CLI_FALLBACK_NOTICE) + (shortId ? `（新会话 ${shortId}）` : ""),
       "info"
     );
+    // 正在看旧 IDE 会话的设备自动跟随到接力的新会话（旧会话不会再有新进展）
+    if (newId && oldId && state.selectedSessionId === oldId) {
+      selectSession(newId).catch((e) => console.warn("跟随接力会话失败:", e));
+    }
     loadSessions(true);
     return;
   }

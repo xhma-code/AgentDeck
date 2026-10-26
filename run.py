@@ -145,6 +145,10 @@ def print_startup_banner(app, port: int) -> str:
     for item in orchestrator.get_startup_health_report():
         icon = "[✓]" if item["ready"] else "[!]"
         print(f"  {icon} {item['agent_label']:<16}: {item['description']}")
+        proto = item.get("protocol")
+        if proto:
+            p_icon = "[✓]" if proto.get("reachable") else "[!]"
+            print(f"    {p_icon} 协议探针: {proto.get('detail', '')}")
 
     print("─" * 72)
     print(f"  💻 电脑本机控制台: {local_url} (打开可查看图形化高清配对二维码)")
@@ -379,6 +383,10 @@ def run_doctor(port: int = 8765) -> int:
         if not item["ready"]:
             all_ready = False
         print(f"  {icon} {item['agent_label']:<16}: {item['description']}")
+        proto = item.get("protocol")
+        if proto:
+            p_icon = "[✓]" if proto.get("reachable") else "[!]"
+            print(f"    {p_icon} 协议探针: {proto.get('detail', '')}")
 
     port_status = "空闲可用"
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

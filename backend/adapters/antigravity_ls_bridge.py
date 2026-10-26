@@ -25,6 +25,16 @@ from backend.core.logger import log_structured_error, logger
 CSRF_TOKEN_RE = re.compile(r"--csrf_token[\s=]+([0-9a-fA-F-]{8,})")
 LS_SERVICE_PREFIX = "/exa.language_server_pb.LanguageServerService"
 
+# StartCascade 的 CortexTrajectorySource 合法枚举候选（按优先级回退）。
+# 契约说明：旧版 LS 的 CORTEX_TRAJECTORY_SOURCE_VSCODE 已在当前版本被移除，
+# 非法枚举会被 protobuf JSON 解析静默丢弃并报 "CortexTrajectorySource is unspecified"。
+# LS 版本升级若再次漂移，请从 LS 二进制字符串表重新挖掘合法值并更新此列表。
+CASCADE_SOURCE_CANDIDATES = [
+    "CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT",
+    "CORTEX_TRAJECTORY_SOURCE_INTERACTIVE_CASCADE",
+    "CORTEX_TRAJECTORY_SOURCE_VSCODE",
+]
+
 LS_MODEL_ID_MAP: dict[str, str] = {
     "model_placeholder_m418": "gemini-4-argon-medium",
     "model_placeholder_m417": "gemini-4-argon-high",
@@ -69,6 +79,48 @@ class AntigravityLanguageServerBridge:
     def get_cached_hub(cls) -> Optional[dict[str, Any]]:
         """非阻塞获取已缓存的 Hub LS 连接信息。"""
         return cls._cached_hub
+
+    def _iter_reachable_instances(self):
+        """产出本机全部可达的 Connect-RPC 实例四元组 (pid, port, scheme, csrf_token)。"""
+        for pid, token in self._scan_ls_processes():
+            for port in self._find_listening_ports(pid):
+                scheme = self._probe_connect_port(port, token)
+                if scheme:
+                    yield pid, port, scheme, token
+
+    def cascade_exists(
+        self, cascade_id: str, instances: Optional[list[tuple[int, int, str, str]]] = None
+    ) -> Optional[bool]:
+        """回读 GetAllCascadeTrajectories 索引判断会话是否真实驻留。
+
+        instances 限定校验的实例范围（缺省扫描全部实例）。
+        返回 True=存在；False=实例可达但不存在；None=无可达实例无法判定。
+        """
+        targets = list(instances) if instances is not None else list(self._iter_reachable_instances())
+        reached = False
+        for pid, port, scheme, token in targets:
+            ok, raw = self._raw_post(
+                scheme=scheme,
+                port=port,
+                csrf_token=token,
+                method="GetAllCascadeTrajectories",
+                body={},
+                timeout=4.0,
+            )
+            if not ok or not raw:
+                continue
+            reached = True
+            try:
+                data = json.loads(raw.decode("utf-8"))
+                summaries = data.get("trajectorySummaries") or {}
+            except Exception as exc:
+                logger.debug(f"解析 GetAllCascadeTrajectories 响应异常 ({pid},{port}): {exc}")
+                continue
+            if cascade_id in summaries:
+                return True
+        if not reached:
+            logger.debug(f"回读会话存在性时无任何可达 LS 实例 ({cascade_id[:8]})")
+        return False if reached else None
 
     def detect_hub(self, force: bool = False) -> Optional[dict[str, Any]]:
         """探测本机运行中的 Antigravity Hub Language Server 端口与 CSRF Token。"""
@@ -491,12 +543,8 @@ class AntigravityLanguageServerBridge:
         """通过 Connect-RPC StartCascade 原生在当前运行的 IDE 中创建新会话并初始化。"""
         candidates = self._scan_ls_processes()
         uri = self._to_workspace_uri(project_path)
-        # source 枚举随 LS 版本演进（旧版 VSCODE 已被移除），按序回退保证向前兼容
-        sources = [
-            "CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT",
-            "CORTEX_TRAJECTORY_SOURCE_INTERACTIVE_CASCADE",
-            "CORTEX_TRAJECTORY_SOURCE_VSCODE",
-        ]
+        # source 枚举随 LS 版本演进，按序回退保证向前兼容（见 CASCADE_SOURCE_CANDIDATES 契约说明）
+        sources = CASCADE_SOURCE_CANDIDATES
         last_err = ""
         for src in sources:
             payload: dict[str, Any] = {
@@ -520,6 +568,16 @@ class AntigravityLanguageServerBridge:
                         timeout=3.0,
                     )
                     if ok:
+                        # 回读校验：确认会话真实驻留该实例（防协议漂移导致的假成功）
+                        verify = self.cascade_exists(
+                            cascade_id, instances=[(pid, port, scheme, token)]
+                        )
+                        if verify is False:
+                            logger.warning(
+                                f"StartCascade 返回 2xx 但回读未发现会话 ({cascade_id[:8]}) @({pid},{port})，视为注入失败继续尝试"
+                            )
+                            last_err = f"回读校验失败 @({pid},{port}) source={src}"
+                            continue
                         logger.info(
                             f"已通过 Language Server (PID={pid}, Port={port}) Connect-RPC 原生创建 IDE 新会话: {cascade_id[:8]} (source={src})"
                         )
