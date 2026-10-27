@@ -75,6 +75,39 @@ CREATE TABLE IF NOT EXISTS t_workspace_bookmark (
     last_used_at TEXT NOT NULL                      -- 最近使用时间（ISO 8601）
 );
 
+-- 表名：t_push_subscription（iOS PWA 原生 Web Push 订阅凭据表）
+CREATE TABLE IF NOT EXISTS t_push_subscription (
+    subscription_id TEXT PRIMARY KEY,    -- 订阅唯一标识（SHA-256(endpoint)）
+    device_id TEXT NOT NULL,             -- 关联的配对设备唯一标识
+    endpoint TEXT NOT NULL,              -- APNs 目标网关推送 URL
+    p256dh_key TEXT NOT NULL,            -- 客户端加密公钥（Base64 URL Safe）
+    auth_key TEXT NOT NULL,              -- 客户端鉴权密钥（Base64 URL Safe）
+    user_agent TEXT,                     -- 客户端浏览器 User-Agent
+    created_at TEXT NOT NULL,            -- 订阅创建时间（ISO 8601）
+    last_pushed_at TEXT,                 -- 最近一次成功推送时间（ISO 8601）
+    is_active INTEGER DEFAULT 1          -- 是否有效（0：已失效，1：有效）
+);
+
+-- 表名：t_schema_fingerprint（底层 Agent 结构指纹基准表）
+CREATE TABLE IF NOT EXISTS t_schema_fingerprint (
+    agent_type TEXT NOT NULL,            -- Agent 类型（agy_ide / claude_code / opencode）
+    source_target TEXT NOT NULL,         -- 目标对象名（表名或数据文件类型）
+    expected_hash TEXT NOT NULL,         -- 预期结构 SHA-256 哈希值
+    last_verified_at TEXT NOT NULL,      -- 最后校验时间（ISO 8601）
+    status TEXT DEFAULT 'valid',         -- 校验状态（valid：吻合，drifted：发生漂移）
+    PRIMARY KEY (agent_type, source_target)
+);
+
+-- 表名：t_schema_drift_log（协议与结构漂移观测流水表）
+CREATE TABLE IF NOT EXISTS t_schema_drift_log (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT, -- 审计自增主键
+    agent_type TEXT NOT NULL,                 -- Agent 类型
+    drift_type TEXT NOT NULL,                 -- 漂移类型（sqlite_schema / jsonl_field / stdio_event）
+    details_json TEXT NOT NULL,               -- 变更详情或未知字段摘要（JSON 字符串）
+    sample_snippet TEXT,                      -- 截获的原始数据样本切片（已脱敏）
+    observed_at TEXT NOT NULL                 -- 首次观测时间（ISO 8601）
+);
+
 -- 表名：t_table_column_comments（数据字典中文注释元数据注册表）
 CREATE TABLE IF NOT EXISTS t_table_column_comments (
     table_name TEXT NOT NULL,            -- 数据表英文名称
@@ -131,4 +164,24 @@ TABLE_COLUMN_COMMENTS: list[tuple[str, str, str, str]] = [
     ("t_workspace_bookmark", "移动端新建会话常用工作区收藏表", "default_agent", "默认启动的 Agent 类型"),
     ("t_workspace_bookmark", "移动端新建会话常用工作区收藏表", "is_hidden", "是否已从项目列表手动移出隐藏（0：展示，1：隐藏）"),
     ("t_workspace_bookmark", "移动端新建会话常用工作区收藏表", "last_used_at", "最近使用时间（ISO 8601）"),
+    ("t_push_subscription", "iOS PWA 原生 Web Push 订阅凭据表", "subscription_id", "订阅唯一标识（SHA-256(endpoint)）"),
+    ("t_push_subscription", "iOS PWA 原生 Web Push 订阅凭据表", "device_id", "关联的配对设备唯一标识"),
+    ("t_push_subscription", "iOS PWA 原生 Web Push 订阅凭据表", "endpoint", "APNs 目标网关推送 URL"),
+    ("t_push_subscription", "iOS PWA 原生 Web Push 订阅凭据表", "p256dh_key", "客户端加密公钥"),
+    ("t_push_subscription", "iOS PWA 原生 Web Push 订阅凭据表", "auth_key", "客户端鉴权密钥"),
+    ("t_push_subscription", "iOS PWA 原生 Web Push 订阅凭据表", "user_agent", "客户端浏览器 User-Agent"),
+    ("t_push_subscription", "iOS PWA 原生 Web Push 订阅凭据表", "created_at", "订阅创建时间（ISO 8601）"),
+    ("t_push_subscription", "iOS PWA 原生 Web Push 订阅凭据表", "last_pushed_at", "最近一次成功推送时间"),
+    ("t_push_subscription", "iOS PWA 原生 Web Push 订阅凭据表", "is_active", "是否有效（0：已失效，1：有效）"),
+    ("t_schema_fingerprint", "底层 Agent 结构指纹基准表", "agent_type", "Agent 类型"),
+    ("t_schema_fingerprint", "底层 Agent 结构指纹基准表", "source_target", "目标对象名"),
+    ("t_schema_fingerprint", "底层 Agent 结构指纹基准表", "expected_hash", "预期结构 SHA-256 哈希值"),
+    ("t_schema_fingerprint", "底层 Agent 结构指纹基准表", "last_verified_at", "最后校验时间（ISO 8601）"),
+    ("t_schema_fingerprint", "底层 Agent 结构指纹基准表", "status", "校验状态（valid/drifted）"),
+    ("t_schema_drift_log", "协议与结构漂移观测流水表", "log_id", "审计自增主键"),
+    ("t_schema_drift_log", "协议与结构漂移观测流水表", "agent_type", "Agent 类型"),
+    ("t_schema_drift_log", "协议与结构漂移观测流水表", "drift_type", "漂移类型"),
+    ("t_schema_drift_log", "协议与结构漂移观测流水表", "details_json", "变更详情或未知字段摘要"),
+    ("t_schema_drift_log", "协议与结构漂移观测流水表", "sample_snippet", "截获的原始数据样本切片"),
+    ("t_schema_drift_log", "协议与结构漂移观测流水表", "observed_at", "首次观测时间（ISO 8601）"),
 ]

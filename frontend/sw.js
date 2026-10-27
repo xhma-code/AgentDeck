@@ -101,3 +101,58 @@ self.addEventListener("fetch", (event) => {
       })
   );
 });
+
+
+// -------------------------------------------------------------
+// iOS 16.4+ / PWA Web Push 事件监听与锁屏系统通知
+// -------------------------------------------------------------
+self.addEventListener("push", (event) => {
+  let data = {
+    title: "AgentDeck 提醒",
+    body: "有新的会话状态变动",
+    url: "/",
+    tag: "agentdeck-alert"
+  };
+
+  if (event.data) {
+    try {
+      data = Object.assign(data, event.data.json());
+    } catch (e) {
+      data.body = event.data.text() || data.body;
+    }
+  }
+
+  const options = {
+    body: data.body,
+    icon: "/apple-touch-icon.png",
+    badge: "/apple-touch-icon.png",
+    tag: data.tag || "agentdeck-alert",
+    data: {
+      url: data.url || "/"
+    },
+    requireInteraction: true
+  };
+
+  event.waitUntil(
+    self.registration.showNotification(data.title, options)
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || "/";
+
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ("focus" in client) {
+          client.navigate(targetUrl);
+          return client.focus();
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
+    })
+  );
+});

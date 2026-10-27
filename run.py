@@ -434,6 +434,27 @@ def run_doctor(port: int = 8765) -> int:
             port_status = f"当前已被占用 (启动时将自动清理或可使用 '--port {port + 1}')"
     print(f"  [i] 目标端口 ({port})  : {port_status}")
 
+    # iOS PWA 原生 Web Push 探针
+    try:
+        from backend.core.push_service import get_push_service
+        push_svc = get_push_service()
+        subs = db.get_active_push_subscriptions()
+        print(f"  [✓] iOS PWA Web Push: VAPID 密钥就绪，已关联 {len(subs)} 台活跃 iPhone 设备")
+    except Exception as exc:
+        print(f"  [!] iOS PWA Web Push: 探针异常 ({exc})")
+
+    # 适配器 Schema 结构指纹与漂移检测探针
+    try:
+        from backend.adapters.schema_guard import verify_adapter_schemas
+        verify_adapter_schemas(db)
+        drift_logs = db.get_schema_drift_logs(limit=5)
+        if drift_logs:
+            print(f"  [!] 适配器 Schema 守卫: 发现 {len(drift_logs)} 条协议结构漂移记录 (系统已进入柔性兼容模式)")
+        else:
+            print(f"  [✓] 适配器 Schema 守卫: 结构指纹与事件契约一致，无漂移异常")
+    except Exception as exc:
+        print(f"  [!] 适配器 Schema 守卫: 探针异常 ({exc})")
+
     # D25：WAL 模式边界校验 —— SQLite WAL 在网络驱动器（UNC/映射网络盘/overlay fs）上易失谐
     wal_ok = True
     try:
@@ -480,6 +501,12 @@ def main() -> None:
         action="store_true",
         help="运行环境体检与 Agent 挂载就绪状态检查后退出",
     )
+    parser.add_argument(
+        "--drift-repair",
+        action="store_true",
+        dest="drift_repair",
+        help="检查并审查底层 Agent 协议漂移样本，辅助生成自愈规则补丁",
+    )
     parser.add_argument("--port", type=int, default=8765, help="监听端口 (默认: 8765)")
     parser.add_argument(
         "--local-only",
@@ -517,6 +544,27 @@ def main() -> None:
 
     if args.doctor:
         sys.exit(run_doctor(args.port))
+
+    if getattr(args, "drift_repair", False):
+        from backend.core.database import MetaDatabase
+        db = MetaDatabase()
+        logs = db.get_schema_drift_logs(limit=10)
+        print("\n" + "═" * 72)
+        print("  🛠️ AgentDeck 适配器协议漂移自愈审查工具")
+        print("═" * 72)
+        if not logs:
+            print("  [✓] 当前暂无任何上游协议漂移观测记录，所有适配器运转良好！")
+        else:
+            print(f"  检测到最近 {len(logs)} 条未完全匹配的结构样本：")
+            for item in logs:
+                print(f"  • [{item['observed_at']}] Agent: {item['agent_type']} (类型: {item['drift_type']})")
+                print(f"    详情: {item['details_json']}")
+                if item.get("sample_snippet"):
+                    print(f"    样本切片: {item['sample_snippet'][:180]}...")
+            print("─" * 72)
+            print("  💡 提示: 规则文件位于 backend/adapters/schemas/*.json，可直接增加字段映射。")
+        print("═" * 72 + "\n")
+        sys.exit(0)
 
     if args.reload and not args.worker:
         run_with_reload(args.port, args.local_only)

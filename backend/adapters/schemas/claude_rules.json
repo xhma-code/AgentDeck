@@ -1,0 +1,16 @@
+{
+  "agent_type": "claude_code",
+  "version": "1.0",
+  "parser_strategy": "jsonl_stream",
+  "rules": {
+    "session_id_keys": ["sessionId", "session_id", "id"],
+    "tool_use_name_keys": ["name"],
+    "tool_use_input_keys": ["input", "parameters", "args"],
+    "diff_indicators": ["patch", "new_str", "old_str", "content"],
+    "status_mapping": {
+      "completed": "DONE",
+      "running": "RUNNING",
+      "error": "ERROR"
+    }
+  }
+}

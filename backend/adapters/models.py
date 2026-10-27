@@ -53,6 +53,7 @@ class UnifiedToolCall:
     status: str = "DONE"
     file_path: str = ""
     duration_str: str = ""
+    extra_fields: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from backend.adapters.tool_utils import is_read_only_tool
@@ -78,6 +79,7 @@ class UnifiedMessageItem:
     questions: list[dict[str, Any]] = field(default_factory=list)
     status: str = "DONE"
     thinking_len: int = 0
+    extra_fields: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self, compact_thinking: bool = False) -> dict[str, Any]:
         d = asdict(self)

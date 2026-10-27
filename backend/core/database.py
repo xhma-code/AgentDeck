@@ -685,3 +685,121 @@ class MetaDatabase:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM t_table_column_comments").fetchall()
             return [dict(r) for r in rows]
+
+    # -------------------------------------------------------------------------
+    # iOS PWA 原生 Web Push 订阅管理
+    # -------------------------------------------------------------------------
+
+    def save_push_subscription(
+        self,
+        subscription_id: str,
+        device_id: str,
+        endpoint: str,
+        p256dh_key: str,
+        auth_key: str,
+        user_agent: str = "",
+    ) -> None:
+        """保存或更新 iOS PWA 设备 Web Push 订阅凭据。"""
+        now = utc_now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO t_push_subscription (
+                    subscription_id, device_id, endpoint, p256dh_key, auth_key, user_agent, created_at, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(subscription_id) DO UPDATE SET
+                    device_id = excluded.device_id,
+                    p256dh_key = excluded.p256dh_key,
+                    auth_key = excluded.auth_key,
+                    user_agent = excluded.user_agent,
+                    is_active = 1
+                """,
+                (subscription_id, device_id, endpoint, p256dh_key, auth_key, user_agent, now),
+            )
+
+    def get_active_push_subscriptions(self, device_id: Optional[str] = None) -> list[dict[str, Any]]:
+        """获取所有有效的 Web Push 订阅（可按 device_id 筛选）。"""
+        with self.connect() as conn:
+            if device_id:
+                rows = conn.execute(
+                    "SELECT * FROM t_push_subscription WHERE is_active = 1 AND device_id = ?",
+                    (device_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM t_push_subscription WHERE is_active = 1"
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_push_subscription_pushed(self, subscription_id: str) -> None:
+        """更新最近一次成功推送时间戳。"""
+        now = utc_now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE t_push_subscription SET last_pushed_at = ? WHERE subscription_id = ?",
+                (now, subscription_id),
+            )
+
+    def deactivate_push_subscription(self, subscription_id: str) -> None:
+        """将失效的 Web Push 订阅标记为已吊销 (如 APNs 返回 410 Gone)。"""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE t_push_subscription SET is_active = 0 WHERE subscription_id = ?",
+                (subscription_id,),
+            )
+
+    # -------------------------------------------------------------------------
+    # 架构指纹与上游协议漂移审计
+    # -------------------------------------------------------------------------
+
+    def save_schema_fingerprint(
+        self,
+        agent_type: str,
+        source_target: str,
+        expected_hash: str,
+        status: str = "valid",
+    ) -> None:
+        """保存或更新底层 Agent 结构指纹比对结果。"""
+        now = utc_now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO t_schema_fingerprint (
+                    agent_type, source_target, expected_hash, last_verified_at, status
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(agent_type, source_target) DO UPDATE SET
+                    expected_hash = excluded.expected_hash,
+                    last_verified_at = excluded.last_verified_at,
+                    status = excluded.status
+                """,
+                (agent_type, source_target, expected_hash, now, status),
+            )
+
+    def record_schema_drift(
+        self,
+        agent_type: str,
+        drift_type: str,
+        details_json: str,
+        sample_snippet: str = "",
+    ) -> int:
+        """记录一条上游数据结构漂移观测流水。"""
+        now = utc_now_iso()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO t_schema_drift_log (
+                    agent_type, drift_type, details_json, sample_snippet, observed_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (agent_type, drift_type, details_json, sample_snippet, now),
+            )
+            return cur.lastrowid or 0
+
+    def get_schema_drift_logs(self, limit: int = 50) -> list[dict[str, Any]]:
+        """查询最近的协议结构漂移审计记录。"""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM t_schema_drift_log ORDER BY log_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]

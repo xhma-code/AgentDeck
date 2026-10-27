@@ -136,6 +136,20 @@ class ApprovalCoordinator:
         )
 
         try:
+            from backend.core.push_service import get_push_service
+            push_title = f"⚠️ 高危工具审批: {approval.tool_name}" if approval.risk_level == "high" else f"工具审批: {approval.tool_name}"
+            push_body = approval.args_summary[:120] or "需要手机端确认放行"
+            get_push_service().send_notification(
+                title=push_title,
+                body=push_body,
+                url=f"/?session={approval.unified_id}&focus_tool={approval.tool_call_id}",
+                high_priority=(approval.risk_level == "high"),
+                tag=f"apr-{approval.unified_id}",
+            )
+        except Exception as push_err:
+            logger.debug("触发 Web Push 异常: %s", push_err)
+
+        try:
             result = await fut
             decision = str(result.get("decision") or "denied")
             feedback_msg = str(result.get("feedback") or "").strip()

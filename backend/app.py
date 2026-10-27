@@ -22,6 +22,8 @@ from backend.core.logger import PROJECT_ROOT, log_structured_error
 from backend.core.network import TailscaleStatus, detect_tailscale_status
 from backend.core.tailscale_auth import PairingAuthManager
 from backend.engines.process_pool import AgentOrchestrator
+from backend.adapters.schema_guard import verify_adapter_schemas
+from backend.routes.push import router as push_router
 from backend.routes.auth import router as auth_router
 from backend.routes.deps import verify_request_auth
 from backend.routes.schemas import (
@@ -67,6 +69,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         awake_lock.acquire()
+        verify_adapter_schemas(db)
         await orchestrator.start_background_services()
         yield
         await orchestrator.stop_background_services()
@@ -116,6 +119,7 @@ def create_app(meta_db: Optional[MetaDatabase] = None) -> FastAPI:
     app.include_router(workspaces_router)
     app.include_router(sessions_router)
     app.include_router(websocket_router)
+    app.include_router(push_router)
 
     # 挂载静态资源与 PWA 路由（PWA 路由优先拦截动态 manifest 与首屏注入）
     app.include_router(static_pwa_router)
