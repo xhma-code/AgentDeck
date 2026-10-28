@@ -362,7 +362,7 @@ export function renderMessagesList() {
   }
 
   container.innerHTML =
-    `<div class="max-w-5xl mx-auto">` +
+    `<div class="max-w-5xl mx-auto pb-10 sm:pb-6">` +
     olderBannerHtml +
     html +
     pendingAssistantHtml +

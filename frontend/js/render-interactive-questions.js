@@ -10,14 +10,18 @@ export function renderQuestionOptionsHtml(turnKey, qi, q) {
   const selectedOpts = state.questionSelections[qKey] || [];
   const isMulti = !!q.is_multi_select;
   return (q.options || [])
-    .map((opt) => {
-      const isSelected = selectedOpts.includes(opt);
+    .map((opt, oIdx) => {
+      const label = typeof opt === "string" ? opt : (opt.label || opt.value || "");
+      const value = typeof opt === "string" ? opt : (opt.value || opt.label || "");
+      const isSelected = selectedOpts.includes(value) || selectedOpts.includes(label);
       return `
         <button type="button"
+          data-qkey="${escapeHtml(qKey)}"
+          data-oidx="${oIdx}"
           onclick="window.appActions.toggleQuestionOption('${escapeJsSingleQuote(
             turnKey
-          )}', ${qi}, '${escapeJsSingleQuote(opt)}', ${isMulti})"
-          class="text-left text-xs px-2.5 py-1.5 rounded-lg border transition-all active:scale-95 flex items-center gap-1.5 ${
+          )}', ${qi}, ${oIdx}, ${isMulti})"
+          class="text-left text-xs px-2.5 py-1.5 rounded-lg border transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer ${
             isSelected
               ? "bg-sky-500 text-zinc-950 font-bold border-sky-400 shadow-sm"
               : "bg-zinc-900/80 hover:bg-zinc-800 text-zinc-200 border-zinc-700/80"
@@ -25,7 +29,7 @@ export function renderQuestionOptionsHtml(turnKey, qi, q) {
           <span class="text-[10px] ${isSelected ? "text-zinc-950" : "text-sky-400"}">${
         isSelected ? (isMulti ? "☑" : "●") : isMulti ? "☐" : "○"
       }</span>
-          <span class="break-words">${escapeHtml(opt)}</span>
+          <span class="break-words">${escapeHtml(label)}</span>
         </button>
       `;
     })
@@ -37,6 +41,7 @@ export function renderInteractiveQuestionsCard(turn, isLatestTurn) {
   const questions = turn.questions || [];
   if (questions.length === 0) return "";
   const turnKey = turn.turnKey;
+  state.turnsMap[turnKey] = turn;
 
   // 历史轮次：转为轻量折叠卡片，展示已确认决议与选项，防止侵占手机长流
   if (!isLatestTurn) {
@@ -48,7 +53,7 @@ export function renderInteractiveQuestionsCard(turn, isLatestTurn) {
       : `✓ 已完成的交互问答 (共 ${questions.length} 项)`;
 
     return `
-      <details class="mt-2 rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2 text-xs text-zinc-400">
+      <details id="interactive-questions-card-${escapeHtml(turnKey)}" class="mt-2 rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2 text-xs text-zinc-400">
         <summary class="cursor-pointer select-none font-medium text-zinc-300 hover:text-sky-300 flex items-center justify-between">
           <span class="${decision ? "text-sky-300 font-semibold" : ""}">${summaryTitle}</span>
           <span class="text-[10px] text-zinc-500">查看明细 ▾</span>
@@ -118,7 +123,7 @@ export function renderInteractiveQuestionsCard(turn, isLatestTurn) {
     .join('<div class="border-t border-zinc-800/60 my-2"></div>');
 
   return `
-    <div class="mt-2.5 rounded-xl bg-zinc-900/90 border border-sky-500/40 p-3 shadow-lg space-y-2">
+    <div id="interactive-questions-card-${escapeHtml(turnKey)}" class="mt-2.5 rounded-xl bg-zinc-900/90 border border-sky-500/40 p-3 shadow-lg space-y-2">
       <div class="flex items-center justify-between text-xs text-sky-400 font-semibold border-b border-zinc-800 pb-1.5">
         <span class="flex items-center gap-1.5">
           <span class="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>

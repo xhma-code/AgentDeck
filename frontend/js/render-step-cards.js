@@ -37,18 +37,17 @@ export function getTurnRunningStartTime(turn, sessionId) {
     turn && turn.createdAt,
     turn && turn.created_at,
   ];
-    for (const raw of rawCandidates) {
-      if (!raw) continue;
-      if (typeof raw === "number") {
-        startMs = raw < 1000000000000 ? raw * 1000 : raw;
+  for (const raw of rawCandidates) {
+    if (!raw) continue;
+    if (typeof raw === "number") {
+      startMs = raw < 1000000000000 ? raw * 1000 : raw;
+      break;
+    }
+    if (typeof raw === "string") {
+      const parsed = new Date(raw).getTime();
+      if (!isNaN(parsed) && parsed > 0) {
+        startMs = parsed;
         break;
-      }
-      if (typeof raw === "string") {
-        const parsed = new Date(raw).getTime();
-        if (!isNaN(parsed) && parsed > 0) {
-          startMs = parsed;
-          break;
-        }
       }
     }
   }

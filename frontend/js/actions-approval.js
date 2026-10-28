@@ -5,7 +5,7 @@
 import { state } from "./state.js";
 import { apiFetch, showToast } from "./api.js";
 import { loadSessions } from "./data.js";
-import { renderInteractiveQuestionsCard } from "./render-interactive-questions.js";
+import { renderInteractiveQuestionsCard, renderQuestionOptionsHtml } from "./render-interactive-questions.js";
 import { renderApprovalBanners } from "./render-approval-views.js";
 import { handleSendPrompt } from "./actions-chat.js";
 import { dispatchCommand } from "./command-queue.js";
@@ -96,24 +96,40 @@ export async function handleTogglePin(unifiedId, currentPinned, ev) {
   }
 }
 
-export function toggleQuestionOption(turnKey, qi, opt, isMulti) {
+export function toggleQuestionOption(turnKey, qi, optTarget, isMulti) {
+  const turn = state.turnsMap[turnKey];
+  const q = turn?.questions?.[qi];
+  let optVal = optTarget;
+  if (typeof optTarget === "number" && q?.options?.[optTarget] !== undefined) {
+    const raw = q.options[optTarget];
+    optVal = typeof raw === "string" ? raw : (raw.value || raw.label || "");
+  } else if (typeof optTarget === "object" && optTarget) {
+    optVal = optTarget.value || optTarget.label || String(optTarget);
+  }
+
   const qKey = `${turnKey}_q${qi}`;
   if (!state.questionSelections[qKey]) {
     state.questionSelections[qKey] = [];
   }
   const cur = state.questionSelections[qKey];
   if (isMulti) {
-    if (cur.includes(opt)) {
-      state.questionSelections[qKey] = cur.filter((x) => x !== opt);
+    if (cur.includes(optVal)) {
+      state.questionSelections[qKey] = cur.filter((x) => x !== optVal);
     } else {
-      state.questionSelections[qKey] = [...cur, opt];
+      state.questionSelections[qKey] = [...cur, optVal];
     }
   } else {
-    state.questionSelections[qKey] = [opt];
+    state.questionSelections[qKey] = [optVal];
   }
 
+  // 1. 局部直接更新选项容器（无整卡闪烁，响应立竿见影）
+  const optsContainer = document.getElementById(`q-opts-${qKey}`);
+  if (optsContainer && q) {
+    optsContainer.innerHTML = renderQuestionOptionsHtml(turnKey, qi, q);
+  }
+
+  // 2. 刷新整张卡片（若外层卡片存在）
   const cardEl = document.getElementById(`interactive-questions-card-${turnKey}`);
-  const turn = state.turnsMap[turnKey];
   if (cardEl && turn) {
     cardEl.outerHTML = renderInteractiveQuestionsCard(turn, true);
   }

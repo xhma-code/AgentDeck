@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 import traceback
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -28,6 +29,33 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LOG_DIR = PROJECT_ROOT / "logs"
 ERROR_LOG_FILE = LOG_DIR / "error.log"
 APP_LOG_FILE = LOG_DIR / "app.log"
+
+
+class SafeRotatingFileHandler(RotatingFileHandler):
+    """
+    针对 Windows 文件锁与多进程环境的自愈式安全轮转文件处理器。
+    在 Windows 下，当文件正被父进程/其他程序占用时，常规 os.rename 会抛出 [WinError 32] PermissionError。
+    本处理器捕获此异常并采用延迟退避策略，保证日志流平稳写入而不导致进程报错中断。
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._rollover_retry_after: float = 0.0
+
+    def shouldRollover(self, record: logging.LogRecord) -> bool:
+        if time.time() < self._rollover_retry_after:
+            return False
+        return super().shouldRollover(record)
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+            self._rollover_retry_after = 0.0
+        except (PermissionError, OSError):
+            # 若文件正在被占用，推迟 60 秒再尝试轮转，保证不中断日志写入
+            self._rollover_retry_after = time.time() + 60.0
+            if self.stream is None:
+                self.stream = self._open()
 
 
 def setup_logger(name: str = "agentdeck") -> logging.Logger:
@@ -52,7 +80,7 @@ def setup_logger(name: str = "agentdeck") -> logging.Logger:
     logger.addHandler(console_handler)
 
     # 2. 常规运行日志处理器（按 5MB 轮转）
-    app_file_handler = RotatingFileHandler(
+    app_file_handler = SafeRotatingFileHandler(
         APP_LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
     app_file_handler.setLevel(logging.INFO)
@@ -60,7 +88,7 @@ def setup_logger(name: str = "agentdeck") -> logging.Logger:
     logger.addHandler(app_file_handler)
 
     # 3. 错误汇聚专用处理器（所有 ERROR/CRITICAL 强制写入 logs/error.log）
-    error_file_handler = RotatingFileHandler(
+    error_file_handler = SafeRotatingFileHandler(
         ERROR_LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     error_file_handler.setLevel(logging.ERROR)

@@ -59,9 +59,19 @@ def format_opencode_error_alert(err_data: Any, outcome: str = "failed") -> str:
         body = err_msg or "Free usage limit reached. 当前模型的免费使用额度已达上限，会话已被中止。"
         return (
             "> [!WARNING]\n"
-            "> **模型使用额度已耗尽 (Free usage limit reached / 429)**\n>\n"
+            "> **OpenCode 模型使用额度已耗尽 (Free usage limit reached / 429)**\n>\n"
             f"> {body}\n>\n"
-            "> 💡 **解决建议**：请在 OpenCode 切换其他可用模型，或配置自定义 Provider / API Key 继续使用。"
+            "> 💡 **解决建议**：当前为 OpenCode 自身免费配额耗尽（与流程中提及的 Codex/Claude 无关）。请在 OpenCode 中切换其他可用模型，或配置自定义 Provider / API Key 继续使用。"
+        )
+
+    # 识别上游流异常中断（如 without finish_reason，常由上下文溢出或供应商断流引起）
+    if "without finish_reason" in err_msg.lower() or "invalid-output" in err_type.lower():
+        body = err_msg or "OpenAI Chat stream ended without finish_reason"
+        return (
+            "> [!WARNING]\n"
+            "> **OpenCode 会话数据流异常中断 (Stream Interrupted)**\n>\n"
+            f"> {body}\n>\n"
+            "> 💡 **根因与建议**：上游模型服务未完成正常结束标识即断开（通常为上下文超限、额度/并发瞬时受限或网络断流）。建议重试或更换模型继续会话。"
         )
 
     # 其他执行异常（超时、中断、认证失败等）
