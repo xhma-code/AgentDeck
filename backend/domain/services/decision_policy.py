@@ -135,3 +135,62 @@ def validate_decision_resolution_policy(
                 fix="超时自动提交必须严格传入 recommended_option_id。",
             )
 
+
+def validate_decision_entity_consistency(
+    *,
+    task_id: Optional[str] = None,
+    step_id: Optional[str] = None,
+    step_task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    session_task_id: Optional[str] = None,
+    execution_id: Optional[str] = None,
+    execution_task_id: Optional[str] = None,
+    execution_step_id: Optional[str] = None,
+    execution_session_id: Optional[str] = None,
+) -> None:
+    """
+    统一校验 Decision 多实体关联拓扑一致性，防止跨任务、跨步骤或跨会话乱挂：
+    1. 同时传 task_id 和 step_id 时，校验 step_task_id == task_id。
+    2. Session 绑定了 task_id 时，若指定了 task_id 则必须两者一致。
+    3. 关联 Execution 时，校验其 task_id、step_id、session_id 与决策引用的实体保持一致。
+    """
+    if task_id and step_id and step_task_id and step_task_id != task_id:
+        raise InvariantViolationError(
+            problem="决策关联的步骤与任务不匹配",
+            cause=f"步骤 {step_id} 属于任务 {step_task_id}，与指定的任务 {task_id} 冲突",
+            fix="请选择该步骤真实所属的任务，或仅传步骤 ID 由系统自动归属。",
+            context={"task_id": task_id, "step_id": step_id, "step_task_id": step_task_id},
+        )
+
+    if session_id and session_task_id and task_id and session_task_id != task_id:
+        raise InvariantViolationError(
+            problem="决策关联的会话与任务冲突",
+            cause=f"会话 {session_id} 当前绑定任务 {session_task_id}，与决策指定的任务 {task_id} 不一致",
+            fix="请核对协同会话绑定的任务上下文。",
+            context={"session_id": session_id, "session_task_id": session_task_id, "task_id": task_id},
+        )
+
+    if execution_id:
+        if execution_task_id and task_id and execution_task_id != task_id:
+            raise InvariantViolationError(
+                problem="决策关联的执行单与任务不一致",
+                cause=f"执行单 {execution_id} 绑定任务 {execution_task_id}，与决策指定的任务 {task_id} 冲突",
+                fix="请核对执行单所属的任务。",
+                context={"execution_id": execution_id, "execution_task_id": execution_task_id, "task_id": task_id},
+            )
+        if execution_step_id and step_id and execution_step_id != step_id:
+            raise InvariantViolationError(
+                problem="决策关联的执行单步骤不匹配",
+                cause=f"执行单 {execution_id} 针对步骤 {execution_step_id}，与决策指定的步骤 {step_id} 不一致",
+                fix="请核对执行单对应的步骤。",
+                context={"execution_id": execution_id, "execution_step_id": execution_step_id, "step_id": step_id},
+            )
+        if execution_session_id and session_id and execution_session_id != session_id:
+            raise InvariantViolationError(
+                problem="决策关联的执行单与会话不一致",
+                cause=f"执行单 {execution_id} 所属会话 {execution_session_id}，与决策指定的会话 {session_id} 冲突",
+                fix="请核对执行单对应的会话。",
+                context={"execution_id": execution_id, "execution_session_id": execution_session_id, "session_id": session_id},
+            )
+
+

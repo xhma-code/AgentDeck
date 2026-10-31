@@ -86,6 +86,8 @@ class ExecutionPlatformStatus(StrEnum):
 class AttemptStatus(StrEnum):
     """单次 ExecutionAttempt 尝试状态。"""
 
+    CREATED = "created"
+    QUEUED = "queued"
     RUNNING = "running"
     WAITING_INTERACTION = "waiting_interaction"
     SUCCEEDED = "succeeded"

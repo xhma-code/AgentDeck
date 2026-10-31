@@ -45,9 +45,12 @@ FRONTEND_PUBLIC_DIR = FRONTEND_DIR / "public"
 def create_app(
     settings: Optional[AppSettings] = None,
     *,
-    auto_init_schema: bool = True,
+    auto_init_schema: bool = False,
 ) -> FastAPI:
-    """创建并配置 AgentDeck Clean-Slate FastAPI 应用实例。"""
+    """
+    创建并配置 AgentDeck Clean-Slate FastAPI 应用实例。
+    注意：正式环境 Schema 演进由 Alembic 统一管理；auto_init_schema=True 仅限隔离测试环境下使用 create_all 快速初始化。
+    """
     cfg = settings or get_settings()
     engine = create_sqlite_engine(
         db_path=cfg.db_path,

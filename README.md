@@ -2,86 +2,73 @@
 
 <div align="center">
 
-**基于 Tailscale 私有局域网的多 Agent 移动端统一中控台**
+**多项目 AI 研发异步编排驾驶舱与标准 MCP 协作中枢**
 
-让 AI 编程走出电脑桌面。无论在沙发、通勤路上还是会议室，随时随地用手机查看会话、审批高危操作、应答交互决策、阅读计划文档并无缝接力对话。
+基于第一性原理打造的轻量级 AI 协同底座：统一项目管理、任务演进、决策门禁、审计追踪与 Agent Runtime 接入。  
+随时随地在桌面端与移动端掌控多项目研发进度，应答协作决策，查看交付物成果。
 
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688.svg)](https://fastapi.tiangolo.com/)
-[![PWA & Web Push](https://img.shields.io/badge/PWA-iOS%20Web%20Push-success.svg)](https://developer.apple.com/)
+[![React](https://img.shields.io/badge/React-18.3-61DAFB.svg)](https://react.dev/)
+[![MCP](https://img.shields.io/badge/MCP-2.0%2B-orange.svg)](https://modelcontextprotocol.io/)
+[![Alembic](https://img.shields.io/badge/Schema-Alembic%20Managed-red.svg)](https://alembic.sqlalchemy.org/)
 [![Tailscale](https://img.shields.io/badge/Network-Tailscale%20Secured-4969ED.svg)](https://tailscale.com/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-[✨ 核心特性](#-核心特性) • [🚀 快速开始](#-快速开始) • [📱 移动端与推送配置](#-移动端与-web-push-原生推送) • [🏗️ 系统架构](#-系统架构) • [🔧 常见问题](#-常见问题与排查)
+[✨ 核心设计原则](#-核心设计原则) • [🚀 核心能力](#-核心能力) • [🏗️ 系统架构](#-系统架构) • [🏁 快速开始](#-快速开始) • [📱 移动端与通知](#-移动端与通知) • [📂 模块布局](#-代码目录布局)
 
 </div>
 
 ---
 
-## 💡 为什么需要 AgentDeck？
+## 💡 核心设计原则
 
-当你在本地使用 **Antigravity IDE**、**Claude Code** 或 **OpenCode** 执行复杂的多步骤编程任务时，Agent 经常会：
-1. **请求高危工具审批**（如修改重要代码、执行终端命令、删除文件等），未批准则整条执行链路直接卡住；
-2. **主动向开发者提问或索取方案决策**（Ask Question / User Confirmation），等待你的方向指示；
-3. **输出长篇实施计划（Implementation Plan）与变更 Diff**，桌面端查看舒适，但离开电脑前就无法跟进。
+> **“AgentDeck 管理工作，Agent Runtime 负责推理和实际执行”**
 
-传统远程桌面（TeamViewer / 向日葵 / RDP）在手机窄屏上操作鼠标键盘极度痛苦且延迟高。
-
-**AgentDeck 的解决之道**：
-打造一套**零公网暴露、开箱即用、专为手机窄屏人体工学优化**的轻量级中控台。通过 Tailscale 私网直连，不仅秒级同步桌面 Agent 执行进度，更提供**0.8 秒防误触长按审批**、**原生交互决策弹窗**、**全屏 Markdown 渲染**、**单列 Git Diff** 以及 **iOS / Android 原生 Web Push 离线推送**。
+AgentDeck 不是另一个自研 Agent，也不是各 Agent 内部会话与私有数据库的逆向镜像器：
+1. **边界清晰**：AgentDeck 负责项目工作分解、修订历史、人工决策门禁、交付物归档与审计链路；底层 Agent（如 Claude Code, Antigravity, OpenCode, Codex 等）负责上下文推理、代码编写、终端执行与原生工具审批。
+2. **状态分离**：严格分离平台管理状态（`platform_status`）、Agent 自报状态（`agent_reported_status`）、Runtime 健康状态（`runtime_status`）与网络连接状态（`connection_status`）。
+   - **Agent 自报完成 ≠ 平台验收完成**
+   - **Remote 连接断线 ≠ 任务执行失败**
+3. **真实证据优先**：Capability Manifest 与能力等级（L0-L3）必须以端到端实测证据为准，不将简单的远程 URL 或安装 SDK 谎报为高阶程序化控制能力。
 
 ---
 
-## ✨ 核心特性
+## ✨ 核心能力
 
-### 1. 🤖 四大主流 Agent 全面纳管与无缝接力
-- **Antigravity IDE (`~/.gemini/antigravity`)**：
-  - 实时镜像桌面端 IDE 会话流。
-  - **IDE 离线自动接力**：若电脑端 IDE 关闭，手机端发送指令时自动平滑转为 Antigravity CLI 继续执行。
-  - **Fork-to-CLI 安全克隆**：支持从现有 IDE 会话安全衍生出独立 CLI 进程，杜绝多进程写入同一 SQLite 引起的数据库死锁或脑裂。
-- **Antigravity CLI (`~/.gemini/antigravity-cli`)**：
-  - 原生支持 `stream-json` 双向管道与多模型热切换。
-- **Claude Code (`~/.claude/projects`)**：
-  - 实时解析本地 `.jsonl` 会话流，精准清洗系统提示词噪音。
-  - 支持 `--permission-prompt-tool stdio` 逐条工具权限拦截、双向放行与拒绝。
-- **OpenCode (`~/.local/share/opencode`)**：
-  - 毫秒级只读聚合本地 SQLite 历史，对接 `opencode serve` HTTP/SSE 双向流。
-- **动态权限模式切换 (Permission Mode Switch)**：
-  - 手机端支持动态切换 Agent 权限级别（`default` / `accept-edits` / `plan` / `bypass`），若底层 Agent 不支持则自动安全降级至人工逐条审批。
+### 1. 📁 Project-First 多项目与任务演进主线
+- **项目第一公民**：以 `Project` 为最小隔离单元，彻底杜绝跨项目混淆。
+- **任务与步骤追加修订**：`Project → Task → Step` 树状结构；所有变更均以 `TaskRevision` / `StepRevision` 追加留痕，随时可回溯与断点续作。
 
-### 2. 📱 专为移动窄屏打磨的交互体验
-- **iOS / Android 原生 Web Push 后台推送**：
-  - 基于 VAPID 协议实现手机原生离线推送通知。当 Agent 任务完成（Done）、触发高危操作需人工审批、或等待交互决策时，手机立即收到横幅提醒，无需保持网页前台挂起。
-- **高危操作 0.8s 蓄力长按审批 (`Hold-to-Approve`)**：
-  - 针对 `rm -rf`、`git reset --hard`、`taskkill` 等高危命令，采用长按 0.8 秒填充进度条确认机制，彻底杜绝手机误触带来的灾难性后果；普通权限支持一键快捷通过。
-- **原生交互决策弹框 (Interactive Decision Modal)**：
-  - 深度支持 Agent 的问答与分歧选择交互（如选择架构方案 A/B、确认操作意图），手机端以原生弹窗交互一键提交选择，即刻解挂后台进程。
-- **单列代码对比 (Unified Diff)** 与 **全屏 Markdown 阅读器**：
-  - 针对 390px 左右手机宽度深度优化，文件级 Diff 展开即看。
-  - 长篇 `implementation_plan.md`、设计规范等富文本一键沉浸全屏阅读。
-- **性能与大输出保护**：
-  - 单步工具输出超过 4KB / 100 行自动智能折叠，首屏会话消息流分页拉取，配合 GZip 压缩与内存 mtime 缓存，确保 60fps 丝滑滑动。
-- **纯黑暗色美学**：
-  - 遵循 `DESIGN.md` 规范，采用 AMOLED 纯黑底色 (`#000000`) 与冷中性 Zinc 炭黑层级，夜晚不刺眼，操作聚焦。
+### 2. 🔀 三层协作实体解耦
+- **Session（协同会话）**：记录人类与 Agent 协同讨论的顶层通道。
+- **Execution（业务执行单）**：代表针对特定任务步骤发起的一次业务调度目标。
+- **ExecutionAttempt（单次执行尝试）**：代表对执行单的具体尝试；网络抖动或失败时追加 Attempt 尝试，不破坏前序执行审计记录。初始为 `queued`，确认开始执行后进入 `running`。
 
-### 3. 🛡️ 状态真相与高可靠保障
-- **会话真相状态机 (`creating / live / degraded / dead`)**：
-  - 单调递增 CAS `status_seq` 护栏，所有前端状态严格由真相表驱动，彻底杜绝「假 RUNNING」与「幽灵会话」。
-  - 底层 Agent 创建异常时自动降级为 `degraded` 状态并提示一键自愈重试，直连通道不中断。
-- **命令幂等总线 (`t_command_idempotency`)**：
-  - 弱网抖动重发、断线重连由幂等记录自动拦截重复执行；执行成功断线重连回放 ACK，失败允许重新提交。
-- **卡死自愈与超时防护 (Hang Self-Healing)**：
-  - 实时监控流式输出耗时与子进程健康状态，出现长时间失联或卡死时提供一键恢复与强制重试。
+### 3. 🔌 标准 MCP 协作中枢（Agent → AgentDeck）
+- **官方 SDK v2 规范**：集成官方 `mcp>=2.0.0`，原生支持无状态 `2026-07-28` 协议及 `2025-11-25` 旧版本兼容分发。
+- **最小权限 Token 守卫**：每个 MCP 令牌（`agmcp_...`）强制绑定单一项目与特定 scopes，校验有效期与吊销状态，绝不复用 Web 端本机免密规则。
+- **8 大标准协同工具**：
+  - 项目上下文与任务读取（`project_context_get`, `task_get`, `task_revision_get`）
+  - 进度汇报与步骤回写（`task_report_progress`, `step_update`）
+  - 人工决策门禁挂起与查询（`checkpoint_request`, `decision_get`）
+  - 项目交付物注册（`artifact_register`）
 
-### 4. 🔒 零公网暴露与极速扫码配对
-- **严禁公网暴露**：
-  - 仅严格绑定本机 Tailscale 虚拟网卡 IP（`100.x.y.z`）与 `127.0.0.1`，绝不绑定 `0.0.0.0`。
-- **60 秒一次性配对码 (`pair_code`)**：
-  - 启动时终端与本地网页生成离线 SVG 二维码与一次性 60s 配对码，手机扫码后置换 SHA-256 长期授权 Token，有效防止截屏泄漏与 CSWSH 跨站劫持。
-- **Windows 防休眠锁 (`SetThreadExecutionState`)**：
-  - 手机端远程一键开启防休眠，允许显示器熄屏、主机不断网休眠，保证夜间或外出时后台任务稳定运行。
-- **工作区与 Git 审查面板**：
-  - 手机端直观查看本地工作区 Git 分支、未暂存与已暂存变动文件树，随时掌握代码演进。
+### 4. 🎛️ Runtime Registry 与 L0-L3 能力阶梯
+- **RuntimeProvider / RuntimeInstance / Machine** 分层建模，管理多宿主机器与不同 Agent 运行时。
+- **能力等级**：
+  - `L0 (Remote Entry)`：提供官方 Web/Remote 入口跳转；
+  - `L1 (Registry & Status)`：具备实例注册、心跳健康与能力清单查询；
+  - `L2 (Programmatic Control)`：支持通过 API/CLI 发起执行并获取结构化反馈；
+  - `L3 (Approval & Resume)`：支持深度门禁拦截、决策注入与断点恢复。
+
+### 5. ⚖️ 交互式决策门禁 (Decision Modal)
+- 当 Agent 遭遇关键分歧、方案选择或风险卡点时，通过 AgentDeck 发起全局 `Decision`。
+- **超时策略**：低风险交互支持 45 秒倒计时自动采纳推荐项；高风险门禁（`risk_gate` / `high` / `critical`）强制人工手动确认，防止静默越权。
+
+### 6. 🔒 零公网暴露与移动端体验
+- 默认监听 `127.0.0.1` 与 Tailscale / ZeroTier 私有虚拟网卡，**严禁公网 `0.0.0.0` 暴露**。
+- 手机扫码 60 秒一次性配对码快速鉴权；支持 iOS / Android 原生 Web Push 离线通知。
 
 ---
 
@@ -89,163 +76,103 @@
 
 ```mermaid
 flowchart TD
-    subgraph 移动端 ["📱 移动端 (PWA / 手机浏览器)"]
-        UI["AMOLED 控制台 (Vanilla JS/CSS)"]
-        SW["Service Worker (Web Push 离线通知)"]
-        Modal["长按 0.8s 审批 / 决策交互弹窗"]
+    subgraph 接入终端 ["📱 客户端层"]
+        Web["现代 Web 控制台 (React 18 + TS)"]
+        Mobile["移动端 PWA / Web Push 通知"]
     end
 
-    subgraph 安全通道 ["🔒 Tailscale 私有网 (100.x.y.z)"]
-        Auth["60s 一次性配对码 / SHA-256 设备 Token"]
+    subgraph 外部Agent ["🤖 Agent Runtimes"]
+        Claude["Claude Code"]
+        AG["Antigravity"]
+        Other["OpenCode / Codex / 自定义 Agent"]
     end
 
-    subgraph 核心后端 ["⚡ AgentDeck Core (FastAPI + AsyncIO)"]
-        Router["REST API / WebSocket 总线"]
-        TruthMachine["真相状态机 (CAS status_seq)"]
-        IdemBus["命令幂等总线 (t_command_idempotency)"]
-        PushEngine["Web Push 推送引擎 (PyWebPush)"]
-        SleepLock["Windows 防休眠锁 (SetThreadExecutionState)"]
+    subgraph 安全边界 ["🔒 访问控制"]
+        PairGuard["设备配对守卫 (60s 一次性配对码)"]
+        McpGuard["项目级 MCP Token 守卫 (Scopes & Expiry)"]
     end
 
-    subgraph 适配器层 ["🔌 多 Agent 统一适配器 (Adapters)"]
-        AG_IDE["Antigravity IDE 适配器 (实时镜像 / 状态探针)"]
-        AG_CLI["Antigravity CLI 适配器 (Stream-JSON / Fork 接力)"]
-        Claude["Claude Code 适配器 (JSONL 增量 / Stdio 审批)"]
-        OpenCode["OpenCode 适配器 (SQLite 只读聚合 / SSE 桥接)"]
+    subgraph 核心服务 ["⚡ AgentDeck Core (FastAPI 2.x)"]
+        ProjectSvc["Project & Planning 领域服务"]
+        DecisionSvc["交互式 Decision 协调服务"]
+        ExecSvc["Execution / Attempt 状态机"]
+        McpServer["MCP 协作服务 (SDK v2)"]
+        RegistrySvc["Runtime Registry & L0-L3 证据库"]
     end
 
-    UI <==> Auth <==> Router
-    SW <==> PushEngine
-    Router --> TruthMachine
-    Router --> IdemBus
-    TruthMachine --> AG_IDE & AG_CLI & Claude & OpenCode
+    subgraph 数据层 ["💾 数据与持久化"]
+        Alembic["Alembic 迁移系统 (唯一 Schema 事实源)"]
+        SQLite["SQLite 21 张规范表 (WAL 模式)"]
+    end
+
+    Web & Mobile <==> PairGuard <==> 核心服务
+    Claude & AG & Other <==> McpGuard <==> McpServer
+    核心服务 --> Alembic --> SQLite
 ```
 
 ---
 
-## 🚀 快速开始
+## 🏁 快速开始
 
-### 1. 环境准备
+### 1. 环境依赖
 - **Python**：`>= 3.11`
-- **操作系统**：Windows 10/11、macOS、Linux（Windows 下提供原生托盘图标与防休眠锁）
-- **网络连接**：电脑与手机加入同一个 [Tailscale](https://tailscale.com/) 网络（或仅在同一局域网/本机使用）
+- **Node.js**：`>= 18`（仅前端二次开发需要；已内置编译产物）
 
-### 2. 安装项目依赖
+### 2. 安装部署
 ```bash
 # 克隆仓库
 git clone https://github.com/xhma-code/AgentDeck.git
 cd AgentDeck
 
-# 安装依赖
+# 安装 Python 运行依赖
 pip install -e .
 ```
 
 ### 3. 一键启动
-在 Windows 下直接双击运行 **`start.cmd`**，或通过命令行启动：
-
 ```bash
-# 标准启动（自动启用热重载与端口防冲突检查）
+# 启动主服务（自动对齐 Alembic 数据库迁移）
 python run.py
 
-# 或通过全局命令启动（安装后）：
-agentdeck
+# 启动环境健康体检
+python run.py --doctor
+
+# 仅在本机 127.0.0.1 模式运行（不绑定 Tailscale 网卡）
+python run.py --local-only
 ```
 
-启动参数说明：
-- `python run.py --doctor`：运行环境与 4 大 Agent 健康状况诊断体检。
-- `python run.py --local-only`：仅监听 `127.0.0.1`，用于纯本机本地调试。
-- `python run.py --port 8766`：指定自定义服务端口（默认 `8765`）。
-- `python run.py --reload`：启用源码文件变动热重载模式。
-- `python run.py --version`：打印当前版本号。
-- **停止服务**：双击运行 `stop.cmd`，或在命令行按 `Ctrl+C`。
-
-启动完成后，控制台将输出 **环境体检表** 及 **手机扫码配对二维码**。
+启动完成后，控制台将输出 **环境体检表** 及 **手机扫码配对二维码**。访问终端打印的本地地址（默认 `http://127.0.0.1:8765/`）即可打开工作台。
 
 ---
 
-## 📱 移动端与 Web Push 原生推送
+## 📱 移动端与通知
 
-### 1. 配对连接
-1. 确保手机已开启 Tailscale 并连接到同一账号。
-2. 打开手机相机，扫描控制台输出的二维码（或在电脑打开 `http://127.0.0.1:8765/` 查看高清二维码）。
-3. 手机浏览器打开后，将在 60 秒内自动校验配对码并颁发长期凭证。
-
-### 2. 启用 iOS / Android Web Push 原生推送（推荐）
-为了在手机锁屏、微信聊天或离开网页时不错过 Agent 的审批与决策请求，建议开启 Web Push：
-1. **iOS (iPhone / iPad)**：
-   - 使用 **Safari** 打开配对成功的页面；
-   - 点击浏览器底部的 **分享按钮 (Share)**，选择 **「添加到主屏幕」(Add to Home Screen)**；
-   - 从桌面打开 AgentDeck App 图标；
-   - 点击控制台右上角的 **🔔 推送开关**，在系统弹窗中允许通知权限。
-2. **Android**：
-   - 使用 Chrome 或 Edge 打开页面，在菜单中选择 **「安装应用」** 或 **「添加到主屏幕」**；
-   - 打开应用并允许通知权限即可。
+1. **手机配对**：手机与电脑处于同一 Tailscale 虚拟局域网（或同 Wi-Fi）下，使用手机相机扫描终端输出的二维码即可免密建立受信任设备配对。
+2. **Web Push 原生离线推送**：在手机浏览器中选择「添加到主屏幕」，点击控制台右上角推送铃铛，即可在锁屏状态下接收 Agent 决策请求与任务验收提醒。
 
 ---
 
-## 📖 接口文档与开放 API
-
-AgentDeck 基于 FastAPI 提供了完备的 RESTful 与 WebSocket API：
-- **Swagger UI 交互式文档**：[http://127.0.0.1:8765/docs](http://127.0.0.1:8765/docs)
-- **ReDoc 规范文档**：[http://127.0.0.1:8765/redoc](http://127.0.0.1:8765/redoc)
-- **核心探针接口**：
-  - `GET /healthz` 或 `GET /api/v1/health`：返回健康状态（免鉴权，便于容器探活与状态监控）
-  - `GET /api/v1/system/status`：返回包含 Tailscale 状态、系统指标与 4 大 Agent 健康度的体检数据
-
----
-
-## 📂 项目结构
+## 📂 代码目录布局
 
 ```text
 AgentDeck/
-├── backend/                    # 后端核心源码
-│   ├── adapters/               # 多 Agent 协议与持久化适配器
-│   │   ├── base.py             # 统一抽象基类、Diff 生成器与高危规则
-│   │   ├── antigravity_adapter.py  # Antigravity IDE/CLI 适配器与自动接力
-│   │   ├── antigravity_fork.py # Fork-to-CLI 安全会话克隆引擎
-│   │   ├── claude_adapter.py   # Claude Code JSONL 增量解析与清洗
-│   │   └── opencode_adapter.py # OpenCode SQLite 聚合与 HTTP 桥接
-│   ├── core/                   # 基础设施核心
-│   │   ├── database.py         # SQLite 元数据库、状态快照与锁保护
-│   │   ├── logger.py           # 结构化中文三段式诊断日志 (Problem/Cause/Fix)
-│   │   ├── network.py          # 端口监听状态与占用自动释放
-│   │   └── tailscale_auth.py   # Tailscale 适配、配对鉴权与防休眠锁
-│   ├── engines/                # 运行时调度引擎
-│   │   ├── approval.py         # 工具权限审批状态机 (0.8s 长按防误触)
-│   │   ├── event_bus.py        # 全双工事件总线与广播
-│   │   ├── process_pool.py     # 子进程池管理与生命周期监控
-│   │   └── watcher.py          # 本地文件与会话流 Watchfiles 监听
-│   └── routes/                 # FastAPI 路由模块
-│       ├── auth.py             # 扫码配对与 Token 签发
-│       ├── push.py             # Web Push (VAPID) 订阅与推送调度
-│       ├── sessions.py         # 会话 CRUD、消息收发与决策应答
-│       ├── static_pwa.py       # PWA 静态资源与 Service Worker 托管
-│       ├── system.py           # 系统状态、防休眠控制与体检
-│       ├── websocket.py        # 实时事件管道与断线对账
-│       └── workspaces.py       # 工作区扫描与 Git 状态面板
-├── frontend/                   # 零打包依赖的前端移动端工作台
-│   ├── index.html              # 响应式骨架与模态框
-│   ├── styles.css              # 纯黑设计系统与微动效
-│   ├── app.js                  # 状态机驱动的前端逻辑与 PWA 管理
-│   └── sw.js                   # Service Worker 与 Web Push 后台捕获
-├── tests/                      # 单元测试与集成测试
-├── run.py                      # 一键启动器 (Launcher & Supervisor)
-├── start.cmd / stop.cmd        # Windows 快捷启停批处理
-└── pyproject.toml              # 项目配置与依赖声明
+├── backend/                    # 后端核心源码 (FastAPI 2.x + SQLAlchemy 2.x)
+│   ├── api/                    # REST API 路由、Schemas 与请求依赖守卫
+│   ├── application/            # 应用服务编排 (Project, Planning, Decision, Execution, Session)
+│   ├── domain/                 # 核心领域实体、枚举类型与安全策略
+│   ├── mcp/                    # 基于官方 SDK v2 的 MCP Server、工具集与 Stdio 服务
+│   ├── db/                     # ORM 模型定义、Engine 工厂与 Alembic 迁移管理器
+│   ├── migrations/             # Alembic 迁移脚本（Schema 演进唯一事实源）
+│   ├── security/               # 设备配对 AuthGuard 与项目级 McpTokenGuard
+│   └── core/                   # 结构化日志、网络探测、WebPush 与防休眠锁
+├── frontend/                   # 前端现代单页应用 (React 18 + TypeScript + Vite)
+│   ├── src/                    # 前端源码 (组件、API 客户端、类型定义)
+│   └── dist/                   # 生产静态资源构建目录
+├── docs/                       # 架构设计与分阶段演进文档
+├── tests/                      # 自动化测试与领域不变量验证套件
+├── alembic.ini                 # Alembic 配置文件
+├── run.py                      # 一键启动器与环境诊断体检入口
+└── pyproject.toml              # 项目元数据与依赖定义
 ```
-
----
-
-## 🔧 常见问题与排查 (Troubleshooting)
-
-| 现象 | 可能原因 | 快速解决措施 |
-| :--- | :--- | :--- |
-| **控制台提示「未检测到活跃 Tailscale」** | 电脑未安装或未登录 Tailscale 客户端 | 运行 `tailscale up` 进行登录。若仅在电脑本地使用，服务将自动回退为 `127.0.0.1` 仅本机模式。 |
-| **手机扫码提示「配对码已失效」** | 二维码配对码具备 60 秒时效性，超时未扫码 | 刷新电脑端 `http://127.0.0.1:8765/` 或重启服务重新生成新二维码。 |
-| **手机无法打开 Tailscale IP** | 手机与电脑未加入同一 Tailnet，或被防火墙拦截 | 检查手机端 Tailscale App 是否开启连接，并确认登录同一账号；Windows 需放行专用网络端口入站规则。 |
-| **收不到 Web Push 推送通知** | 未将网页「添加到主屏幕」或未授权通知 | iOS 限制只有从主屏幕图标启动的 PWA 才能接收 Web Push。请严格按指南使用 Safari「添加到主屏幕」后启动并授权。 |
-| **会话出现 amber「直连/降级」徽标** | 底层服务离线或进程创建未就绪 | CLI 直连通道依然可以正常交互。点击页面顶部的「重试」横幅可尝试重新与底层建立完整连接。 |
-| **端口占用错误 (Errno 10048)** | 上次退出残留或被其他程序占用 | 运行 `stop.cmd` 清理残留进程，或使用 `python run.py --port 8766` 切换端口启动。 |
 
 ---
 

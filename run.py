@@ -17,10 +17,12 @@ from pathlib import Path
 import uvicorn
 
 from backend.app import create_app
+from backend.config import get_settings
 from backend.core.logger import log_structured_error, logger
 from backend.core.network import is_local_port_listening
 from backend.core.qr_box import render_terminal_qr_box
-from backend.db.engine import inspect_sqlite_pragmas
+from backend.db.engine import create_sqlite_engine, inspect_sqlite_pragmas
+from backend.db.migration import apply_database_migrations, inspect_migration_status
 from backend.db.models import ALL_CANONICAL_TABLE_NAMES
 
 VERSION = "1.3.0"
@@ -186,15 +188,19 @@ def free_port_if_occupied(port: int) -> None:
 
 def run_doctor(port: int = 8765) -> int:
     """运行 AgentDeck Clean-Slate 环境诊断体检。"""
-    app = create_app()
+    settings = get_settings()
+    app = create_app(settings=settings, auto_init_schema=False)
     pragmas = inspect_sqlite_pragmas(app.state.engine)
+    migration_status = inspect_migration_status(app.state.engine, settings.db_path)
     providers = app.state.runtime_registry_service.list_providers()
     machines = app.state.runtime_registry_service.list_machines()
     print("\n" + "═" * 72)
     print(f"  🩺 AgentDeck v{VERSION} 环境诊断体检报告")
     print("═" * 72)
-    print(f"  [✓] 数据库路径: {app.state.settings.db_path}")
+    print(f"  [✓] 数据库路径: {settings.db_path}")
     print(f"  [✓] SQLite PRAGMA: {pragmas}")
+    mig_mark = "[✓]" if migration_status["is_synced"] else "[!]"
+    print(f"  {mig_mark} Alembic 迁移版本: 当前={migration_status['current_revision']} | 目标Head={migration_status['head_revision']}")
     print(f"  [✓] 规范表数量: {len(ALL_CANONICAL_TABLE_NAMES)} 张")
     print(f"  [✓] RuntimeProviders: {[p.provider_key for p in providers]}")
     print(f"  [✓] Machines: {[m.display_name for m in machines]}")
@@ -208,8 +214,23 @@ def run_doctor(port: int = 8765) -> int:
 def run_server_worker(port: int, local_only: bool) -> None:
     """启动 AgentDeck 主服务。"""
     free_port_if_occupied(port)
+    settings = get_settings()
+    # 强制以 Alembic 为唯一正式 Schema 演进来源
+    engine = create_sqlite_engine(settings.db_path)
     try:
-        app = create_app()
+        mig_status = inspect_migration_status(engine, settings.db_path)
+        if not mig_status["is_synced"]:
+            logger.info(
+                "检测到数据库尚未对齐 Alembic 最新迁移版本 (当前: %s, 目标: %s)，正在执行升级迁移...",
+                mig_status["current_revision"],
+                mig_status["head_revision"],
+            )
+            apply_database_migrations(settings.db_path)
+    finally:
+        engine.dispose()
+
+    try:
+        app = create_app(settings=settings, auto_init_schema=False)
         app.state.settings.port = port
         print_startup_banner(app, port)
         hosts = ["127.0.0.1"] if local_only else app.state.ts_status.bind_hosts

@@ -52,6 +52,7 @@ from backend.domain.exceptions import (
 )
 from backend.domain.services.decision_policy import (
     validate_decision_creation_policy,
+    validate_decision_entity_consistency,
     validate_decision_resolution_policy,
 )
 from backend.domain.types import DecisionOptionItem
@@ -119,6 +120,7 @@ class DecisionService:
 
             now = utc_now_iso()
 
+            task = None
             if task_id is not None:
                 task = uow.session.get(TaskModel, task_id)
                 if task is None:
@@ -133,15 +135,8 @@ class DecisionService:
                         cause=f"任务 {task_id} 不属于项目 {project_id}",
                         fix="请核对项目上下文。",
                     )
-                if task.platform_status in (
-                    TaskPlatformStatus.DRAFT.value,
-                    TaskPlatformStatus.READY.value,
-                    TaskPlatformStatus.IN_PROGRESS.value,
-                ):
-                    task.platform_status = TaskPlatformStatus.WAITING_INTERACTION.value
-                    task.version += 1
-                    task.updated_at = now
 
+            step = None
             if step_id is not None:
                 step = uow.session.get(StepModel, step_id)
                 if step is None:
@@ -156,15 +151,11 @@ class DecisionService:
                         cause=f"步骤 {step_id} 不属于项目 {project_id}",
                         fix="请核对项目上下文。",
                     )
-                if step.platform_status in (
-                    StepPlatformStatus.PENDING.value,
-                    StepPlatformStatus.READY.value,
-                    StepPlatformStatus.IN_PROGRESS.value,
-                ):
-                    step.platform_status = StepPlatformStatus.WAITING_INTERACTION.value
-                    step.version += 1
-                    step.updated_at = now
+                if task_id is None:
+                    task_id = step.task_id
+                    task = uow.session.get(TaskModel, task_id)
 
+            sess = None
             if session_id is not None:
                 sess = uow.session.get(SessionModel, session_id)
                 if sess is None:
@@ -179,15 +170,8 @@ class DecisionService:
                         cause=f"会话 {session_id} 不属于项目 {project_id}",
                         fix="请核对项目上下文。",
                     )
-                if sess.platform_status in (
-                    SessionPlatformStatus.ACTIVE.value,
-                    SessionPlatformStatus.IDLE.value,
-                ):
-                    sess.platform_status = SessionPlatformStatus.WAITING_INTERACTION.value
-                    sess.status_seq += 1
-                    sess.last_activity_at = now
-                    sess.updated_at = now
 
+            execution = None
             if execution_id is not None:
                 execution = uow.session.get(ExecutionModel, execution_id)
                 if execution is None:
@@ -202,12 +186,54 @@ class DecisionService:
                         cause=f"执行 {execution_id} 不属于项目 {project_id}",
                         fix="请核对项目上下文。",
                     )
-                if execution.platform_status in (
-                    ExecutionPlatformStatus.QUEUED.value,
-                    ExecutionPlatformStatus.RUNNING.value,
-                ):
-                    execution.platform_status = ExecutionPlatformStatus.WAITING_INTERACTION.value
-                    execution.updated_at = now
+
+            # 跨实体关联拓扑一致性校验
+            validate_decision_entity_consistency(
+                task_id=task_id,
+                step_id=step_id,
+                step_task_id=step.task_id if step else None,
+                session_id=session_id,
+                session_task_id=sess.task_id if sess else None,
+                execution_id=execution_id,
+                execution_task_id=execution.task_id if execution else None,
+                execution_step_id=execution.step_id if execution else None,
+                execution_session_id=execution.session_id if execution else None,
+            )
+
+            # 更新实体联动状态进入 waiting_interaction
+            if task is not None and task.platform_status in (
+                TaskPlatformStatus.DRAFT.value,
+                TaskPlatformStatus.READY.value,
+                TaskPlatformStatus.IN_PROGRESS.value,
+            ):
+                task.platform_status = TaskPlatformStatus.WAITING_INTERACTION.value
+                task.version += 1
+                task.updated_at = now
+
+            if step is not None and step.platform_status in (
+                StepPlatformStatus.PENDING.value,
+                StepPlatformStatus.READY.value,
+                StepPlatformStatus.IN_PROGRESS.value,
+            ):
+                step.platform_status = StepPlatformStatus.WAITING_INTERACTION.value
+                step.version += 1
+                step.updated_at = now
+
+            if sess is not None and sess.platform_status in (
+                SessionPlatformStatus.ACTIVE.value,
+                SessionPlatformStatus.IDLE.value,
+            ):
+                sess.platform_status = SessionPlatformStatus.WAITING_INTERACTION.value
+                sess.status_seq += 1
+                sess.last_activity_at = now
+                sess.updated_at = now
+
+            if execution is not None and execution.platform_status in (
+                ExecutionPlatformStatus.QUEUED.value,
+                ExecutionPlatformStatus.RUNNING.value,
+            ):
+                execution.platform_status = ExecutionPlatformStatus.WAITING_INTERACTION.value
+                execution.updated_at = now
 
             decision_id = str(uuid.uuid4())
             options_json = json.dumps([o.model_dump() for o in parsed_options], ensure_ascii=False)

@@ -124,6 +124,7 @@ class ExecutionService:
 
             now = utc_now_iso()
             exec_id = str(uuid.uuid4())
+            rt_health = rt.health_status if rt is not None else RuntimeHealthStatus.UNKNOWN.value
             execution = ExecutionModel(
                 id=exec_id,
                 project_id=project_id,
@@ -132,12 +133,12 @@ class ExecutionService:
                 session_id=session_id,
                 task_revision_no=task.active_revision_no,
                 step_revision_no=step_rev_no,
-                platform_status=ExecutionPlatformStatus.RUNNING.value,
-                agent_reported_status=AgentReportedStatus.RUNNING.value,
-                runtime_status=RuntimeHealthStatus.ONLINE.value,
-                connection_status=ConnectionStatus.CONNECTED.value,
+                platform_status=ExecutionPlatformStatus.QUEUED.value,
+                agent_reported_status=AgentReportedStatus.UNKNOWN.value,
+                runtime_status=rt_health,
+                connection_status=ConnectionStatus.DISCONNECTED.value,
                 summary_note=(summary_note or "").strip(),
-                started_at=now,
+                started_at=None,
                 finished_at=None,
                 created_at=now,
                 updated_at=now,
@@ -153,11 +154,11 @@ class ExecutionService:
                 execution_id=exec_id,
                 attempt_no=1,
                 runtime_instance_id=runtime_instance_id,
-                status=AttemptStatus.RUNNING.value,
+                status=AttemptStatus.QUEUED.value,
                 exit_code=None,
                 error_summary="",
                 model_endpoint_descriptor_json=endpoint_json,
-                started_at=now,
+                started_at=None,
                 ended_at=None,
             )
             uow.session.add(execution)
@@ -167,7 +168,7 @@ class ExecutionService:
                 project_id=project_id,
                 entity_type="execution",
                 entity_id=exec_id,
-                event_type="execution.started",
+                event_type="execution.created",
                 actor_type=actor_type,
                 payload={
                     "task_id": task_id,
@@ -176,6 +177,7 @@ class ExecutionService:
                     "step_revision_no": step_rev_no,
                     "attempt_id": attempt.id,
                     "attempt_no": 1,
+                    "platform_status": ExecutionPlatformStatus.QUEUED.value,
                 },
             )
             uow.commit()
@@ -267,3 +269,80 @@ class ExecutionService:
                 .order_by(ExecutionAttemptModel.attempt_no.asc())
             )
             return list(uow.session.execute(stmt).scalars().all())
+
+    def mark_execution_started(
+        self,
+        *,
+        project_id: str,
+        execution_id: str,
+        attempt_id: Optional[str] = None,
+        agent_reported_status: AgentReportedStatus = AgentReportedStatus.RUNNING,
+        connection_status: ConnectionStatus = ConnectionStatus.CONNECTED,
+        actor_type: ActorType = ActorType.SYSTEM,
+    ) -> tuple[ExecutionModel, ExecutionAttemptModel]:
+        """将处于 queued 的 Execution 及其 Attempt 显式推进为 running 状态。"""
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            execution = uow.session.get(ExecutionModel, execution_id)
+            if execution is None:
+                raise EntityNotFoundError(
+                    problem="目标执行活动不存在",
+                    cause=f"未找到 execution_id: {execution_id}",
+                    fix="请确认执行 ID 正确。",
+                )
+            if execution.project_id != project_id:
+                raise CrossProjectReferenceError(
+                    problem="禁止跨项目操作执行活动",
+                    cause=f"执行 {execution_id} 不属于项目 {project_id}",
+                    fix="请核对项目上下文。",
+                )
+
+            now = utc_now_iso()
+            execution.platform_status = ExecutionPlatformStatus.RUNNING.value
+            execution.agent_reported_status = agent_reported_status.value
+            execution.connection_status = connection_status.value
+            if not execution.started_at:
+                execution.started_at = now
+            execution.updated_at = now
+
+            if attempt_id is not None:
+                attempt = uow.session.get(ExecutionAttemptModel, attempt_id)
+                if attempt is None or attempt.execution_id != execution_id:
+                    raise EntityNotFoundError(
+                        problem="目标运行尝试不存在或不匹配",
+                        cause=f"未找到匹配 execution {execution_id} 的 attempt_id: {attempt_id}",
+                        fix="请确认 attempt_id 正确。",
+                    )
+            else:
+                stmt = (
+                    select(ExecutionAttemptModel)
+                    .where(ExecutionAttemptModel.execution_id == execution_id)
+                    .order_by(ExecutionAttemptModel.attempt_no.desc())
+                    .limit(1)
+                )
+                attempt = uow.session.execute(stmt).scalars().first()
+                if attempt is None:
+                    raise EntityNotFoundError(
+                        problem="未找到关联的运行尝试",
+                        cause=f"执行单 {execution_id} 下无任何 attempt 记录",
+                        fix="请先创建 attempt 记录。",
+                    )
+
+            attempt.status = AttemptStatus.RUNNING.value
+            if not attempt.started_at:
+                attempt.started_at = now
+
+            uow.record_event(
+                project_id=project_id,
+                entity_type="execution",
+                entity_id=execution_id,
+                event_type="execution.started",
+                actor_type=actor_type,
+                payload={
+                    "attempt_id": attempt.id,
+                    "attempt_no": attempt.attempt_no,
+                    "agent_reported_status": agent_reported_status.value,
+                },
+            )
+            uow.commit()
+            return execution, attempt

@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException, Request
 
+from backend.db.base import utc_now_iso
 from backend.db.models.artifact import ArtifactModel
 from backend.db.models.decision import DecisionModel
 from backend.db.models.event import EventModel
@@ -28,10 +29,16 @@ from backend.db.models.runtime import (
     RuntimeProviderModel,
 )
 from backend.db.models.session import ExternalSessionRefModel, SessionModel
-from backend.domain.exceptions import CrossProjectReferenceError
+from backend.db.uow import SqlAlchemyUnitOfWork
+from backend.domain.exceptions import CrossProjectReferenceError, SecurityBoundaryError
 from backend.domain.types import mask_remote_url_for_display
 from backend.security.auth_guard import DevicePairingAuthManager
-from backend.security.mcp_token_guard import hash_mcp_token
+from backend.security.mcp_token_guard import (
+    MCP_TOKEN_PREFIX_TAG,
+    VerifiedMcpPrincipal,
+    hash_mcp_token,
+    verify_mcp_project_token,
+)
 
 
 def extract_bearer_token(request: Request) -> Optional[str]:
@@ -77,10 +84,10 @@ def verify_http_client(request: Request) -> str:
 
 def enforce_project_scope(request: Request, target_project_id: str) -> str:
     """
-    强制执行项目级权限过滤：
+    强制执行项目级防串号与令牌权限过滤：
     1. target_project_id 必须非空；
-    2. 若请求携带 X-Project-Scope（限定项目上下文头）或 X-MCP-Project-Token（项目级令牌），
-       强制验证该令牌或作用域与 target_project_id 完全一致，严禁跨项目数据泄露。
+    2. X-Project-Scope 仅作为客户端防误切项目的附加一致性校验，不作为独立授权凭据；
+    3. 若携带 MCP 令牌（X-MCP-Project-Token 或 Bearer agmcp_...），必须严格验证归属、未吊销、未过期，依赖缺失时 Fail-Closed。
     """
     clean_pid = (target_project_id or "").strip()
     if not clean_pid:
@@ -99,22 +106,95 @@ def enforce_project_scope(request: Request, target_project_id: str) -> str:
             context={"scoped_project_id": scoped_header, "target_project_id": clean_pid},
         )
 
+    # 提取 MCP 令牌
     mcp_raw_token = (request.headers.get("X-MCP-Project-Token") or "").strip()
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    if not mcp_raw_token and auth_header.startswith("Bearer agmcp_"):
+        mcp_raw_token = auth_header[7:].strip()
+
     if mcp_raw_token:
-        project_service = getattr(request.app.state, "project_service", None)
-        if project_service is not None:
-            tokens = project_service.list_mcp_tokens(clean_pid)
-            token_hash = hash_mcp_token(mcp_raw_token)
-            matched = any(t.token_hash == token_hash and not t.is_revoked for t in tokens)
-            if not matched:
-                raise CrossProjectReferenceError(
-                    problem="项目级令牌无权访问目标项目数据",
-                    cause=f"提供的 X-MCP-Project-Token 不属于项目 '{clean_pid}' 或已被吊销",
-                    fix="请使用目标项目签发的有效令牌。",
-                    context={"target_project_id": clean_pid},
+        session_factory = getattr(request.app.state, "session_factory", None)
+        if session_factory is None:
+            # 权限依赖缺失时 Fail-Closed
+            raise HTTPException(
+                status_code=503,
+                detail="鉴权依赖不可用，服务未完全就绪",
+            )
+        bearer_val = f"Bearer {mcp_raw_token}"
+        with SqlAlchemyUnitOfWork(session_factory) as uow:
+            try:
+                verify_mcp_project_token(
+                    uow,
+                    authorization_header=bearer_val,
+                    target_project_id=clean_pid,
                 )
+            except SecurityBoundaryError as sec_exc:
+                raise CrossProjectReferenceError(
+                    problem=sec_exc.problem,
+                    cause=sec_exc.cause,
+                    fix=sec_exc.fix,
+                    context={"target_project_id": clean_pid},
+                ) from sec_exc
 
     return clean_pid
+
+
+def verify_mcp_auth(
+    request: Request,
+    required_scope: Optional[str] = None,
+) -> VerifiedMcpPrincipal:
+    """
+    MCP 专属严格 Token 鉴权守卫（不继承 Web 端 127.0.0.1 免密规则）：
+    - 必须携带合法 Bearer agmcp_... 或 X-MCP-Project-Token；
+    - 校验未吊销、未过期并具备 required_scope；
+    - 任何缺失或异常严格 Fail-Closed 返回 HTTP 401 / 403。
+    """
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    custom_token = (request.headers.get("X-MCP-Project-Token") or "").strip()
+    if not auth_header and custom_token:
+        auth_header = f"Bearer {custom_token}"
+
+    if not auth_header.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="缺少 MCP 项目访问令牌 (Authorization: Bearer agmcp_...)",
+        )
+
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        raise HTTPException(status_code=503, detail="鉴权系统未就绪")
+
+    raw_token = auth_header[7:].strip()
+    if not raw_token.startswith(MCP_TOKEN_PREFIX_TAG):
+        raise HTTPException(status_code=401, detail="非法 MCP 项目令牌格式")
+
+    candidate_hash = hash_mcp_token(raw_token)
+    now_iso = utc_now_iso()
+
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        assert uow.session is not None
+        stmt = select(McpProjectTokenModel).where(McpProjectTokenModel.token_hash == candidate_hash)
+        record = uow.session.execute(stmt).scalar_one_or_none()
+        if record is None:
+            raise HTTPException(status_code=401, detail="MCP 令牌不存在或无效")
+        if record.is_revoked != 0:
+            raise HTTPException(status_code=403, detail="MCP 令牌已被吊销")
+        if record.expires_at and record.expires_at <= now_iso:
+            raise HTTPException(status_code=403, detail="MCP 令牌已过期")
+
+        scopes = frozenset(json.loads(record.scopes_json or "[]"))
+        if required_scope and required_scope not in scopes:
+            raise HTTPException(
+                status_code=403,
+                detail=f"MCP 令牌缺少必需权限: {required_scope}",
+            )
+
+        return VerifiedMcpPrincipal(
+            token_id=record.id,
+            project_id=record.project_id,
+            token_name=record.token_name,
+            scopes=scopes,
+        )
 
 
 # -------------------- ORM -> Dict 序列化函数 --------------------
