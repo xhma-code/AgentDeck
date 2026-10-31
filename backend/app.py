@@ -34,6 +34,7 @@ from backend.db.base import Base, sync_comments_to_connection
 from backend.db.engine import create_session_factory, create_sqlite_engine
 import backend.db.models  # noqa: F401 确保全部 21 张 ORM 模型注册到 Base.metadata
 from backend.domain.exceptions import DomainError
+from backend.mcp.server import VersionedMcpServerDispatcher
 from backend.security.auth_guard import DevicePairingAuthManager
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
@@ -119,6 +120,7 @@ def create_app(
     app.state.decision_service = decision_service
     app.state.artifact_service = artifact_service
     app.state.event_service = event_service
+    app.state.mcp_dispatcher = VersionedMcpServerDispatcher(session_factory)
     app.state.ts_status = ts_status
     app.state.auth_mgr = auth_mgr
     app.state.push_service = push_service

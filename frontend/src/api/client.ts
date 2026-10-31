@@ -188,6 +188,45 @@ export const apiClient = {
     });
   },
 
+  rotateMcpToken(
+    projectId: string,
+    tokenId: string,
+  ): Promise<{
+    ok: boolean;
+    revoked_token_id: string;
+    token: {
+      token_id: string;
+      token_name: string;
+      token_prefix: string;
+      raw_token: string;
+      scopes: string[];
+    };
+  }> {
+    return requestJson(
+      `/api/v1/projects/${projectId}/mcp-tokens/${tokenId}/rotate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({}),
+      },
+    );
+  },
+
+  getMcpToolsDiagnostic(): Promise<{
+    ok: boolean;
+    target_protocol_version: string;
+    supported_protocol_versions: string[];
+    available_scopes: string[];
+    tools: Array<{
+      name: string;
+      title: string;
+      description: string;
+      annotations?: { requiredScope?: string };
+    }>;
+  }> {
+    return requestJson('/api/v1/mcp/tools');
+  },
+
+
   createTask(
     projectId: string,
     payload: {

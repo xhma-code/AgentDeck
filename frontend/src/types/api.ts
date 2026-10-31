@@ -220,6 +220,7 @@ export interface CapabilityManifestItem {
   runtime_version: string;
   connector_version: string;
   verified_at: string | null;
+  verified_protocol_versions?: string[];
   limitations: string;
 }
 

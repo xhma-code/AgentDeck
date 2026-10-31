@@ -26,6 +26,7 @@ from backend.security.mcp_token_guard import (
     IssuedMcpToken,
     issue_mcp_project_token,
     revoke_mcp_project_token,
+    rotate_mcp_project_token,
 )
 from backend.security.path_guard import validate_project_root_dir
 
@@ -238,6 +239,22 @@ class ProjectService:
         """吊销项目下的 MCP 令牌。"""
         with SqlAlchemyUnitOfWork(self._session_factory) as uow:
             revoke_mcp_project_token(uow, project_id=project_id, token_id=token_id)
+
+    def rotate_mcp_token(
+        self,
+        *,
+        project_id: str,
+        token_id: str,
+        expires_at: Optional[str] = None,
+    ) -> IssuedMcpToken:
+        """同事务原子轮换项目下的 MCP 令牌（吊销旧令牌并继承原权限范围签发新令牌）。"""
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            return rotate_mcp_project_token(
+                uow,
+                project_id=project_id,
+                token_id=token_id,
+                expires_at=expires_at,
+            )
 
     def list_mcp_tokens(self, project_id: str) -> list[McpProjectTokenModel]:
         """查询项目下全部 MCP 令牌元数据（不含明文）。"""

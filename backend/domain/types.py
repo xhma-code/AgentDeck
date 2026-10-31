@@ -68,6 +68,10 @@ class CapabilityManifestItem(BaseModel):
     runtime_version: str = Field(default="unknown", max_length=64, description="Runtime 版本")
     connector_version: str = Field(default="none", max_length=64, description="连接器版本")
     verified_at: Optional[str] = Field(default=None, description="验证通过时间（ISO 8601）")
+    verified_protocol_versions: list[str] = Field(
+        default_factory=list,
+        description="已验证通过的协议版本列表（如 ['2026-07-28', '2025-11-25']）",
+    )
     limitations: str = Field(default="", max_length=500, description="适用前提与能力限制说明")
 
 

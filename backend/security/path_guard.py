@@ -229,3 +229,105 @@ def dedup_root_paths(paths: Iterable[str]) -> list[str]:
             out.append(norm)
     return out
 
+
+def validate_artifact_relative_path(project_root: str, relative_path: str) -> str:
+    """
+    校验 Artifact 的项目内相对路径安全性（Phase 4 补充安全要求）：
+    1. 空字符串合法（表示纯摘要类产物，不关联具体磁盘文件）。
+    2. 严禁包含控制字符、Windows 盘符（如 C:\\ / D:/）、UNC 路径（\\\\server\\share 或 //server）、绝对路径前导斜杠或 '..' 父目录逃逸。
+    3. 结合 project_root 进行真实路径解析与逐级 symlink / Windows Junction 检查，禁止通过符号链接跳出所属 Project.root_path。
+    4. 返回统一规范化后的正斜杠相对路径。
+    """
+    raw = (relative_path or "").strip()
+    if not raw:
+        return ""
+
+    if any(ord(ch) < 32 for ch in raw):
+        raise SecurityBoundaryError(
+            problem="产物相对路径包含非法控制字符",
+            cause="relative_path 中检测到 ASCII 控制字符",
+            fix="请提供合法的项目内相对文件路径。",
+            context={"mcp_error_code": "MCP_PATH_ESCAPE_BLOCKED"},
+        )
+
+    if raw.startswith(("\\\\", "//")) or re.match(r"^[a-zA-Z]:", raw):
+        raise SecurityBoundaryError(
+            problem="禁止在产物路径中使用 Windows 盘符或 UNC 网络路径",
+            cause=f"收到非法路径: '{raw}'",
+            fix="请仅填写相对于项目根目录 (Project.root_path) 的相对路径（例如 'docs/report.md'）。",
+            context={"mcp_error_code": "MCP_PATH_ESCAPE_BLOCKED"},
+        )
+
+    if "\\" in raw:
+        raise SecurityBoundaryError(
+            problem="禁止在产物相对路径中使用反斜杠 ('\\')",
+            cause=f"路径 '{raw}' 包含 Windows 反斜杠分隔符",
+            fix="请统一使用正斜杠 '/' 格式的项目内相对路径（例如 'docs/report.md'）。",
+            context={"mcp_error_code": "MCP_PATH_ESCAPE_BLOCKED"},
+        )
+
+    if raw.startswith("/"):
+        raise SecurityBoundaryError(
+            problem="禁止在产物路径中使用绝对路径",
+            cause=f"路径 '{raw}' 以正斜杠开头",
+            fix="请移除前导斜杠，仅使用项目内相对路径。",
+            context={"mcp_error_code": "MCP_PATH_ESCAPE_BLOCKED"},
+        )
+
+    norm_rel = re.sub(r"/+", "/", raw).strip("/")
+    parts = [seg for seg in norm_rel.split("/") if seg]
+    if not parts or any(seg in (".", "..") or ":" in seg for seg in parts):
+        raise SecurityBoundaryError(
+            problem="禁止在产物路径中使用 '..' 目录穿越或非法路径段",
+            cause=f"路径 '{raw}' 包含父目录跳转或非法字符",
+            fix="产物路径必须严格位于当前项目根目录内部。",
+            context={"mcp_error_code": "MCP_PATH_ESCAPE_BLOCKED"},
+        )
+
+    clean_rel = "/".join(parts)
+    if not (project_root or "").strip():
+        return clean_rel
+
+    try:
+        root_real = Path(os.path.abspath(project_root)).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise SecurityBoundaryError(
+            problem="项目根目录无效，无法校验产物路径",
+            cause=f"无法解析项目根目录 '{project_root}': {exc}",
+            fix="请确认项目 root_path 在本地磁盘真实存在。",
+            context={"mcp_error_code": "MCP_PATH_ESCAPE_BLOCKED"},
+        ) from exc
+
+    cursor = root_real
+    for seg in parts:
+        cursor = cursor / seg
+        if _is_link_or_junction(cursor):
+            try:
+                target_real = cursor.resolve(strict=True)
+            except OSError as exc:
+                raise SecurityBoundaryError(
+                    problem="拦截悬空符号链接或无效重解析点产物路径",
+                    cause=f"路径节点 '{cursor.name}' 是无效符号链接: {exc}",
+                    fix="禁止登记指向悬空符号链接的产物路径。",
+                    context={"mcp_error_code": "MCP_PATH_ESCAPE_BLOCKED"},
+                ) from exc
+            if not _is_within_real_root(target_real, root_real):
+                raise SecurityBoundaryError(
+                    problem="拦截符号链接 / Windows Junction 越界产物路径",
+                    cause=f"路径 '{clean_rel}' 中的符号链接指向了项目根目录之外",
+                    fix="禁止通过符号链接或目录联接登记项目外部文件。",
+                    context={"mcp_error_code": "MCP_PATH_ESCAPE_BLOCKED"},
+                )
+
+    resolved_candidate = (root_real / clean_rel).resolve(strict=False)
+    if not _is_within_real_root(resolved_candidate, root_real):
+        raise SecurityBoundaryError(
+            problem="产物路径越出项目根目录边界",
+            cause=f"解析后的路径不位于项目根目录 '{root_real}' 内",
+            fix="请确保 relative_path 严格指向当前项目内部。",
+            context={"mcp_error_code": "MCP_PATH_ESCAPE_BLOCKED"},
+        )
+
+    return clean_rel
+
+

@@ -20,9 +20,18 @@ from backend.db.models.execution import ExecutionModel
 from backend.db.models.planning import TaskModel
 from backend.db.models.project import ProjectModel
 from backend.db.models.session import SessionModel
-from backend.db.uow import SqlAlchemyUnitOfWork
+from backend.db.uow import SqlAlchemyUnitOfWork, _sanitize_event_payload
 from backend.domain.enums import ActorType, ArtifactType
-from backend.domain.exceptions import CrossProjectReferenceError, EntityNotFoundError
+from backend.domain.exceptions import (
+    CrossProjectReferenceError,
+    EntityNotFoundError,
+    InvariantViolationError,
+)
+from backend.security.path_guard import validate_artifact_relative_path
+
+MAX_ARTIFACT_SUMMARY_CHARS = 65536
+MAX_ARTIFACT_METADATA_BYTES = 16384
+
 
 
 class ArtifactService:
@@ -85,7 +94,24 @@ class ArtifactService:
                         fix="请核对执行记录与项目归属。",
                     )
 
+            clean_rel_path = validate_artifact_relative_path(proj.root_path, relative_path or "")
+
             clean_summary = (summary_content or "").strip()
+            if len(clean_summary) > MAX_ARTIFACT_SUMMARY_CHARS:
+                raise InvariantViolationError(
+                    problem="产物摘要内容超出最大长度限制",
+                    cause=f"summary_content 长度为 {len(clean_summary)} 字符，超过上限 {MAX_ARTIFACT_SUMMARY_CHARS}",
+                    fix="请精简产物摘要内容后重新登记。",
+                )
+
+            sanitized_meta_json = _sanitize_event_payload(metadata or {})
+            if len(sanitized_meta_json.encode("utf-8")) > MAX_ARTIFACT_METADATA_BYTES:
+                raise InvariantViolationError(
+                    problem="产物 metadata 超出最大字节限制",
+                    cause=f"metadata 序列化后超过 {MAX_ARTIFACT_METADATA_BYTES} 字节上限",
+                    fix="请仅在 metadata 中保留轻量结构化元数据。",
+                )
+
             checksum = (
                 hashlib.sha256(clean_summary.encode("utf-8")).hexdigest()
                 if clean_summary
@@ -101,11 +127,11 @@ class ArtifactService:
                 execution_id=execution_id,
                 artifact_type=artifact_type.value,
                 title=(title or "执行产物").strip()[:240],
-                relative_path=(relative_path or "").strip(),
+                relative_path=clean_rel_path,
                 summary_content=clean_summary,
                 checksum_sha256=checksum,
                 source_task_revision_no=task_rev_no,
-                metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
+                metadata_json=sanitized_meta_json,
                 created_by=actor_type.value,
                 created_at=now,
             )

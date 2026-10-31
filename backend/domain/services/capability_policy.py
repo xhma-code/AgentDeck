@@ -24,7 +24,8 @@ from backend.domain.exceptions import InvariantViolationError
 from backend.domain.types import CapabilityManifestItem
 
 L0_CAPABILITY_KEYS = {"remote_entry"}
-L1_CAPABILITY_KEYS = {"runtime_registry_and_status", "mcp_collab"}
+L1_CAPABILITY_KEYS = {"runtime_registry_and_status"}
+MCP_COLLAB_CAPABILITY_KEYS = {"mcp_client_collab", "mcp_collab"}
 L2_PROGRAMMATIC_CAPABILITY_KEYS = {
     "programmatic_control",
     "sdk_programmatic_control",
@@ -80,11 +81,28 @@ def validate_runtime_control_and_capabilities(
 
     for item in capabilities:
         cap_key = (item.capability or "").strip()
+        if cap_key == "mcp_collab":
+            cap_key = "mcp_client_collab"
         eff_ver = item.runtime_version
         if (not eff_ver or eff_ver == "unknown") and clean_inst_ver != "unknown":
             eff_ver = clean_inst_ver
 
         updated_item = item.model_copy(update={"capability": cap_key, "runtime_version": eff_ver})
+
+        # 若单项能力属于 MCP 主动协同协议且声称 supported，则必须具备实测证据与已验证的协议版本列表
+        if cap_key in MCP_COLLAB_CAPABILITY_KEYS and updated_item.support_status == SupportStatus.SUPPORTED:
+            if not _is_capability_truly_verified(updated_item, clean_inst_ver) or not updated_item.verified_protocol_versions:
+                raise InvariantViolationError(
+                    problem=f"MCP 协作能力 '{cap_key}' 缺少真实验证证据或协议版本记录，禁止标为 supported",
+                    cause=(
+                        f"capability='{cap_key}' 声明为 supported，但 evidence='{updated_item.evidence.value}'、"
+                        f"verified_at='{updated_item.verified_at or ''}' 或 verified_protocol_versions={updated_item.verified_protocol_versions} 不完整"
+                    ),
+                    fix=(
+                        "未完成真实客户端 MCP 协同验证前请保持 support_status='unverified'；"
+                        "验证通过后需记录实测 evidence、verified_at、runtime_version 以及 verified_protocol_versions（如 ['2026-07-28']）。"
+                    ),
+                )
 
         # 若单项能力属于 L2 程序化控制或 L3 审批与恢复，且声称 supported，则必须具备真实验证证据
         if (

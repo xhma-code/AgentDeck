@@ -262,3 +262,194 @@ def verify_mcp_project_token(
         scopes=scopes_set,
     )
 
+
+def rotate_mcp_project_token(
+    uow: SqlAlchemyUnitOfWork,
+    *,
+    project_id: str,
+    token_id: str,
+    expires_at: Optional[str] = None,
+) -> IssuedMcpToken:
+    """
+    在同一数据库事务内原子轮换指定项目的 MCP Token：
+    将旧 Token 标记为 is_revoked = 1，并继承其 token_name 与 scopes 签发新 Token。
+    """
+    assert uow.session is not None
+    old_record = uow.session.get(McpProjectTokenModel, token_id)
+    if old_record is None or old_record.project_id != project_id:
+        raise EntityNotFoundError(
+            problem="未找到待轮换的项目 MCP Token",
+            cause=f"Token {token_id} 不存在或不属于项目 {project_id}",
+            fix="请核对项目 ID 与待轮换令牌 ID。",
+            context={"project_id": project_id, "token_id": token_id},
+        )
+
+    old_record.is_revoked = 1
+    inherited_scopes = json.loads(old_record.scopes_json or "[]")
+    eff_expires = expires_at if expires_at is not None else old_record.expires_at
+
+    raw_secret = f"{MCP_TOKEN_PREFIX_TAG}{secrets.token_urlsafe(32)}"
+    token_prefix = raw_secret[:12]
+    token_hash = hash_mcp_token(raw_secret)
+    new_token_id = str(uuid.uuid4())
+    now = utc_now_iso()
+
+    new_record = McpProjectTokenModel(
+        id=new_token_id,
+        project_id=project_id,
+        token_name=old_record.token_name,
+        token_prefix=token_prefix,
+        token_hash=token_hash,
+        scopes_json=json.dumps(inherited_scopes, ensure_ascii=False),
+        is_revoked=0,
+        expires_at=eff_expires,
+        last_used_at=None,
+        created_at=now,
+    )
+    uow.session.add(new_record)
+    uow.record_event(
+        project_id=project_id,
+        entity_type="security",
+        entity_id=new_token_id,
+        event_type="security.mcp_token_rotated",
+        actor_type=ActorType.USER,
+        payload={
+            "revoked_token_id": old_record.id,
+            "revoked_token_prefix": old_record.token_prefix,
+            "new_token_id": new_token_id,
+            "new_token_prefix": token_prefix,
+            "scopes": inherited_scopes,
+        },
+    )
+    uow.commit()
+
+    return IssuedMcpToken(
+        token_id=new_token_id,
+        project_id=project_id,
+        token_name=old_record.token_name,
+        token_prefix=token_prefix,
+        raw_token=raw_secret,
+        scopes=inherited_scopes,
+        expires_at=eff_expires,
+        created_at=now,
+    )
+
+
+def authenticate_mcp_token(
+    uow: SqlAlchemyUnitOfWork,
+    *,
+    raw_token_or_header: Optional[str],
+    claimed_project_id: Optional[str] = None,
+    required_scope: Optional[str] = None,
+) -> VerifiedMcpPrincipal:
+    """
+    从 MCP 请求携带的令牌解析唯一绑定的 Project 主体并校验最小权限：
+    - 绝不信任本机 127.0.0.1 免密；
+    - 服务端从 Token 反查 project_id，若调用方同时传入 claimed_project_id 且不一致，抛出跨项目拒绝错误；
+    - 校验 required_scope 是否在已授权集合中。
+    """
+    assert uow.session is not None
+    val = (raw_token_or_header or "").strip()
+    if val.lower().startswith("bearer "):
+        raw_token = val[7:].strip()
+    else:
+        raw_token = val
+
+    if not raw_token:
+        raise SecurityBoundaryError(
+            problem="MCP 访问被拒绝（缺少项目令牌）",
+            cause="未提供 Authorization: Bearer <token>、X-MCP-Project-Token 或 AGENTDECK_MCP_TOKEN",
+            fix="请配置有效的 Project-scoped MCP Token（MCP 接口禁用本机免密）。",
+            context={"mcp_error_code": "MCP_UNAUTHORIZED"},
+        )
+
+    if not raw_token.startswith(MCP_TOKEN_PREFIX_TAG):
+        raise SecurityBoundaryError(
+            problem="MCP 访问被拒绝（令牌格式非法）",
+            cause="提供的令牌不是合法的 agmcp_ 前缀项目令牌",
+            fix="请使用由 AgentDeck 签发的项目专属 MCP Token。",
+            context={"mcp_error_code": "MCP_UNAUTHORIZED"},
+        )
+
+    candidate_hash = hash_mcp_token(raw_token)
+    stmt = select(McpProjectTokenModel).where(McpProjectTokenModel.token_hash == candidate_hash)
+    record = uow.session.execute(stmt).scalar_one_or_none()
+
+    if record is None or not hmac.compare_digest(record.token_hash, candidate_hash):
+        raise SecurityBoundaryError(
+            problem="MCP 访问被拒绝（令牌无效或不存在）",
+            cause="未匹配到任何已签发的有效 MCP 项目令牌",
+            fix="请重新签发并配置对应 Project 的 MCP Token。",
+            context={"mcp_error_code": "MCP_UNAUTHORIZED"},
+        )
+
+    if record.is_revoked != 0:
+        raise SecurityBoundaryError(
+            problem="MCP 访问被拒绝（令牌已被吊销）",
+            cause=f"令牌 {record.token_prefix}*** 已处于吊销状态",
+            fix="请使用轮换后的新 MCP Token。",
+            context={"token_id": record.id, "mcp_error_code": "MCP_UNAUTHORIZED"},
+        )
+
+    now_iso = utc_now_iso()
+    if record.expires_at and record.expires_at <= now_iso:
+        raise SecurityBoundaryError(
+            problem="MCP 访问被拒绝（令牌已过期）",
+            cause=f"令牌 {record.token_prefix}*** 已于 {record.expires_at} 过期",
+            fix="请为该项目轮换签发新的 MCP Token。",
+            context={"token_id": record.id, "mcp_error_code": "MCP_UNAUTHORIZED"},
+        )
+
+    clean_claimed = (claimed_project_id or "").strip()
+    if clean_claimed and clean_claimed != record.project_id:
+        uow.record_event(
+            project_id=record.project_id,
+            entity_type="security",
+            entity_id=record.id,
+            event_type="security.mcp_cross_project_blocked",
+            actor_type=ActorType.MCP_AGENT,
+            actor_id=record.token_prefix,
+            payload={
+                "token_id": record.id,
+                "bound_project_id": record.project_id,
+                "claimed_project_id": clean_claimed,
+            },
+        )
+        uow.commit()
+        raise SecurityBoundaryError(
+            problem="拦截跨项目越权 MCP 访问",
+            cause=f"令牌绑定项目 ({record.project_id}) 与请求指定的项目 ({clean_claimed}) 不一致",
+            fix="每个 MCP Token 仅限操作其绑定的单一 Project，严禁跨项目读写。",
+            context={
+                "token_id": record.id,
+                "bound_project_id": record.project_id,
+                "target_project_id": clean_claimed,
+                "mcp_error_code": "MCP_CROSS_PROJECT_DENIED",
+            },
+        )
+
+    scopes_set = frozenset(json.loads(record.scopes_json or "[]"))
+    if required_scope and required_scope not in scopes_set:
+        raise SecurityBoundaryError(
+            problem="MCP 访问被拒绝（超出令牌最小权限范围）",
+            cause=f"当前工具需要权限 '{required_scope}'，但令牌仅拥有 {sorted(scopes_set)}",
+            fix=f"请为该项目签发包含 '{required_scope}' 权限范围的 MCP Token。",
+            context={
+                "token_id": record.id,
+                "required_scope": required_scope,
+                "granted_scopes": sorted(scopes_set),
+                "mcp_error_code": "MCP_SCOPE_FORBIDDEN",
+            },
+        )
+
+    record.last_used_at = now_iso
+    uow.commit()
+
+    return VerifiedMcpPrincipal(
+        token_id=record.id,
+        project_id=record.project_id,
+        token_name=record.token_name,
+        scopes=scopes_set,
+    )
+
+

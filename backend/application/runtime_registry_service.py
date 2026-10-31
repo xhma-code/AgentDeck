@@ -53,12 +53,13 @@ def _detect_local_machine_os() -> MachineOS:
 
 def _default_provider_seeds() -> list[dict[str, object]]:
     """
-    构造 4 大官方 Runtime 的初始基线定义（对齐 v1.3 L0-L3 分级）：
+    构造 4 大官方 Runtime 的初始基线定义（对齐 v1.3 L0-L3 分级与 MCP 协作协议解耦）：
     - L0：remote_entry（官方 Remote 入口）
-    - L1：runtime_registry_and_status / mcp_collab（Runtime 注册、状态与能力信息管理）
+    - L1：runtime_registry_and_status（Runtime 注册、状态与能力清单管理）
+    - MCP：mcp_client_collab（Agent -> AgentDeck 协作协议与工具接口，独立记录已验证的 MCP 协议版本）
     - L2：programmatic_control（程序化控制；SDK/HTTP API/Stdio 是技术途径，不等于 L3）
     - L3：approval_and_resume（审批与恢复能力）
-    严格遵守诚实声明规则：未在用户当前环境实测通过的 L2/L3 能力一律标为 unverified！
+    严格遵守诚实声明规则：未在用户当前环境实测通过的能力一律标为 unverified！
     """
     return [
         {
@@ -84,10 +85,10 @@ def _default_provider_seeds() -> list[dict[str, object]]:
                     limitations="L1 支持登记实例、宿主机器、外部会话映射与独立连接状态",
                 ),
                 CapabilityManifestItem(
-                    capability="mcp_collab",
+                    capability="mcp_client_collab",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="L1 MCP 主动协同：待 Phase 4 AgentDeck MCP Server 实测验证",
+                    limitations="MCP 主动协同协议（Agent -> AgentDeck）：需按实际客户端测试结果记录已验证的 MCP 协议版本",
                 ),
                 CapabilityManifestItem(
                     capability="programmatic_control",
@@ -126,10 +127,10 @@ def _default_provider_seeds() -> list[dict[str, object]]:
                     limitations="L1 支持登记实例、宿主机器、外部会话映射与独立连接状态",
                 ),
                 CapabilityManifestItem(
-                    capability="mcp_collab",
+                    capability="mcp_client_collab",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="L1 MCP 主动协同：待 Phase 4 实测验证",
+                    limitations="MCP 主动协同协议（Agent -> AgentDeck）：需按实际客户端测试结果记录已验证的 MCP 协议版本",
                 ),
                 CapabilityManifestItem(
                     capability="programmatic_control",
@@ -168,10 +169,10 @@ def _default_provider_seeds() -> list[dict[str, object]]:
                     limitations="L1 支持登记实例、宿主机器、外部会话映射与独立连接状态",
                 ),
                 CapabilityManifestItem(
-                    capability="mcp_collab",
+                    capability="mcp_client_collab",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="L1 MCP 主动协同：待 Phase 4 实测验证",
+                    limitations="MCP 主动协同协议（Agent -> AgentDeck）：需按实际客户端测试结果记录已验证的 MCP 协议版本",
                 ),
                 CapabilityManifestItem(
                     capability="programmatic_control",
@@ -210,10 +211,10 @@ def _default_provider_seeds() -> list[dict[str, object]]:
                     limitations="L1 支持登记实例、宿主机器、外部会话映射与独立连接状态",
                 ),
                 CapabilityManifestItem(
-                    capability="mcp_collab",
+                    capability="mcp_client_collab",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="L1 MCP 主动协同：待 Phase 4 实测验证",
+                    limitations="MCP 主动协同协议（Agent -> AgentDeck）：需按实际客户端测试结果记录已验证的 MCP 协议版本",
                 ),
                 CapabilityManifestItem(
                     capability="programmatic_control",
@@ -590,4 +591,91 @@ class RuntimeRegistryService:
                 .scalars()
                 .all()
             )
+
+    def record_provider_mcp_verification(
+        self,
+        *,
+        provider_key: str,
+        runtime_version: str,
+        verified_protocol_versions: Sequence[str],
+        evidence: EvidenceSource = EvidenceSource.INTEGRATION_TEST,
+        limitations: str = "MCP 主动协同协议已通过真实验证",
+    ) -> RuntimeProviderModel:
+        """记录指定 RuntimeProvider 经实测通过的 MCP 协作协议版本与证据。"""
+        clean_protocols = [str(v).strip() for v in verified_protocol_versions if str(v).strip()]
+        now = utc_now_iso()
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            provider = uow.session.execute(
+                select(RuntimeProviderModel).where(RuntimeProviderModel.provider_key == provider_key)
+            ).scalar_one_or_none()
+            if provider is None:
+                raise EntityNotFoundError(
+                    problem="未找到目标 RuntimeProvider",
+                    cause=f"provider_key='{provider_key}' 不存在",
+                    fix="请确认 provider_key 是否为内置官方 Provider。",
+                )
+
+            raw_caps = [
+                CapabilityManifestItem.model_validate(item)
+                for item in json.loads(provider.default_capabilities_json or "[]")
+            ]
+            updated_caps: list[CapabilityManifestItem] = []
+            found = False
+            for c in raw_caps:
+                cap_name = "mcp_client_collab" if c.capability == "mcp_collab" else c.capability
+                if cap_name == "mcp_client_collab":
+                    found = True
+                    updated_caps.append(
+                        CapabilityManifestItem(
+                            capability="mcp_client_collab",
+                            support_status=SupportStatus.SUPPORTED,
+                            evidence=evidence,
+                            runtime_version=runtime_version.strip() or "1.x",
+                            connector_version="phase4-mcp-v2",
+                            verified_at=now,
+                            verified_protocol_versions=clean_protocols,
+                            limitations=limitations,
+                        )
+                    )
+                else:
+                    updated_caps.append(c)
+
+            if not found:
+                updated_caps.append(
+                    CapabilityManifestItem(
+                        capability="mcp_client_collab",
+                        support_status=SupportStatus.SUPPORTED,
+                        evidence=evidence,
+                        runtime_version=runtime_version.strip() or "1.x",
+                        connector_version="phase4-mcp-v2",
+                        verified_at=now,
+                        verified_protocol_versions=clean_protocols,
+                        limitations=limitations,
+                    )
+                )
+
+            validated = validate_runtime_control_and_capabilities(
+                control_level=ControlLevel.L1,
+                capabilities=updated_caps,
+                runtime_version=runtime_version,
+            )
+            provider.default_capabilities_json = json.dumps(
+                [c.model_dump() for c in validated], ensure_ascii=False
+            )
+            provider.updated_at = now
+            uow.record_event(
+                entity_type="runtime_provider",
+                entity_id=provider.id,
+                event_type="runtime_provider.mcp_verified",
+                actor_type=ActorType.SYSTEM,
+                payload={
+                    "provider_key": provider.provider_key,
+                    "runtime_version": runtime_version,
+                    "verified_protocol_versions": clean_protocols,
+                },
+            )
+            uow.commit()
+            return provider
+
 

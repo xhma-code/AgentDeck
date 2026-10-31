@@ -400,6 +400,18 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleRotateMcpToken = async (tokenId: string) => {
+    if (!selectedProjectId) return;
+    try {
+      const res = await apiClient.rotateMcpToken(selectedProjectId, tokenId);
+      setNewlyIssuedRawToken(res.token.raw_token);
+      await loadProjectContext(selectedProjectId);
+      notify('已原子轮换 MCP Token（旧令牌已立即吊销，请复制新令牌）');
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : '轮换 MCP Token 失败');
+    }
+  };
+
   const handleTriggerDemoDecision = async () => {
     if (!selectedProjectId) return;
     try {
@@ -1061,6 +1073,18 @@ export const App: React.FC = () => {
                       >
                         {newlyIssuedRawToken}
                       </code>
+                      <div
+                        style={{
+                          marginTop: 8,
+                          fontSize: 12,
+                          color: 'var(--text-secondary)',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        Stdio 接入配置（严禁通过 --token 命令行参数传参，仅限环境变量）：
+                        {` { "command": "python", "args": ["-m", "backend.mcp.stdio_server"], "env": { "AGENTDECK_MCP_TOKEN": "${newlyIssuedRawToken}" } } `}
+                        | HTTP Streamable 端点：<code>POST /api/v1/mcp</code>（主规范 2026-07-28 / 兼容 2025-11-25）
+                      </div>
                     </div>
                   )}
 
@@ -1080,25 +1104,40 @@ export const App: React.FC = () => {
                         >
                           MCP Token: {t.token_prefix}*** ({t.token_name})
                           {!t.is_revoked && (
-                            <button
-                              type="button"
-                              style={{
-                                marginLeft: 6,
-                                background: 'transparent',
-                                border: 'none',
-                                color: '#fca5a5',
-                                cursor: 'pointer',
-                              }}
-                              onClick={async () => {
-                                await apiClient.revokeMcpToken(
-                                  currentProject.id,
-                                  t.id,
-                                );
-                                await loadProjectContext(currentProject.id);
-                              }}
-                            >
-                              吊销
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                style={{
+                                  marginLeft: 6,
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: '#93c5fd',
+                                  cursor: 'pointer',
+                                }}
+                                onClick={() => void handleRotateMcpToken(t.id)}
+                              >
+                                轮换
+                              </button>
+                              <button
+                                type="button"
+                                style={{
+                                  marginLeft: 6,
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: '#fca5a5',
+                                  cursor: 'pointer',
+                                }}
+                                onClick={async () => {
+                                  await apiClient.revokeMcpToken(
+                                    currentProject.id,
+                                    t.id,
+                                  );
+                                  await loadProjectContext(currentProject.id);
+                                }}
+                              >
+                                吊销
+                              </button>
+                            </>
                           )}
                         </span>
                       ))}
@@ -2153,6 +2192,10 @@ export const App: React.FC = () => {
                                   <code>{cap.capability}</code> · 证据来源：
                                   <code>{cap.evidence}</code> · 版本：
                                   <code>{cap.runtime_version}</code>
+                                  {cap.verified_protocol_versions &&
+                                  cap.verified_protocol_versions.length > 0
+                                    ? ` · 已验证协议：[${cap.verified_protocol_versions.join(', ')}]`
+                                    : ''}
                                   {cap.verified_at
                                     ? ` · 验证时间：${cap.verified_at}`
                                     : ''}{' '}
@@ -2505,7 +2548,12 @@ export const App: React.FC = () => {
                             }}
                           >
                             <span>
-                              <code>{cap.capability}</code> — {cap.limitations}
+                              <code>{cap.capability}</code>
+                              {cap.verified_protocol_versions &&
+                              cap.verified_protocol_versions.length > 0
+                                ? ` [${cap.verified_protocol_versions.join(', ')}]`
+                                : ''}{' '}
+                              — {cap.limitations}
                             </span>
                             <StatusBadge status={cap.support_status} />
                           </div>

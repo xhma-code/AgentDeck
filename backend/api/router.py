@@ -7,9 +7,12 @@ Runtime 注册中心、协同会话与官方 Remote 入口、执行与尝试、�
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
+
 
 from backend.api.deps import (
     enforce_project_scope,
@@ -45,12 +48,14 @@ from backend.api.schemas import (
     MachineRegisterRequest,
     MachineUpdateRequest,
     McpTokenIssueRequest,
+    McpTokenRotateRequest,
     PairExchangeRequest,
     ProjectCreateRequest,
     ProjectUpdateRequest,
     PushSubscribeRequest,
     RuntimeInstanceRegisterRequest,
     RuntimeInstanceUpdateRequest,
+    RuntimeProviderMcpVerifyRequest,
     SessionConnectionStatusUpdateRequest,
     SessionCreateRequest,
     SessionStatusUpdateRequest,
@@ -82,8 +87,20 @@ from backend.core.workspace import (
 from backend.db.backup import create_online_sqlite_backup
 from backend.db.models import ALL_CANONICAL_TABLE_NAMES
 from backend.domain.enums import DecisionStatus
+from backend.domain.exceptions import SecurityBoundaryError
 from backend.domain.services.capability_policy import CONTROL_LEVEL_DEFINITIONS
 from backend.domain.services.decision_policy import DECISION_RETRY_POLICY
+from backend.mcp.auth import (
+    ALL_MCP_SCOPES,
+    MAX_MCP_HTTP_BODY_BYTES,
+    validate_mcp_http_origin,
+)
+from backend.mcp.schemas import (
+    MCP_PROTOCOL_VERSION_2026,
+    SUPPORTED_MCP_PROTOCOL_VERSIONS,
+)
+from backend.mcp.server import VersionedMcpServerDispatcher
+from backend.mcp.tools import list_mcp_tool_dicts
 
 api_v1_router = APIRouter(prefix="/api/v1")
 
@@ -432,6 +449,7 @@ async def issue_project_mcp_token(
     return {
         "ok": True,
         "token": {
+            "id": issued.token_id,
             "token_id": issued.token_id,
             "project_id": issued.project_id,
             "token_name": issued.token_name,
@@ -454,6 +472,42 @@ async def revoke_project_mcp_token(
     st = _services(request)
     st.project_service.revoke_mcp_token(project_id=project_id, token_id=token_id)
     return {"ok": True, "token_id": token_id}
+
+
+@api_v1_router.post(
+    "/projects/{project_id}/mcp-tokens/{token_id}/rotate",
+    dependencies=[Depends(verify_http_client)],
+    status_code=201,
+)
+async def rotate_project_mcp_token(
+    request: Request,
+    project_id: str,
+    token_id: str,
+    body: Optional[McpTokenRotateRequest] = None,
+) -> dict[str, Any]:
+    """在同一事务内原子吊销旧令牌并继承原权限范围签发新令牌。"""
+    st = _services(request)
+    issued = st.project_service.rotate_mcp_token(
+        project_id=project_id,
+        token_id=token_id,
+        expires_at=body.expires_at if body else None,
+    )
+    return {
+        "ok": True,
+        "revoked_token_id": token_id,
+        "token": {
+            "id": issued.token_id,
+            "token_id": issued.token_id,
+            "project_id": issued.project_id,
+            "token_name": issued.token_name,
+            "token_prefix": issued.token_prefix,
+            "raw_token": issued.raw_token,
+            "scopes": issued.scopes,
+            "expires_at": issued.expires_at,
+            "created_at": issued.created_at,
+        },
+    }
+
 
 
 # -------------------- 4. Tasks, Steps, Dependencies & Revisions --------------------
@@ -1301,3 +1355,233 @@ async def list_events(
         limit=limit,
     )
     return {"ok": True, "events": [serialize_event(e) for e in events]}
+
+
+# -------------------- 10. Phase 4 MCP Server (2026-07-28 & 2025-11-25 Compat) --------------------
+
+def _extract_mcp_token_from_request(request: Request) -> Optional[str]:
+    """提取 MCP 请求中的项目令牌（严禁回退使用 Web 管理端 Cookie 或本机免密）。"""
+    auth_hdr = (request.headers.get("Authorization") or "").strip()
+    if auth_hdr.lower().startswith("bearer "):
+        return auth_hdr
+    custom_hdr = (request.headers.get("X-MCP-Project-Token") or "").strip()
+    if custom_hdr:
+        return custom_hdr
+    return None
+
+
+@api_v1_router.post(
+    "/runtimes/providers/{provider_key}/mcp-verify",
+    dependencies=[Depends(verify_http_client)],
+)
+async def record_provider_mcp_verification(
+    request: Request,
+    provider_key: str,
+    body: RuntimeProviderMcpVerifyRequest,
+) -> dict[str, Any]:
+    """登记 RuntimeProvider 经实测通过的 MCP 协议版本与验证证据。"""
+    st = _services(request)
+    provider = st.runtime_registry_service.record_provider_mcp_verification(
+        provider_key=provider_key,
+        runtime_version=body.runtime_version,
+        verified_protocol_versions=body.verified_protocol_versions,
+        evidence=body.evidence,
+        limitations=body.limitations,
+    )
+    return {"ok": True, "provider": serialize_provider(provider)}
+
+
+@api_v1_router.get(
+    "/mcp/tools",
+    dependencies=[Depends(verify_http_client)],
+)
+async def get_mcp_tools_diagnostic(request: Request) -> dict[str, Any]:
+    """
+    AgentDeck 管理台诊断自省接口：
+    返回 8 大 MCP 协作工具 Schema、最小权限 Scope 矩阵与支持的 MCP 协议版本清单。
+    （注意：此接口仅作管理端诊断展示，标准 MCP 客户端请调用 POST /api/v1/mcp 的 server/discover 或 tools/list）。
+    """
+    _ = request
+    return {
+        "ok": True,
+        "target_protocol_version": MCP_PROTOCOL_VERSION_2026,
+        "primary_protocol_version": MCP_PROTOCOL_VERSION_2026,
+        "supported_protocol_versions": list(SUPPORTED_MCP_PROTOCOL_VERSIONS),
+        "compat_protocol_versions": [
+            v for v in SUPPORTED_MCP_PROTOCOL_VERSIONS if v != MCP_PROTOCOL_VERSION_2026
+        ],
+        "available_scopes": list(ALL_MCP_SCOPES),
+        "tools": list_mcp_tool_dicts(),
+    }
+
+
+@api_v1_router.get("/mcp")
+async def mcp_http_get_endpoint(request: Request) -> Response:
+    """
+    MCP HTTP GET 端点：
+    - 强制校验 Origin（非法返回 403）与项目 Token（缺失/无效返回 401，超限返回 429）；
+    - 对 2026-07-28 无状态规范返回 HTTP 405（官方已移除旧版 GET Stream）；
+    - 对显式声明 MCP-Protocol-Version 为 2025-11-25 / 2025-03-26 的旧客户端返回兼容 SSE 流。
+    """
+    try:
+        validate_mcp_http_origin(request.headers.get("Origin"))
+    except SecurityBoundaryError as exc:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "ok": False,
+                "error_code": "MCP_ORIGIN_FORBIDDEN",
+                "problem": exc.problem,
+                "cause": exc.cause,
+                "fix": exc.fix,
+            },
+        )
+
+    st = _services(request)
+    dispatcher: VersionedMcpServerDispatcher = st.mcp_dispatcher
+    client_host = request.client.host if request.client else "127.0.0.1"
+    raw_token = _extract_mcp_token_from_request(request)
+
+    try:
+        principal = dispatcher.auth_guard.verify_principal(
+            raw_token_or_header=raw_token,
+            client_key=client_host,
+        )
+    except SecurityBoundaryError as exc:
+        http_code = int((exc.context or {}).get("http_status", 401))
+        return JSONResponse(
+            status_code=http_code,
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32001,
+                    "message": f"{exc.problem}: {exc.cause}",
+                    "data": exc.context or {},
+                },
+            },
+        )
+
+    req_proto = (request.headers.get("MCP-Protocol-Version") or "").strip()
+    if req_proto in ("2025-11-25", "2025-03-26"):
+        sse_body = (
+            f"event: endpoint\n"
+            f"data: /api/v1/mcp\n\n"
+            f": agentdeck-mcp legacy stream ready for project {principal.project_id}\n\n"
+        )
+        return Response(
+            content=sse_body,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "MCP-Protocol-Version": req_proto,
+            },
+        )
+
+    return JSONResponse(
+        status_code=405,
+        headers={"Allow": "POST"},
+        content={
+            "ok": False,
+            "error_code": "MCP_GET_STREAM_REMOVED_IN_2026",
+            "problem": "MCP 2026-07-28 无状态规范已移除旧版 HTTP GET Stream",
+            "cause": "当前端点默认遵循 MCP 2026-07-28 无状态 POST 规范",
+            "fix": "请使用 POST /api/v1/mcp 发送 JSON-RPC 请求（若为 2025-11-25 旧客户端请携带 MCP-Protocol-Version: 2025-11-25 请求头）。",
+        },
+    )
+
+
+@api_v1_router.post("/mcp")
+async def mcp_http_post_endpoint(request: Request) -> Response:
+    """
+    MCP Streamable HTTP 核心入口（支持 2026-07-28 无状态主规范与 2025-11-25 兼容层）：
+    1. 校验 Origin（非法返回 403）；
+    2. 校验请求体大小 <= 256 KB（超限返回 413）；
+    3. 零信任校验 Project-scoped MCP Token 与认证失败限流（返回 401 / 429）；
+    4. 按协议版本路由至 Stateless2026ProtocolAdapter（校验 Mcp-Method / Mcp-Name / _meta）或 Legacy2025CompatProtocolAdapter。
+    """
+    try:
+        validate_mcp_http_origin(request.headers.get("Origin"))
+    except SecurityBoundaryError as exc:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "ok": False,
+                "error_code": "MCP_ORIGIN_FORBIDDEN",
+                "problem": exc.problem,
+                "cause": exc.cause,
+                "fix": exc.fix,
+            },
+        )
+
+    raw_body = await request.body()
+    if len(raw_body) > MAX_MCP_HTTP_BODY_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32600,
+                    "message": f"MCP 请求体大小 ({len(raw_body)} bytes) 超出上限 ({MAX_MCP_HTTP_BODY_BYTES} bytes)",
+                },
+            },
+        )
+
+    st = _services(request)
+    dispatcher: VersionedMcpServerDispatcher = st.mcp_dispatcher
+    client_host = request.client.host if request.client else "127.0.0.1"
+    raw_token = _extract_mcp_token_from_request(request)
+
+    try:
+        principal = dispatcher.auth_guard.verify_principal(
+            raw_token_or_header=raw_token,
+            client_key=client_host,
+        )
+    except SecurityBoundaryError as exc:
+        http_code = int((exc.context or {}).get("http_status", 401))
+        return JSONResponse(
+            status_code=http_code,
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32001,
+                    "message": f"{exc.problem}: {exc.cause}",
+                    "data": exc.context or {},
+                },
+            },
+        )
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "无效的 JSON 请求体"},
+            },
+        )
+
+    resp_dict, used_ver = await dispatcher.dispatch_async(
+        principal=principal,
+        payload=payload,
+        http_protocol_header=request.headers.get("MCP-Protocol-Version"),
+        http_mcp_method_header=request.headers.get("Mcp-Method"),
+        http_mcp_name_header=request.headers.get("Mcp-Name"),
+    )
+
+    if resp_dict is None:
+        return Response(
+            status_code=202,
+            headers={"MCP-Protocol-Version": used_ver},
+        )
+
+    return JSONResponse(
+        status_code=200,
+        headers={"MCP-Protocol-Version": used_ver},
+        content=resp_dict,
+    )
+

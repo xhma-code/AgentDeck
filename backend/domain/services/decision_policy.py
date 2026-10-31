@@ -64,11 +64,12 @@ def validate_decision_creation_policy(
     is_high_risk = (
         risk_level.value in HIGH_RISK_LEVELS or decision_type == DecisionType.RISK_GATE
     )
-    if is_high_risk and timeout_policy == DecisionTimeoutPolicy.AUTO_SUBMIT_RECOMMENDED:
+    if is_high_risk and timeout_policy != DecisionTimeoutPolicy.MANUAL_ONLY:
         raise InvariantViolationError(
-            problem="高风险决策或风险门禁严禁启用超时自动推荐提交",
-            cause=f"decision_type={decision_type.value}, risk_level={risk_level.value} 不允许设置 timeout_policy='auto_submit_recommended'",
-            fix="高风险决策必须将 timeout_policy 设为 'manual_only' 或 'expire_on_timeout'，由用户显式拍板。",
+            problem="高风险决策或风险门禁必须强制设置为人工确认 (manual_only)",
+            cause=f"decision_type={decision_type.value}, risk_level={risk_level.value} 不允许设置 timeout_policy='{timeout_policy.value}'",
+            fix="risk_gate（无论 risk_level 如何）以及 high/critical 风险决策必须将 timeout_policy 设为 'manual_only'，严禁超时自动通过。",
+            context={"mcp_error_code": "MCP_HIGH_RISK_MANUAL_ONLY"},
         )
 
     option_ids = {opt.option_id for opt in options}

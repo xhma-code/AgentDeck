@@ -19,6 +19,7 @@ from backend.domain.enums import (
     DecisionTimeoutPolicy,
     DecisionType,
     DependencyKind,
+    EvidenceSource,
     LinkStatus,
     MachineConnectionKind,
     MachineOS,
@@ -68,15 +69,23 @@ class McpTokenIssueRequest(BaseModel):
     token_name: str = Field(default="local-agent-mcp", min_length=1, max_length=120)
     scopes: list[str] = Field(
         default_factory=lambda: [
-            "project:read",
+            "context:read",
             "task:read",
             "progress:write",
-            "checkpoint:request",
+            "decision:write",
             "decision:read",
             "artifact:write",
         ]
     )
     expires_at: Optional[str] = Field(default=None)
+
+
+class McpTokenRotateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token_name: Optional[str] = Field(default=None, max_length=120, description="可选的新令牌名称")
+    expires_at: Optional[str] = Field(default=None, description="可选的新令牌过期时间（ISO 8601）")
+
 
 
 # -------------------- Task, Step, Dependency & Revision --------------------
@@ -323,4 +332,21 @@ class PushSubscribeRequest(BaseModel):
     device_id: str = Field(default="default", max_length=64)
     subscription: dict[str, Any]
     user_agent: str = Field(default="", max_length=240)
+
+
+class RuntimeProviderMcpVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    runtime_version: str = Field(default="1.x", min_length=1, max_length=64)
+    connector_version: str = Field(default="1.0", max_length=64)
+    evidence: EvidenceSource = Field(default=EvidenceSource.INTEGRATION_TEST)
+    verified_protocol_versions: list[str] = Field(
+        default_factory=lambda: ["2026-07-28"],
+        min_length=1,
+    )
+    limitations: str = Field(
+        default="MCP 主动协同协议已通过真实验证",
+        max_length=500,
+    )
+
 
