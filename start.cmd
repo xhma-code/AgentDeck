@@ -18,7 +18,7 @@ title AgentDeck
 echo [*] Starting AgentDeck (hot reload enabled)...
 echo.
 
-python run.py --reload %*
+python run.py %*
 set "CODE=%ERRORLEVEL%"
 
 if not "%CODE%"=="0" (

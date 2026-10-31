@@ -65,14 +65,48 @@ async def list_quick_workflows(
     return {"ok": True, "workflows": items}
 
 
+def _collect_allowed_project_roots(request: Request) -> list[str]:
+    """收集当前已激活 Project.root_path 与未隐藏工作区的合法根目录白名单。"""
+    db = get_meta_db(request)
+    roots: list[str] = []
+    for ws in db.list_workspaces(include_hidden=False):
+        wp = str(ws.get("workspace_path") or "").strip()
+        if wp:
+            roots.append(wp)
+    try:
+        with db.connect() as conn:
+            has_projects = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'"
+            ).fetchone()
+            if has_projects:
+                rows = conn.execute(
+                    "SELECT root_path FROM projects WHERE status != 'archived'"
+                ).fetchall()
+                for row in rows:
+                    rp = str(row["root_path"] or "").strip()
+                    if rp:
+                        roots.append(rp)
+    except Exception:
+        pass
+    from backend.v2.security.path_guard import dedup_root_paths
+
+    return dedup_root_paths(roots)
+
+
 @router.get("/api/v1/files/read")
 async def read_local_document(
+    request: Request,
     path: str = Query(..., description="本地文件绝对路径或 file:// URI"),
     _auth: bool = Depends(verify_request_auth),
 ) -> dict[str, Any]:
-    """供手机端全屏阅读器安全读取本地 Markdown 文档或源码文件。"""
+    """供手机端全屏阅读器安全读取本地 Markdown 文档或源码文件（强制项目根白名单与防符号链接逃逸）。"""
+    allowed_roots = await asyncio.to_thread(_collect_allowed_project_roots, request)
     try:
-        return await asyncio.to_thread(WorkspaceDocumentReader.read_document, path)
+        return await asyncio.to_thread(
+            WorkspaceDocumentReader.read_document,
+            path,
+            allowed_roots=allowed_roots,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except FileNotFoundError as exc:

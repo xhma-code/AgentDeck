@@ -5,14 +5,14 @@
 1. 识别真正工程项目特征（`.git`, `pyproject.toml`, `package.json` 等）与缓存过滤系统临时目录。
 2. 轻量只读查询指定工作区的 Git 分支、未提交变更文件列表与 Unified Diff。
 3. 发现项目根目录下的自定义工作流与高频快捷动作。
-4. 本地文档与源码安全读取器。
+4. 本地文档与源码安全读取器（强制受控 Project.root_path 白名单与防 symlink/junction 逃逸）。
 """
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from urllib.parse import unquote, urlparse
 
 from backend.core.workspace_git import (
@@ -177,10 +177,16 @@ class WorkspaceDocumentReader:
     }
 
     @classmethod
-    def read_document(cls, raw_path: str, max_bytes: int = MAX_BYTES) -> dict[str, Any]:
+    def read_document(
+        cls,
+        raw_path: str,
+        max_bytes: int = MAX_BYTES,
+        *,
+        allowed_roots: Optional[Sequence[str | Path]] = None,
+    ) -> dict[str, Any]:
         """
-        安全读取指定文件内容。
-        若路径无效抛出 ValueError；文件不存在抛出 FileNotFoundError；敏感文件拦截抛出 PermissionError。
+        安全读取指定文件内容（强制受控 Project.root_path 白名单与防 symlink/junction 逃逸）。
+        若路径无效抛出 ValueError；文件不存在抛出 FileNotFoundError；越界或敏感文件拦截抛出 PermissionError。
         """
         raw_clean = (raw_path or "").split("#")[0].split("?")[0].strip()
         norm_path = decode_workspace_uri(raw_clean)
@@ -191,7 +197,9 @@ class WorkspaceDocumentReader:
         if not Path(norm_path).is_absolute():
             raise ValueError(f"不支持相对路径（缺少目录与盘符）: {norm_path}")
 
-        file_obj = Path(norm_path).resolve()
+        from backend.v2.security.path_guard import resolve_and_verify_path_within_roots
+
+        file_obj = resolve_and_verify_path_within_roots(norm_path, allowed_roots or ())
         if not file_obj.exists() or not file_obj.is_file():
             raise FileNotFoundError(f"文件不存在: {file_obj.name}")
 
