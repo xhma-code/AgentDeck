@@ -12,6 +12,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from backend.api.deps import (
+    enforce_project_scope,
     extract_bearer_token,
     serialize_artifact,
     serialize_attempt,
@@ -35,17 +36,22 @@ from backend.api.deps import (
 from backend.api.schemas import (
     ArtifactCreateRequest,
     DecisionCreateRequest,
+    DecisionExpireRequest,
     DecisionResolveRequest,
     ExecutionAttemptStartRequest,
     ExecutionCreateRequest,
     ExternalSessionRefBindRequest,
+    ExternalSessionRefUpdateRequest,
     MachineRegisterRequest,
+    MachineUpdateRequest,
     McpTokenIssueRequest,
     PairExchangeRequest,
     ProjectCreateRequest,
     ProjectUpdateRequest,
     PushSubscribeRequest,
     RuntimeInstanceRegisterRequest,
+    RuntimeInstanceUpdateRequest,
+    SessionConnectionStatusUpdateRequest,
     SessionCreateRequest,
     SessionStatusUpdateRequest,
     StepCreateRequest,
@@ -76,6 +82,8 @@ from backend.core.workspace import (
 from backend.db.backup import create_online_sqlite_backup
 from backend.db.models import ALL_CANONICAL_TABLE_NAMES
 from backend.domain.enums import DecisionStatus
+from backend.domain.services.capability_policy import CONTROL_LEVEL_DEFINITIONS
+from backend.domain.services.decision_policy import DECISION_RETRY_POLICY
 
 api_v1_router = APIRouter(prefix="/api/v1")
 
@@ -99,6 +107,8 @@ async def health_check(request: Request) -> dict[str, Any]:
         "canonical_table_count": len(ALL_CANONICAL_TABLE_NAMES),
         "project_count": len(projects),
         "pending_decision_count": len(pending_decisions),
+        "decision_retry_policy": DECISION_RETRY_POLICY,
+        "control_level_definitions": CONTROL_LEVEL_DEFINITIONS,
     }
 
 
@@ -696,6 +706,24 @@ async def register_machine(
     return {"ok": True, "machine": serialize_machine(m)}
 
 
+@api_v1_router.patch(
+    "/machines/{machine_id}",
+    dependencies=[Depends(verify_http_client)],
+)
+async def update_machine(
+    request: Request, machine_id: str, body: MachineUpdateRequest
+) -> dict[str, Any]:
+    st = _services(request)
+    m = st.runtime_registry_service.update_machine(
+        machine_id,
+        display_name=body.display_name,
+        hostname_alias=body.hostname_alias,
+        connection_kind=body.connection_kind,
+        health_status=body.health_status,
+    )
+    return {"ok": True, "machine": serialize_machine(m)}
+
+
 @api_v1_router.get("/runtimes/instances", dependencies=[Depends(verify_http_client)])
 async def list_runtime_instances(request: Request) -> dict[str, Any]:
     st = _services(request)
@@ -711,6 +739,23 @@ async def list_runtime_instances(request: Request) -> dict[str, Any]:
     return {"ok": True, "instances": items}
 
 
+@api_v1_router.get(
+    "/runtimes/instances/{instance_id}",
+    dependencies=[Depends(verify_http_client)],
+)
+async def get_runtime_instance_detail(
+    request: Request, instance_id: str
+) -> dict[str, Any]:
+    st = _services(request)
+    inst = st.runtime_registry_service.get_runtime_instance(instance_id)
+    providers = {p.id: serialize_provider(p) for p in st.runtime_registry_service.list_providers()}
+    machines = {m.id: serialize_machine(m) for m in st.runtime_registry_service.list_machines()}
+    data = serialize_runtime_instance(inst)
+    data["provider"] = providers.get(inst.provider_id)
+    data["machine"] = machines.get(inst.machine_id)
+    return {"ok": True, "instance": data}
+
+
 @api_v1_router.post(
     "/runtimes/instances",
     dependencies=[Depends(verify_http_client)],
@@ -723,6 +768,27 @@ async def register_runtime_instance(
     inst = st.runtime_registry_service.register_runtime_instance(
         provider_key=body.provider_key,
         machine_id=body.machine_id,
+        display_name=body.display_name,
+        runtime_version=body.runtime_version,
+        connector_version=body.connector_version,
+        control_level=body.control_level,
+        health_status=body.health_status,
+        capabilities=body.capabilities,
+        model_endpoint_descriptor=body.model_endpoint_descriptor,
+    )
+    return {"ok": True, "instance": serialize_runtime_instance(inst)}
+
+
+@api_v1_router.patch(
+    "/runtimes/instances/{instance_id}",
+    dependencies=[Depends(verify_http_client)],
+)
+async def update_runtime_instance(
+    request: Request, instance_id: str, body: RuntimeInstanceUpdateRequest
+) -> dict[str, Any]:
+    st = _services(request)
+    inst = st.runtime_registry_service.update_runtime_instance(
+        instance_id,
         display_name=body.display_name,
         runtime_version=body.runtime_version,
         connector_version=body.connector_version,
@@ -809,9 +875,17 @@ async def get_session_detail(request: Request, session_id: str) -> dict[str, Any
 
     runtime_info = None
     if sess.runtime_instance_id:
+        providers_map = {
+            p.id: serialize_provider(p) for p in st.runtime_registry_service.list_providers()
+        }
+        machines_map = {
+            m.id: serialize_machine(m) for m in st.runtime_registry_service.list_machines()
+        }
         for inst in st.runtime_registry_service.list_runtime_instances():
             if inst.id == sess.runtime_instance_id:
                 runtime_info = serialize_runtime_instance(inst)
+                runtime_info["provider"] = providers_map.get(inst.provider_id)
+                runtime_info["machine"] = machines_map.get(inst.machine_id)
                 break
 
     return {
@@ -838,6 +912,7 @@ async def update_session_status(
     session_id: str,
     body: SessionStatusUpdateRequest,
 ) -> dict[str, Any]:
+    enforce_project_scope(request, project_id)
     st = _services(request)
     sess = st.session_service.update_session_statuses(
         project_id=project_id,
@@ -846,6 +921,32 @@ async def update_session_status(
         agent_reported_status=body.agent_reported_status,
         runtime_status=body.runtime_status,
         connection_status=body.connection_status,
+        expected_status_seq=body.expected_status_seq,
+    )
+    return {"ok": True, "session": serialize_session(sess)}
+
+
+@api_v1_router.patch(
+    "/projects/{project_id}/sessions/{session_id}/connection",
+    dependencies=[Depends(verify_http_client)],
+)
+async def update_session_connection_status(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    body: SessionConnectionStatusUpdateRequest,
+) -> dict[str, Any]:
+    """
+    独立更新会话的 Remote 连接状态（connected / disconnected / unknown）：
+    断线仅记录连接状态，绝不将平台会话或任务误判为执行失败。
+    """
+    enforce_project_scope(request, project_id)
+    st = _services(request)
+    sess = st.session_service.update_session_connection_status(
+        project_id=project_id,
+        session_id=session_id,
+        connection_status=body.connection_status,
+        sync_link_status=body.sync_link_status,
         expected_status_seq=body.expected_status_seq,
     )
     return {"ok": True, "session": serialize_session(sess)}
@@ -862,6 +963,7 @@ async def bind_external_session_ref(
     session_id: str,
     body: ExternalSessionRefBindRequest,
 ) -> dict[str, Any]:
+    enforce_project_scope(request, project_id)
     st = _services(request)
     ref = st.session_service.bind_external_session_ref(
         project_id=project_id,
@@ -873,6 +975,77 @@ async def bind_external_session_ref(
         link_status=body.link_status,
     )
     return {"ok": True, "external_ref": serialize_external_ref(ref)}
+
+
+@api_v1_router.patch(
+    "/projects/{project_id}/sessions/{session_id}/external-refs/{ref_id}",
+    dependencies=[Depends(verify_http_client)],
+)
+async def update_external_session_ref(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    ref_id: str,
+    body: ExternalSessionRefUpdateRequest,
+) -> dict[str, Any]:
+    enforce_project_scope(request, project_id)
+    st = _services(request)
+    ref = st.session_service.update_external_session_ref(
+        project_id=project_id,
+        session_id=session_id,
+        ref_id=ref_id,
+        runtime_instance_id=body.runtime_instance_id,
+        external_session_id=body.external_session_id,
+        remote_entry_kind=body.remote_entry_kind,
+        remote_entry_url=body.remote_entry_url,
+        link_status=body.link_status,
+    )
+    return {"ok": True, "external_ref": serialize_external_ref(ref)}
+
+
+@api_v1_router.get(
+    "/projects/{project_id}/remotes",
+    dependencies=[Depends(verify_http_client)],
+)
+async def list_project_remote_registry(
+    request: Request,
+    project_id: str,
+    runtime_instance_id: Optional[str] = Query(default=None),
+    link_status: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    """按项目严格隔离查询 Remote Registry 台账。"""
+    clean_pid = enforce_project_scope(request, project_id)
+    st = _services(request)
+    entries = st.session_service.list_remote_registry(
+        project_id=clean_pid,
+        runtime_instance_id=runtime_instance_id,
+        link_status=link_status,
+    )
+    return {"ok": True, "project_id": clean_pid, "remotes": entries}
+
+
+@api_v1_router.get(
+    "/remotes",
+    dependencies=[Depends(verify_http_client)],
+)
+async def list_remote_registry(
+    request: Request,
+    project_id: str = Query(default="", description="必填项目级权限过滤 ID，防止跨项目数据泄露"),
+    runtime_instance_id: Optional[str] = Query(default=None),
+    link_status: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    """
+    Remote Registry 查询接口（强制执行项目级权限过滤）：
+    要求提供 project_id 并校验 X-Project-Scope / X-MCP-Project-Token 归属，禁止跨项目数据互相泄露。
+    """
+    clean_pid = enforce_project_scope(request, project_id)
+    st = _services(request)
+    entries = st.session_service.list_remote_registry(
+        project_id=clean_pid,
+        runtime_instance_id=runtime_instance_id,
+        link_status=link_status,
+    )
+    return {"ok": True, "project_id": clean_pid, "remotes": entries}
 
 
 # -------------------- 7. Executions & Attempts --------------------
@@ -1041,6 +1214,28 @@ async def resolve_decision(
         "is_idempotent_replay": is_replay,
         "decision": serialize_decision(decision),
     }
+
+
+@api_v1_router.post(
+    "/decisions/{decision_id}/expire",
+    dependencies=[Depends(verify_http_client)],
+)
+async def expire_decision(
+    request: Request,
+    decision_id: str,
+    body: Optional[DecisionExpireRequest] = None,
+) -> dict[str, Any]:
+    """
+    将超时且策略为 expire_on_timeout / manual_only 的待处理决策原子标记为 expired：
+    若已被人工并发提交处理，则返回 409 冲突拦截，绝不覆盖已落定的人工答案。
+    """
+    st = _services(request)
+    reason = body.reason if body else "决策倒计时超时未处理，已按策略置为过期"
+    decision = st.decision_service.expire_decision(
+        decision_id=decision_id,
+        reason=reason,
+    )
+    return {"ok": True, "decision": serialize_decision(decision)}
 
 
 # -------------------- 9. Artifacts & Events --------------------

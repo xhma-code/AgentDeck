@@ -22,10 +22,12 @@ import type {
   ArtifactItem,
   DecisionItem,
   EventItem,
+  ExternalSessionRefItem,
   MachineItem,
   McpTokenItem,
   OverviewResponse,
   ProjectItem,
+  RemoteRegistryEntryItem,
   RuntimeInstanceItem,
   RuntimeProviderItem,
   SessionItem,
@@ -37,6 +39,13 @@ import type {
 } from './types/api';
 
 type NavTab = 'overview' | 'projects' | 'sessions' | 'decisions' | 'runtimes';
+
+const CONTROL_LEVEL_LABELS: Record<string, string> = {
+  L0: 'L0 · 官方 Remote 入口',
+  L1: 'L1 · Runtime 注册、状态与能力信息管理',
+  L2: 'L2 · 程序化控制',
+  L3: 'L3 · 审批与恢复能力',
+};
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<NavTab>('overview');
@@ -69,24 +78,21 @@ export const App: React.FC = () => {
     task: TaskItem | null;
     steps: StepItem[];
     runtime_instance: RuntimeInstanceItem | null;
-    external_refs: Array<{
-      id: string;
-      remote_entry_kind: string;
-      remote_entry_url: string;
-      external_session_id: string;
-      link_status: string;
-    }>;
+    external_refs: ExternalSessionRefItem[];
     decisions: DecisionItem[];
     artifacts: ArtifactItem[];
     timeline_events: EventItem[];
   } | null>(null);
 
-  // Runtime 与决策列表状态 (P02 / P03 / P14)
+  // Runtime、Remote Registry 与决策列表状态 (P02 / P03 / P14)
   const [allDecisions, setAllDecisions] = useState<DecisionItem[]>([]);
   const [providers, setProviders] = useState<RuntimeProviderItem[]>([]);
   const [machines, setMachines] = useState<MachineItem[]>([]);
   const [runtimeInstances, setRuntimeInstances] = useState<
     RuntimeInstanceItem[]
+  >([]);
+  const [projectRemotes, setProjectRemotes] = useState<
+    RemoteRegistryEntryItem[]
   >([]);
 
   // 表单弹窗开关与状态
@@ -119,13 +125,23 @@ export const App: React.FC = () => {
   const [newSessRuntimeId, setNewSessRuntimeId] = useState<string>('');
 
   const [extRefRuntimeId, setExtRefRuntimeId] = useState<string>('');
+  const [extRefNativeId, setExtRefNativeId] = useState<string>('');
   const [extRefKind, setExtRefKind] = useState<string>('claude_remote_control');
   const [extRefUrl, setExtRefUrl] = useState<string>('');
 
   const [newInstProvider, setNewInstProvider] = useState<string>('claude_code');
+  const [newInstMachineId, setNewInstMachineId] =
+    useState<string>('local-machine');
   const [newInstName, setNewInstName] = useState<string>('');
+  const [newInstVersion, setNewInstVersion] = useState<string>('1.x');
+  const [newInstLevel, setNewInstLevel] = useState<'L0' | 'L1'>('L0');
   const [newInstProviderLabel, setNewInstProviderLabel] = useState<string>('');
   const [newInstModelLabel, setNewInstModelLabel] = useState<string>('');
+
+  const [newMachineName, setNewMachineName] = useState<string>('');
+  const [newMachineOs, setNewMachineOs] = useState<string>('windows');
+  const [newMachineAlias, setNewMachineAlias] = useState<string>('');
+  const [newMachineKind, setNewMachineKind] = useState<string>('local');
 
   const notify = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -150,11 +166,15 @@ export const App: React.FC = () => {
   const loadProjectContext = useCallback(async (projectId: string) => {
     if (!projectId) return;
     try {
-      const detail = await apiClient.getProjectDetail(projectId);
+      const [detail, remotesRes] = await Promise.all([
+        apiClient.getProjectDetail(projectId),
+        apiClient.listProjectRemoteRegistry(projectId),
+      ]);
       setProjectTasks(detail.tasks);
       setProjectSteps(detail.steps);
       setProjectDeps(detail.dependencies);
       setProjectTokens(detail.mcp_tokens);
+      setProjectRemotes(remotesRes.remotes);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : '加载项目详情失败');
     }
@@ -445,16 +465,99 @@ export const App: React.FC = () => {
         sessionDetail.session.id,
         {
           runtime_instance_id: extRefRuntimeId,
-          external_session_id: `ext-${Date.now().toString().slice(-6)}`,
+          external_session_id:
+            extRefNativeId.trim() || `ext-${Date.now().toString().slice(-6)}`,
           remote_entry_kind: extRefKind,
           remote_entry_url: extRefUrl.trim(),
         },
       );
       setExtRefUrl('');
+      setExtRefNativeId('');
       await loadSessionContext(sessionDetail.session.id);
-      notify('已绑定脱敏官方 Remote 入口');
+      if (selectedProjectId) await loadProjectContext(selectedProjectId);
+      notify('已绑定外部原生会话与脱敏官方 Remote 入口');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : '绑定官方 Remote 入口失败');
+    }
+  };
+
+  const handleUpdateConnectionStatus = async (
+    nextStatus: 'connected' | 'disconnected' | 'unknown',
+  ) => {
+    if (!sessionDetail) return;
+    try {
+      await apiClient.updateSessionConnectionStatus(
+        sessionDetail.session.project_id,
+        sessionDetail.session.id,
+        {
+          connection_status: nextStatus,
+          sync_link_status:
+            nextStatus === 'connected'
+              ? 'active'
+              : nextStatus === 'disconnected'
+                ? 'disconnected'
+                : 'unknown',
+        },
+      );
+      await loadSessionContext(sessionDetail.session.id);
+      if (selectedProjectId) await loadProjectContext(selectedProjectId);
+      await refreshOverview();
+      notify(`已更新远程连接状态为 ${nextStatus}（平台任务与会话执行状态保持不变）`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : '更新连接状态失败');
+    }
+  };
+
+  const handleUpdateExternalRefStatus = async (
+    refId: string,
+    nextLinkStatus: 'active' | 'stale' | 'disconnected',
+  ) => {
+    if (!sessionDetail) return;
+    try {
+      await apiClient.updateExternalSessionRef(
+        sessionDetail.session.project_id,
+        sessionDetail.session.id,
+        refId,
+        { link_status: nextLinkStatus },
+      );
+      await loadSessionContext(sessionDetail.session.id);
+      if (selectedProjectId) await loadProjectContext(selectedProjectId);
+      notify(`已更新外部会话链接状态为 ${nextLinkStatus}`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : '更新链接状态失败');
+    }
+  };
+
+  const handleRegisterMachine = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMachineName.trim()) return;
+    try {
+      await apiClient.registerMachine({
+        display_name: newMachineName.trim(),
+        os_type: newMachineOs,
+        hostname_alias: newMachineAlias.trim(),
+        connection_kind: newMachineKind,
+        health_status: 'online',
+      });
+      setNewMachineName('');
+      setNewMachineAlias('');
+      await loadRuntimesAndDecisions();
+      notify('已登记宿主机器 (Machine)');
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : '登记宿主机器失败');
+    }
+  };
+
+  const handleToggleMachineHealth = async (
+    machineId: string,
+    nextHealth: 'online' | 'offline' | 'degraded',
+  ) => {
+    try {
+      await apiClient.updateMachine(machineId, { health_status: nextHealth });
+      await loadRuntimesAndDecisions();
+      notify(`宿主机器状态已更新为 ${nextHealth}`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : '更新机器状态失败');
     }
   };
 
@@ -471,9 +574,10 @@ export const App: React.FC = () => {
           : null;
       await apiClient.registerRuntimeInstance({
         provider_key: newInstProvider,
-        machine_id: 'local-machine',
+        machine_id: newInstMachineId || 'local-machine',
         display_name: newInstName.trim() || undefined,
-        control_level: 'L0',
+        runtime_version: newInstVersion.trim() || '1.x',
+        control_level: newInstLevel,
         health_status: 'online',
         model_endpoint_descriptor: descriptor,
       });
@@ -1719,33 +1823,241 @@ export const App: React.FC = () => {
                         color: 'var(--text-secondary)',
                       }}
                     >
-                      v1.3 会话边界声明：Agent 原生多轮聊天、工具调用与终端过程由对应 Runtime 官方界面承载；本页聚焦任务编排上下文、Decision 拍板、Artifact 归档与 MCP 回写时间线。
-                      {sessionDetail.runtime_instance?.control_level === 'L2' ||
-                      sessionDetail.runtime_instance?.control_level === 'L3'
-                        ? '（当前 Runtime 已验证 L2 受控指令能力）'
-                        : '（当前 Runtime 控制等级为 L0/L1，默认隐藏受控指令输入框）'}
+                      <strong>v1.3 会话边界与能力分级声明：</strong>
+                      Agent 原生多轮聊天、工具调用、权限审批与终端过程由对应 Runtime 官方界面承载；本页聚焦任务编排上下文、官方 Remote 入口、独立连接状态、Decision 拍板与 MCP 时间线。
+                      当前绑定 Runtime 控制等级为{' '}
+                      <code>
+                        {sessionDetail.runtime_instance
+                          ? CONTROL_LEVEL_LABELS[
+                              sessionDetail.runtime_instance.control_level
+                            ] || sessionDetail.runtime_instance.control_level
+                          : '未绑定 (L0)'}
+                      </code>
+                      （Phase 3 严格只读展示能力证据与官方 Remote 跳转入口，不提供受控指令发送框或模拟控制功能）。
+                    </div>
+
+                    {/* 独立 Connection Status 状态管理栏 */}
+                    <div
+                      className="card-elevated"
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: 10,
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>
+                          Connection Status 独立远程连接状态管理（断线不判败）
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: 'var(--text-secondary)',
+                            marginTop: 2,
+                          }}
+                        >
+                          远程连接状态与平台会话/任务执行状态严格分离：将连接切为{' '}
+                          <code>disconnected</code> 仅记录通道离线，绝不把任务或会话误判为执行失败。
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {(
+                          ['connected', 'disconnected', 'unknown'] as const
+                        ).map((stVal) => (
+                          <button
+                            key={stVal}
+                            type="button"
+                            className={`btn ${
+                              sessionDetail.session.connection_status === stVal
+                                ? 'btn-primary'
+                                : ''
+                            }`}
+                            onClick={() =>
+                              void handleUpdateConnectionStatus(stVal)
+                            }
+                          >
+                            设为 {stVal}
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
                     {/* 编排上下文与官方 Remote 绑定 */}
                     <div className="grid-2">
                       <div className="card-elevated">
                         <div style={{ fontWeight: 600, marginBottom: 6 }}>
-                          编排上下文
+                          全链路编排身份映射 (Project → Task → Runtime → Machine)
                         </div>
                         <div style={{ fontSize: 13 }}>
-                          所属项目：{sessionDetail.project.name}
+                          所属项目：{sessionDetail.project.name} (
+                          <code>{sessionDetail.project.slug}</code>)
                         </div>
                         <div style={{ fontSize: 13, marginTop: 4 }}>
                           关联任务：
                           {sessionDetail.task
-                            ? `${sessionDetail.task.title} (r${sessionDetail.task.active_revision_no})`
+                            ? `${sessionDetail.task.title} (r${sessionDetail.task.active_revision_no} · ${sessionDetail.task.platform_status})`
                             : '未绑定具体任务'}
                         </div>
                         <div style={{ fontSize: 13, marginTop: 4 }}>
                           Runtime 实例：
                           {sessionDetail.runtime_instance
-                            ? `${sessionDetail.runtime_instance.display_name} (${sessionDetail.runtime_instance.control_level})`
+                            ? `${sessionDetail.runtime_instance.display_name} (${
+                                CONTROL_LEVEL_LABELS[
+                                  sessionDetail.runtime_instance.control_level
+                                ] || sessionDetail.runtime_instance.control_level
+                              })`
                             : '未绑定'}
+                        </div>
+                        <div style={{ fontSize: 13, marginTop: 4 }}>
+                          宿主机器 (Machine)：
+                          {sessionDetail.runtime_instance?.machine
+                            ? `${sessionDetail.runtime_instance.machine.display_name} (${sessionDetail.runtime_instance.machine.os} · ${sessionDetail.runtime_instance.machine.connection_kind} · ${sessionDetail.runtime_instance.machine.health_status})`
+                            : '默认本机'}
+                        </div>
+
+                        {/* 已登记 ExternalSessionRef 列表 */}
+                        <div
+                          style={{
+                            marginTop: 10,
+                            paddingTop: 10,
+                            borderTop: '1px solid var(--border-subtle)',
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontWeight: 600,
+                              fontSize: 12,
+                              marginBottom: 6,
+                            }}
+                          >
+                            已绑定外部原生 Session 与官方 Remote 入口 (
+                            {sessionDetail.external_refs.length})
+                          </div>
+                          {sessionDetail.external_refs.length === 0 ? (
+                            <div
+                              style={{
+                                fontSize: 12,
+                                color: 'var(--text-muted)',
+                              }}
+                            >
+                              尚未登记外部原生会话映射，请在右侧表单登记。
+                            </div>
+                          ) : (
+                            <div
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 8,
+                              }}
+                            >
+                              {sessionDetail.external_refs.map((ref) => (
+                                <div
+                                  key={ref.id}
+                                  style={{
+                                    padding: 8,
+                                    borderRadius: 'var(--radius-sm)',
+                                    background: 'var(--bg-surface)',
+                                    border: '1px solid var(--border-subtle)',
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      display: 'flex',
+                                      justifyContent: 'space-between',
+                                      alignItems: 'center',
+                                      gap: 6,
+                                      flexWrap: 'wrap',
+                                    }}
+                                  >
+                                    <span>
+                                      原生句柄：
+                                      <code>
+                                        {ref.external_session_id || '未填写'}
+                                      </code>{' '}
+                                      · 入口类型：
+                                      <code>{ref.remote_entry_kind}</code>
+                                    </span>
+                                    <StatusBadge
+                                      status={ref.link_status}
+                                      prefix="链接"
+                                    />
+                                  </div>
+                                  {ref.remote_entry_url && (
+                                    <div
+                                      style={{
+                                        marginTop: 4,
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        gap: 8,
+                                        flexWrap: 'wrap',
+                                      }}
+                                    >
+                                      <code
+                                        style={{
+                                          color: 'var(--text-secondary)',
+                                          wordBreak: 'break-all',
+                                        }}
+                                      >
+                                        脱敏展示：
+                                        {ref.masked_remote_url ||
+                                          ref.remote_entry_url}
+                                      </code>
+                                      <a
+                                        href={ref.remote_entry_url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="btn"
+                                        style={{
+                                          minHeight: 28,
+                                          padding: '0 8px',
+                                        }}
+                                      >
+                                        <ExternalLink size={12} /> 跳转官方入口
+                                      </a>
+                                    </div>
+                                  )}
+                                  <div
+                                    style={{
+                                      marginTop: 6,
+                                      display: 'flex',
+                                      gap: 6,
+                                    }}
+                                  >
+                                    {(
+                                      [
+                                        'active',
+                                        'stale',
+                                        'disconnected',
+                                      ] as const
+                                    ).map((ls) => (
+                                      <button
+                                        key={ls}
+                                        type="button"
+                                        className="btn"
+                                        style={{
+                                          minHeight: 26,
+                                          padding: '0 8px',
+                                          fontSize: 11,
+                                        }}
+                                        onClick={() =>
+                                          void handleUpdateExternalRefStatus(
+                                            ref.id,
+                                            ls,
+                                          )
+                                        }
+                                      >
+                                        标记 {ls}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -1759,7 +2071,7 @@ export const App: React.FC = () => {
                         }}
                       >
                         <div style={{ fontWeight: 600 }}>
-                          登记脱敏官方 Remote 入口链接
+                          登记外部原生 Session 与脱敏官方 Remote 入口
                         </div>
                         <select
                           className="select"
@@ -1770,10 +2082,16 @@ export const App: React.FC = () => {
                           <option value="">选择 Runtime 实例...</option>
                           {runtimeInstances.map((ri) => (
                             <option key={ri.id} value={ri.id}>
-                              {ri.display_name}
+                              {ri.display_name} ({ri.control_level})
                             </option>
                           ))}
                         </select>
+                        <input
+                          className="input"
+                          placeholder="外部原生会话标识（如 claude-sess-01，留空自动生成）"
+                          value={extRefNativeId}
+                          onChange={(e) => setExtRefNativeId(e.target.value)}
+                        />
                         <select
                           className="select"
                           value={extRefKind}
@@ -1792,15 +2110,61 @@ export const App: React.FC = () => {
                         </select>
                         <input
                           className="input"
-                          placeholder="https://claude.ai/code (严禁含 token 参数)"
+                          placeholder="https://claude.ai/code (仅限 http/https，严禁含 token 参数)"
                           value={extRefUrl}
                           onChange={(e) => setExtRefUrl(e.target.value)}
                         />
-                        <button type="submit" className="btn">
-                          保存官方 Remote 引用
+                        <button type="submit" className="btn btn-primary">
+                          保存外部会话与官方 Remote 映射
                         </button>
                       </form>
                     </div>
+
+                    {/* Runtime 能力与验证证据只读面板 */}
+                    {sessionDetail.runtime_instance && (
+                      <div className="card-elevated">
+                        <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                          关联 Runtime 能力清单与验证证据（未经验证项严格标为 unverified）
+                        </div>
+                        <div
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 6,
+                          }}
+                        >
+                          {sessionDetail.runtime_instance.capabilities.map(
+                            (cap) => (
+                              <div
+                                key={cap.capability}
+                                style={{
+                                  fontSize: 12,
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  flexWrap: 'wrap',
+                                  padding: '4px 0',
+                                  borderBottom:
+                                    '1px solid var(--border-subtle)',
+                                }}
+                              >
+                                <span>
+                                  <code>{cap.capability}</code> · 证据来源：
+                                  <code>{cap.evidence}</code> · 版本：
+                                  <code>{cap.runtime_version}</code>
+                                  {cap.verified_at
+                                    ? ` · 验证时间：${cap.verified_at}`
+                                    : ''}{' '}
+                                  — {cap.limitations}
+                                </span>
+                                <StatusBadge status={cap.support_status} />
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     {/* 关联 Decision 与 MCP 回写进度时间线 */}
                     <div className="grid-2">
@@ -1937,12 +2301,174 @@ export const App: React.FC = () => {
               </div>
             </div>
           ) : (
-            /* ==================== P14 Runtime 注册中心 ==================== */
+            /* ==================== P14 Runtime & Remote 注册中心 ==================== */
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Remote Registry 统一台账（按当前选中项目严格权限隔离） */}
               <div className="card">
-                <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 12,
+                    flexWrap: 'wrap',
+                    gap: 8,
+                  }}
+                >
+                  <div>
+                    <h3 style={{ fontSize: 16, fontWeight: 700 }}>
+                      Remote Registry 官方远程会话登记台账（项目级权限隔离：
+                      {currentProject ? currentProject.name : '未选择项目'}）
+                    </h3>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--text-secondary)',
+                        marginTop: 2,
+                      }}
+                    >
+                      全链路映射：Project → Task → Session → RuntimeInstance →
+                      Machine → Native Session → 脱敏官方 Remote 入口
+                    </div>
+                  </div>
+                  <span className="badge badge-blue">
+                    当前项目已登记 Remote: {projectRemotes.length}
+                  </span>
+                </div>
+
+                {!selectedProjectId ? (
+                  <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                    请先在顶部下拉框选择目标项目以查看该项目隔离的 Remote Registry 台账。
+                  </div>
+                ) : projectRemotes.length === 0 ? (
+                  <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                    当前项目尚无登记的外部会话与官方 Remote 入口，可在「P09-P10 协同会话」中绑定。
+                  </div>
+                ) : (
+                  <div
+                    style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+                  >
+                    {projectRemotes.map((entry) => (
+                      <div key={entry.id} className="card-elevated">
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: 8,
+                          }}
+                        >
+                          <div>
+                            <strong>{entry.session.title}</strong>{' '}
+                            <span
+                              style={{
+                                fontSize: 12,
+                                color: 'var(--text-secondary)',
+                              }}
+                            >
+                              · 项目：{entry.project.name}
+                              {entry.task
+                                ? ` · 任务：${entry.task.title}`
+                                : ''}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <StatusBadge
+                              status={entry.session.platform_status}
+                              prefix="会话"
+                            />
+                            <StatusBadge
+                              status={entry.session.connection_status}
+                              prefix="Remote连接"
+                            />
+                            <StatusBadge
+                              status={entry.external_ref.link_status}
+                              prefix="入口"
+                            />
+                          </div>
+                        </div>
+
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: 'var(--text-secondary)',
+                            marginTop: 6,
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: 8,
+                          }}
+                        >
+                          <span>
+                            Runtime：
+                            <code>
+                              {entry.runtime_instance?.display_name || '未知'} (
+                              {entry.runtime_instance?.control_level || 'L0'})
+                            </code>{' '}
+                            · 机器：
+                            <code>
+                              {entry.machine?.display_name || 'local-machine'}
+                            </code>{' '}
+                            · 原生句柄：
+                            <code>
+                              {entry.external_ref.external_session_id || '未填'}
+                            </code>{' '}
+                            · 官方入口：
+                            <code>
+                              {entry.external_ref.masked_remote_url ||
+                                entry.external_ref.remote_entry_url ||
+                                '未配置 URL'}
+                            </code>
+                          </span>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              className="btn"
+                              style={{ minHeight: 28, padding: '0 8px' }}
+                              onClick={() => {
+                                setSelectedSessionId(entry.session.id);
+                                setActiveTab('sessions');
+                              }}
+                            >
+                              进入 P10 详情
+                            </button>
+                            {entry.external_ref.remote_entry_url && (
+                              <a
+                                href={entry.external_ref.remote_entry_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="btn btn-primary"
+                                style={{ minHeight: 28, padding: '0 8px' }}
+                              >
+                                <ExternalLink size={12} /> 打开官方 Remote
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="card">
+                <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>
                   4 大官方 Runtime 诚实能力声明矩阵（未知项严格标为 unverified）
                 </h3>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: 'var(--text-secondary)',
+                    marginBottom: 12,
+                  }}
+                >
+                  统一能力分级：<code>L0 官方 Remote 入口</code> ·{' '}
+                  <code>L1 Runtime 注册、状态与能力信息管理</code> ·{' '}
+                  <code>L2 程序化控制（SDK/HTTP/Stdio 是实现途径）</code> ·{' '}
+                  <code>L3 审批与恢复能力</code>
+                </div>
                 <div className="grid-2">
                   {providers.map((p) => (
                     <div key={p.id} className="card-elevated">
@@ -1993,7 +2519,7 @@ export const App: React.FC = () => {
               <div className="grid-2">
                 <div className="card">
                   <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>
-                    已登记 Runtime 实例 ({runtimeInstances.length})与宿主机器 (
+                    已登记 Runtime 实例 ({runtimeInstances.length}) 与宿主机器 (
                     {machines.length})
                   </h3>
                   <div
@@ -2005,15 +2531,27 @@ export const App: React.FC = () => {
                           style={{
                             display: 'flex',
                             justifyContent: 'space-between',
+                            alignItems: 'center',
                           }}
                         >
                           <strong>{inst.display_name}</strong>
                           <div style={{ display: 'flex', gap: 6 }}>
                             <span className="badge badge-blue">
-                              {inst.control_level}
+                              {CONTROL_LEVEL_LABELS[inst.control_level] ||
+                                inst.control_level}
                             </span>
                             <StatusBadge status={inst.health_status} />
                           </div>
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: 'var(--text-muted)',
+                            marginTop: 4,
+                          }}
+                        >
+                          版本：{inst.runtime_version} · 机器：
+                          {inst.machine?.display_name || inst.machine_id}
                         </div>
                         {inst.model_endpoint_descriptor && (
                           <div
@@ -2032,48 +2570,196 @@ export const App: React.FC = () => {
                       </div>
                     ))}
                   </div>
+
+                  {/* 宿主机器列表与状态切换 */}
+                  <div
+                    style={{
+                      marginTop: 14,
+                      paddingTop: 12,
+                      borderTop: '1px solid var(--border-subtle)',
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontWeight: 600,
+                        fontSize: 13,
+                        marginBottom: 8,
+                      }}
+                    >
+                      宿主机器列表 (Machines)
+                    </div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
+                    >
+                      {machines.map((m) => (
+                        <div
+                          key={m.id}
+                          className="card-elevated"
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: 8,
+                            fontSize: 12,
+                          }}
+                        >
+                          <span>
+                            <strong>{m.display_name}</strong> ({m.os} ·{' '}
+                            {m.connection_kind} · {m.hostname_alias || m.id})
+                          </span>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <StatusBadge status={m.health_status} />
+                            {(
+                              ['online', 'degraded', 'offline'] as const
+                            ).map((hst) => (
+                              <button
+                                key={hst}
+                                type="button"
+                                className="btn"
+                                style={{
+                                  minHeight: 24,
+                                  padding: '0 6px',
+                                  fontSize: 11,
+                                }}
+                                onClick={() =>
+                                  void handleToggleMachineHealth(m.id, hst)
+                                }
+                              >
+                                {hst}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
-                <form
-                  onSubmit={(e) => void handleRegisterRuntimeInstance(e)}
-                  className="card"
-                  style={{ display: 'flex', flexDirection: 'column', gap: 10 }}
-                >
-                  <h3 style={{ fontSize: 15, fontWeight: 700 }}>
-                    登记本机 Runtime 实例（可选附加非敏感模型标签）
-                  </h3>
-                  <select
-                    className="select"
-                    value={newInstProvider}
-                    onChange={(e) => setNewInstProvider(e.target.value)}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <form
+                    onSubmit={(e) => void handleRegisterRuntimeInstance(e)}
+                    className="card"
+                    style={{ display: 'flex', flexDirection: 'column', gap: 10 }}
                   >
-                    <option value="claude_code">Claude Code</option>
-                    <option value="codex">OpenAI Codex</option>
-                    <option value="opencode">OpenCode</option>
-                    <option value="antigravity">Google Antigravity</option>
-                  </select>
-                  <input
-                    className="input"
-                    placeholder="实例显示名称（留空自动生成）"
-                    value={newInstName}
-                    onChange={(e) => setNewInstName(e.target.value)}
-                  />
-                  <input
-                    className="input"
-                    placeholder="可选模型服务标签（如 GLM Coding Plan，严禁填 URL 或 API Key）"
-                    value={newInstProviderLabel}
-                    onChange={(e) => setNewInstProviderLabel(e.target.value)}
-                  />
-                  <input
-                    className="input"
-                    placeholder="可选模型显示名（如 GLM-4.6 / DeepSeek-V3.1）"
-                    value={newInstModelLabel}
-                    onChange={(e) => setNewInstModelLabel(e.target.value)}
-                  />
-                  <button type="submit" className="btn btn-primary">
-                    登记 Runtime 实例
-                  </button>
-                </form>
+                    <h3 style={{ fontSize: 15, fontWeight: 700 }}>
+                      登记 Runtime 实例（L2/L3 强制要求实测验证证据）
+                    </h3>
+                    <select
+                      className="select"
+                      value={newInstProvider}
+                      onChange={(e) => setNewInstProvider(e.target.value)}
+                    >
+                      <option value="claude_code">Claude Code</option>
+                      <option value="codex">OpenAI Codex</option>
+                      <option value="opencode">OpenCode</option>
+                      <option value="antigravity">Google Antigravity</option>
+                    </select>
+                    <select
+                      className="select"
+                      value={newInstMachineId}
+                      onChange={(e) => setNewInstMachineId(e.target.value)}
+                    >
+                      {machines.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          宿主机器：{m.display_name} ({m.os})
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="select"
+                      value={newInstLevel}
+                      onChange={(e) =>
+                        setNewInstLevel(e.target.value as 'L0' | 'L1')
+                      }
+                    >
+                      <option value="L0">
+                        L0 · 官方 Remote 入口（默认安全基线）
+                      </option>
+                      <option value="L1">
+                        L1 · Runtime 注册、状态与能力信息管理
+                      </option>
+                    </select>
+                    <input
+                      className="input"
+                      placeholder="Runtime 版本号（如 1.0.24）"
+                      value={newInstVersion}
+                      onChange={(e) => setNewInstVersion(e.target.value)}
+                    />
+                    <input
+                      className="input"
+                      placeholder="实例显示名称（留空自动生成）"
+                      value={newInstName}
+                      onChange={(e) => setNewInstName(e.target.value)}
+                    />
+                    <input
+                      className="input"
+                      placeholder="可选模型服务标签（如 GLM Coding Plan，严禁填 URL 或 API Key）"
+                      value={newInstProviderLabel}
+                      onChange={(e) => setNewInstProviderLabel(e.target.value)}
+                    />
+                    <input
+                      className="input"
+                      placeholder="可选模型显示名（如 GLM-4.6 / DeepSeek-V3.1）"
+                      value={newInstModelLabel}
+                      onChange={(e) => setNewInstModelLabel(e.target.value)}
+                    />
+                    <button type="submit" className="btn btn-primary">
+                      登记 Runtime 实例
+                    </button>
+                  </form>
+
+                  <form
+                    onSubmit={(e) => void handleRegisterMachine(e)}
+                    className="card"
+                    style={{ display: 'flex', flexDirection: 'column', gap: 10 }}
+                  >
+                    <h3 style={{ fontSize: 15, fontWeight: 700 }}>
+                      登记新宿主机器 (Machine)
+                    </h3>
+                    <input
+                      className="input"
+                      placeholder="机器显示名称（如：MacBook Pro 远端开发机）"
+                      value={newMachineName}
+                      onChange={(e) => setNewMachineName(e.target.value)}
+                      required
+                    />
+                    <div className="grid-2">
+                      <select
+                        className="select"
+                        value={newMachineOs}
+                        onChange={(e) => setNewMachineOs(e.target.value)}
+                      >
+                        <option value="windows">Windows</option>
+                        <option value="macos">macOS</option>
+                        <option value="linux">Linux</option>
+                      </select>
+                      <select
+                        className="select"
+                        value={newMachineKind}
+                        onChange={(e) => setNewMachineKind(e.target.value)}
+                      >
+                        <option value="local">Local</option>
+                        <option value="tailscale">Tailscale</option>
+                        <option value="lan">LAN</option>
+                        <option value="vendor_remote">Vendor Remote</option>
+                      </select>
+                    </div>
+                    <input
+                      className="input"
+                      placeholder="主机名或网络别名（如 dev-mac.tailnet）"
+                      value={newMachineAlias}
+                      onChange={(e) => setNewMachineAlias(e.target.value)}
+                    />
+                    <button type="submit" className="btn">
+                      登记宿主机器
+                    </button>
+                  </form>
+                </div>
               </div>
             </div>
           )}

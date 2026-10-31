@@ -34,6 +34,9 @@ from backend.domain.enums import (
     SupportStatus,
 )
 from backend.domain.exceptions import EntityNotFoundError
+from backend.domain.services.capability_policy import (
+    validate_runtime_control_and_capabilities,
+)
 from backend.domain.types import CapabilityManifestItem, ModelEndpointDescriptor
 
 LOCAL_MACHINE_ID = "local-machine"
@@ -50,8 +53,12 @@ def _detect_local_machine_os() -> MachineOS:
 
 def _default_provider_seeds() -> list[dict[str, object]]:
     """
-    构造 4 大官方 Runtime 的初始基线定义。
-    严格遵守 v1.3 诚实声明规则：未在用户当前环境实测通过的 L2/L3 能力一律标为 unverified！
+    构造 4 大官方 Runtime 的初始基线定义（对齐 v1.3 L0-L3 分级）：
+    - L0：remote_entry（官方 Remote 入口）
+    - L1：runtime_registry_and_status / mcp_collab（Runtime 注册、状态与能力信息管理）
+    - L2：programmatic_control（程序化控制；SDK/HTTP API/Stdio 是技术途径，不等于 L3）
+    - L3：approval_and_resume（审批与恢复能力）
+    严格遵守诚实声明规则：未在用户当前环境实测通过的 L2/L3 能力一律标为 unverified！
     """
     return [
         {
@@ -65,19 +72,34 @@ def _default_provider_seeds() -> list[dict[str, object]]:
                     capability="remote_entry",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="依赖用户账号套餐及当前模型服务组合是否支持官方 Remote Control",
+                    limitations="L0 官方 Remote 入口：依赖用户账号套餐及当前模型服务组合是否支持 Claude Remote Control",
+                ),
+                CapabilityManifestItem(
+                    capability="runtime_registry_and_status",
+                    support_status=SupportStatus.SUPPORTED,
+                    evidence=EvidenceSource.INTEGRATION_TEST,
+                    runtime_version="1.x",
+                    connector_version="phase3-registry",
+                    verified_at="2026-10-31T00:00:00Z",
+                    limitations="L1 支持登记实例、宿主机器、外部会话映射与独立连接状态",
                 ),
                 CapabilityManifestItem(
                     capability="mcp_collab",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="待 Phase 4 AgentDeck MCP Server 实测验证",
+                    limitations="L1 MCP 主动协同：待 Phase 4 AgentDeck MCP Server 实测验证",
                 ),
                 CapabilityManifestItem(
-                    capability="sdk_programmatic_control",
+                    capability="programmatic_control",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="待 Phase 6 在 Windows 及国内兼容模型环境下完成 SDK Spike 验证",
+                    limitations="L2 程序化控制（SDK 途径）：待 Phase 6 在 Windows 及国内兼容模型环境下完成 Spike 验证",
+                ),
+                CapabilityManifestItem(
+                    capability="approval_and_resume",
+                    support_status=SupportStatus.UNVERIFIED,
+                    evidence=EvidenceSource.OFFICIAL_DOCS,
+                    limitations="L3 审批与恢复能力：未经真实实测验证前严禁标为 supported",
                 ),
             ],
         },
@@ -92,19 +114,34 @@ def _default_provider_seeds() -> list[dict[str, object]]:
                     capability="remote_entry",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="优先复用官方 ChatGPT Mobile Remote Connections",
+                    limitations="L0 官方 Remote 入口：优先复用官方 ChatGPT Mobile Remote Connections",
+                ),
+                CapabilityManifestItem(
+                    capability="runtime_registry_and_status",
+                    support_status=SupportStatus.SUPPORTED,
+                    evidence=EvidenceSource.INTEGRATION_TEST,
+                    runtime_version="1.x",
+                    connector_version="phase3-registry",
+                    verified_at="2026-10-31T00:00:00Z",
+                    limitations="L1 支持登记实例、宿主机器、外部会话映射与独立连接状态",
                 ),
                 CapabilityManifestItem(
                     capability="mcp_collab",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="待 Phase 4 实测验证",
+                    limitations="L1 MCP 主动协同：待 Phase 4 实测验证",
                 ),
                 CapabilityManifestItem(
-                    capability="app_server_stdio",
+                    capability="programmatic_control",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="待 Phase 6 验证 Codex Python SDK / App Server 本地 stdio",
+                    limitations="L2 程序化控制（App Server Stdio / SDK 途径）：待 Phase 6 本地验证",
+                ),
+                CapabilityManifestItem(
+                    capability="approval_and_resume",
+                    support_status=SupportStatus.UNVERIFIED,
+                    evidence=EvidenceSource.OFFICIAL_DOCS,
+                    limitations="L3 审批与恢复能力：待后续实测验证",
                 ),
             ],
         },
@@ -119,19 +156,34 @@ def _default_provider_seeds() -> list[dict[str, object]]:
                     capability="remote_entry",
                     support_status=SupportStatus.SUPPORTED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="通过官方 OpenCode Web / Serve 入口访问，禁止直读内部 opencode.db",
+                    limitations="L0 官方 Remote 入口：通过官方 OpenCode Web / Serve 入口访问，禁止直读内部 opencode.db",
+                ),
+                CapabilityManifestItem(
+                    capability="runtime_registry_and_status",
+                    support_status=SupportStatus.SUPPORTED,
+                    evidence=EvidenceSource.INTEGRATION_TEST,
+                    runtime_version="1.x",
+                    connector_version="phase3-registry",
+                    verified_at="2026-10-31T00:00:00Z",
+                    limitations="L1 支持登记实例、宿主机器、外部会话映射与独立连接状态",
                 ),
                 CapabilityManifestItem(
                     capability="mcp_collab",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="待 Phase 4 实测验证",
+                    limitations="L1 MCP 主动协同：待 Phase 4 实测验证",
                 ),
                 CapabilityManifestItem(
-                    capability="http_api_control",
+                    capability="programmatic_control",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="待 Phase 6 固定版本完成公开 HTTP API 契约验证",
+                    limitations="L2 程序化控制（公开 HTTP API 途径）：待 Phase 6 固定版本完成契约验证",
+                ),
+                CapabilityManifestItem(
+                    capability="approval_and_resume",
+                    support_status=SupportStatus.UNVERIFIED,
+                    evidence=EvidenceSource.OFFICIAL_DOCS,
+                    limitations="L3 审批与恢复能力：待后续实测验证",
                 ),
             ],
         },
@@ -146,19 +198,34 @@ def _default_provider_seeds() -> list[dict[str, object]]:
                     capability="remote_entry",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="仅限官方公开入口，严禁使用私有 Language Server RPC",
+                    limitations="L0 官方 Remote 入口：仅限官方公开入口，严禁使用私有 Language Server RPC",
+                ),
+                CapabilityManifestItem(
+                    capability="runtime_registry_and_status",
+                    support_status=SupportStatus.SUPPORTED,
+                    evidence=EvidenceSource.INTEGRATION_TEST,
+                    runtime_version="2.0",
+                    connector_version="phase3-registry",
+                    verified_at="2026-10-31T00:00:00Z",
+                    limitations="L1 支持登记实例、宿主机器、外部会话映射与独立连接状态",
                 ),
                 CapabilityManifestItem(
                     capability="mcp_collab",
                     support_status=SupportStatus.UNVERIFIED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="待 Phase 4 实测验证",
+                    limitations="L1 MCP 主动协同：待 Phase 4 实测验证",
                 ),
                 CapabilityManifestItem(
                     capability="programmatic_control",
                     support_status=SupportStatus.UNSUPPORTED,
                     evidence=EvidenceSource.OFFICIAL_DOCS,
-                    limitations="当前无公开稳定第三方本地会话控制契约，保持 L0/L1 轻量协同",
+                    limitations="L2 程序化控制：当前无公开稳定第三方本地会话控制契约，保持 L0/L1 轻量协同",
+                ),
+                CapabilityManifestItem(
+                    capability="approval_and_resume",
+                    support_status=SupportStatus.UNSUPPORTED,
+                    evidence=EvidenceSource.OFFICIAL_DOCS,
+                    limitations="L3 审批与恢复能力：无公开第三方审批拦截契约",
                 ),
             ],
         },
@@ -178,11 +245,12 @@ class RuntimeRegistryService:
             assert uow.session is not None
             for seed in _default_provider_seeds():
                 pkey = str(seed["provider_key"])
+                caps = [c.model_dump() for c in seed["capabilities"]]  # type: ignore[union-attr]
+                caps_json = json.dumps(caps, ensure_ascii=False)
                 existing = uow.session.execute(
                     select(RuntimeProviderModel).where(RuntimeProviderModel.provider_key == pkey)
                 ).scalar_one_or_none()
                 if existing is None:
-                    caps = [c.model_dump() for c in seed["capabilities"]]  # type: ignore[union-attr]
                     uow.session.add(
                         RuntimeProviderModel(
                             id=str(seed["id"]),
@@ -190,12 +258,15 @@ class RuntimeRegistryService:
                             display_name=str(seed["display_name"]),
                             integration_type=str(seed["integration_type"]),
                             documentation_url=str(seed["documentation_url"]),
-                            default_capabilities_json=json.dumps(caps, ensure_ascii=False),
+                            default_capabilities_json=caps_json,
                             enabled=1,
                             created_at=now,
                             updated_at=now,
                         )
                     )
+                else:
+                    existing.default_capabilities_json = caps_json
+                    existing.updated_at = now
 
             local_machine = uow.session.get(MachineModel, LOCAL_MACHINE_ID)
             if local_machine is None:
@@ -291,10 +362,21 @@ class RuntimeRegistryService:
                     fix="请先登记目标机器或使用默认 local-machine。",
                 )
 
+            clean_ver = (runtime_version or "unknown").strip()[:64] or "unknown"
             if capabilities is not None:
-                caps_json = json.dumps([c.model_dump() for c in capabilities], ensure_ascii=False)
+                raw_caps = list(capabilities)
             else:
-                caps_json = provider.default_capabilities_json
+                raw_caps = [
+                    CapabilityManifestItem.model_validate(item)
+                    for item in json.loads(provider.default_capabilities_json or "[]")
+                ]
+
+            validated_caps = validate_runtime_control_and_capabilities(
+                control_level=control_level,
+                capabilities=raw_caps,
+                runtime_version=clean_ver,
+            )
+            caps_json = json.dumps([c.model_dump() for c in validated_caps], ensure_ascii=False)
 
             endpoint_json = (
                 json.dumps(model_endpoint_descriptor.model_dump(), ensure_ascii=False)
@@ -307,7 +389,7 @@ class RuntimeRegistryService:
                 provider_id=provider.id,
                 machine_id=machine.id,
                 display_name=(display_name or f"{provider.display_name} @ {machine.display_name}").strip()[:120],
-                runtime_version=(runtime_version or "unknown").strip()[:64] or "unknown",
+                runtime_version=clean_ver,
                 connector_version=(connector_version or "none").strip()[:64] or "none",
                 control_level=control_level.value,
                 health_status=health_status.value,
@@ -329,6 +411,150 @@ class RuntimeRegistryService:
                     "machine_id": machine.id,
                     "control_level": inst.control_level,
                     "runtime_version": inst.runtime_version,
+                },
+            )
+            uow.commit()
+            return inst
+
+    def update_machine(
+        self,
+        machine_id: str,
+        *,
+        display_name: Optional[str] = None,
+        hostname_alias: Optional[str] = None,
+        connection_kind: Optional[MachineConnectionKind] = None,
+        health_status: Optional[RuntimeHealthStatus] = None,
+    ) -> MachineModel:
+        """更新宿主机器显示名、别名、连接方式或健康状态。"""
+        now = utc_now_iso()
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            machine = uow.session.get(MachineModel, machine_id)
+            if machine is None:
+                raise EntityNotFoundError(
+                    problem="指定的宿主机器不存在",
+                    cause=f"未找到 machine_id={machine_id}",
+                    fix="请确认机器 ID 正确。",
+                )
+            if display_name is not None and display_name.strip():
+                machine.display_name = display_name.strip()[:120]
+            if hostname_alias is not None:
+                machine.hostname_alias = hostname_alias.strip()[:120]
+            if connection_kind is not None:
+                machine.connection_kind = connection_kind.value
+            if health_status is not None:
+                machine.health_status = health_status.value
+                if health_status == RuntimeHealthStatus.ONLINE:
+                    machine.last_seen_at = now
+            machine.updated_at = now
+
+            uow.record_event(
+                entity_type="machine",
+                entity_id=machine.id,
+                event_type="machine.updated",
+                actor_type=ActorType.USER,
+                payload={
+                    "display_name": machine.display_name,
+                    "connection_kind": machine.connection_kind,
+                    "health_status": machine.health_status,
+                },
+            )
+            uow.commit()
+            return machine
+
+    def get_runtime_instance(self, instance_id: str) -> RuntimeInstanceModel:
+        """获取单个 Runtime 实例详情。"""
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            inst = uow.session.get(RuntimeInstanceModel, instance_id)
+            if inst is None:
+                raise EntityNotFoundError(
+                    problem="目标 Runtime 实例不存在",
+                    cause=f"未找到 runtime_instance_id={instance_id}",
+                    fix="请核对 Runtime 实例 ID。",
+                )
+            return inst
+
+    def update_runtime_instance(
+        self,
+        instance_id: str,
+        *,
+        display_name: Optional[str] = None,
+        runtime_version: Optional[str] = None,
+        connector_version: Optional[str] = None,
+        control_level: Optional[ControlLevel] = None,
+        health_status: Optional[RuntimeHealthStatus] = None,
+        capabilities: Optional[Sequence[CapabilityManifestItem]] = None,
+        model_endpoint_descriptor: Optional[ModelEndpointDescriptor] = None,
+    ) -> RuntimeInstanceModel:
+        """
+        更新 Runtime 实例状态、版本与能力验证证据。
+        任何 L2（程序化控制）/ L3（审批与恢复能力）等级与能力声明变更均强制经过 capability_policy 校验。
+        """
+        now = utc_now_iso()
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            inst = uow.session.get(RuntimeInstanceModel, instance_id)
+            if inst is None:
+                raise EntityNotFoundError(
+                    problem="目标 Runtime 实例不存在",
+                    cause=f"未找到 runtime_instance_id={instance_id}",
+                    fix="请核对 Runtime 实例 ID。",
+                )
+
+            eff_version = (
+                (runtime_version.strip()[:64] or "unknown")
+                if runtime_version is not None
+                else inst.runtime_version
+            )
+            eff_level = (
+                control_level
+                if control_level is not None
+                else ControlLevel(inst.control_level)
+            )
+            if capabilities is not None:
+                raw_caps = list(capabilities)
+            else:
+                raw_caps = [
+                    CapabilityManifestItem.model_validate(item)
+                    for item in json.loads(inst.capability_manifest_json or "[]")
+                ]
+
+            validated_caps = validate_runtime_control_and_capabilities(
+                control_level=eff_level,
+                capabilities=raw_caps,
+                runtime_version=eff_version,
+            )
+
+            if display_name is not None and display_name.strip():
+                inst.display_name = display_name.strip()[:120]
+            inst.runtime_version = eff_version
+            if connector_version is not None:
+                inst.connector_version = connector_version.strip()[:64] or "none"
+            inst.control_level = eff_level.value
+            if health_status is not None:
+                inst.health_status = health_status.value
+                if health_status == RuntimeHealthStatus.ONLINE:
+                    inst.last_seen_at = now
+            inst.capability_manifest_json = json.dumps(
+                [c.model_dump() for c in validated_caps], ensure_ascii=False
+            )
+            if model_endpoint_descriptor is not None:
+                inst.model_endpoint_descriptor_json = json.dumps(
+                    model_endpoint_descriptor.model_dump(), ensure_ascii=False
+                )
+            inst.updated_at = now
+
+            uow.record_event(
+                entity_type="runtime_instance",
+                entity_id=inst.id,
+                event_type="runtime_instance.updated",
+                actor_type=ActorType.USER,
+                payload={
+                    "control_level": inst.control_level,
+                    "health_status": inst.health_status,
+                    "runtime_version": inst.runtime_version,
+                    "connector_version": inst.connector_version,
                 },
             )
             uow.commit()

@@ -22,7 +22,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.db.base import utc_now_iso
 from backend.db.models.planning import TaskModel
 from backend.db.models.project import ProjectModel
-from backend.db.models.runtime import RuntimeInstanceModel
+from backend.db.models.runtime import (
+    MachineModel,
+    RuntimeInstanceModel,
+    RuntimeProviderModel,
+)
 from backend.db.models.session import ExternalSessionRefModel, SessionModel
 from backend.db.uow import SqlAlchemyUnitOfWork
 from backend.domain.enums import (
@@ -41,7 +45,7 @@ from backend.domain.exceptions import (
     InvariantViolationError,
     VersionConflictError,
 )
-from backend.domain.types import validate_safe_remote_url
+from backend.domain.types import mask_remote_url_for_display, validate_safe_remote_url
 
 
 class SessionService:
@@ -339,4 +343,307 @@ class SessionService:
             assert uow.session is not None
             stmt = select(SessionModel).order_by(SessionModel.updated_at.desc()).limit(limit)
             return list(uow.session.execute(stmt).scalars().all())
+
+    def update_external_session_ref(
+        self,
+        *,
+        project_id: str,
+        session_id: str,
+        ref_id: str,
+        runtime_instance_id: Optional[str] = None,
+        external_session_id: Optional[str] = None,
+        remote_entry_kind: Optional[RemoteEntryKind] = None,
+        remote_entry_url: Optional[str] = None,
+        link_status: Optional[LinkStatus] = None,
+    ) -> ExternalSessionRefModel:
+        """
+        更新已登记的外部会话引用与脱敏官方 Remote 入口：
+        强制校验同项目归属、会话归属及 validate_safe_remote_url 安全脱敏。
+        """
+        safe_url = validate_safe_remote_url(remote_entry_url) if remote_entry_url is not None else None
+
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            ref = uow.session.get(ExternalSessionRefModel, ref_id)
+            if ref is None:
+                raise EntityNotFoundError(
+                    problem="外部会话引用记录不存在",
+                    cause=f"未找到 external_ref_id: {ref_id}",
+                    fix="请核对外部引用 ID。",
+                )
+            if ref.project_id != project_id or ref.session_id != session_id:
+                raise CrossProjectReferenceError(
+                    problem="禁止跨项目或跨会话修改外部会话引用",
+                    cause=(
+                        f"引用 {ref_id} 归属 (project={ref.project_id}, session={ref.session_id})，"
+                        f"与请求上下文 (project={project_id}, session={session_id}) 不一致"
+                    ),
+                    fix="请在正确的项目与会话上下文中更新外部引用。",
+                )
+
+            if runtime_instance_id is not None:
+                rt = uow.session.get(RuntimeInstanceModel, runtime_instance_id)
+                if rt is None:
+                    raise EntityNotFoundError(
+                        problem="关联的 Runtime 实例不存在",
+                        cause=f"未找到 runtime_instance_id: {runtime_instance_id}",
+                        fix="请先登记有效的 Runtime 实例。",
+                    )
+                ref.runtime_instance_id = runtime_instance_id
+
+            if external_session_id is not None:
+                ref.external_session_id = external_session_id.strip()[:160]
+            if remote_entry_kind is not None:
+                ref.remote_entry_kind = remote_entry_kind.value
+            if safe_url is not None:
+                ref.remote_entry_url = safe_url
+            if link_status is not None:
+                ref.link_status = link_status.value
+
+            now = utc_now_iso()
+            ref.last_activity_at = now
+            ref.updated_at = now
+
+            uow.record_event(
+                project_id=project_id,
+                entity_type="session",
+                entity_id=session_id,
+                event_type="session.external_ref_updated",
+                actor_type=ActorType.USER,
+                payload={
+                    "external_ref_id": ref.id,
+                    "runtime_instance_id": ref.runtime_instance_id,
+                    "remote_entry_kind": ref.remote_entry_kind,
+                    "link_status": ref.link_status,
+                    "has_remote_url": bool(ref.remote_entry_url),
+                },
+            )
+            uow.commit()
+            return ref
+
+    def update_session_connection_status(
+        self,
+        *,
+        project_id: str,
+        session_id: str,
+        connection_status: ConnectionStatus,
+        sync_link_status: Optional[LinkStatus] = None,
+        expected_status_seq: Optional[int] = None,
+        actor_type: ActorType = ActorType.USER,
+    ) -> SessionModel:
+        """
+        独立更新会话的 Remote / Server 连接状态（connection_status）：
+        - 严格保证断线（disconnected）只更新连接状态与可选外部链接状态，
+          绝不把 Session.platform_status、Task.platform_status 或 Execution 判为失败。
+        """
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            sess = uow.session.get(SessionModel, session_id)
+            if sess is None:
+                raise EntityNotFoundError(
+                    problem="目标协同会话不存在",
+                    cause=f"未找到 session_id: {session_id}",
+                    fix="请核对会话 ID。",
+                )
+            if sess.project_id != project_id:
+                raise CrossProjectReferenceError(
+                    problem="禁止跨项目更新会话连接状态",
+                    cause=f"会话 {session_id} 不属于项目 {project_id}",
+                    fix="请核对项目上下文。",
+                )
+            if expected_status_seq is not None and sess.status_seq != expected_status_seq:
+                raise VersionConflictError(
+                    problem="会话状态序号已发生推进（陈旧连接状态写入拦截）",
+                    cause=f"期望 status_seq={expected_status_seq}，当前为 {sess.status_seq}",
+                    fix="请拉取最新会话状态后重试。",
+                )
+
+            now = utc_now_iso()
+            sess.connection_status = connection_status.value
+            sess.status_seq += 1
+            sess.last_activity_at = now
+            sess.updated_at = now
+
+            if sync_link_status is not None:
+                refs = list(
+                    uow.session.execute(
+                        select(ExternalSessionRefModel).where(
+                            ExternalSessionRefModel.project_id == project_id,
+                            ExternalSessionRefModel.session_id == session_id,
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for r in refs:
+                    r.link_status = sync_link_status.value
+                    r.updated_at = now
+
+            uow.record_event(
+                project_id=project_id,
+                entity_type="session",
+                entity_id=sess.id,
+                event_type="session.connection_status_updated",
+                actor_type=actor_type,
+                payload={
+                    "status_seq": sess.status_seq,
+                    "connection_status": sess.connection_status,
+                    "platform_status_unchanged": sess.platform_status,
+                    "sync_link_status": sync_link_status.value if sync_link_status else None,
+                },
+            )
+            uow.commit()
+            return sess
+
+    def list_remote_registry(
+        self,
+        *,
+        project_id: str,
+        runtime_instance_id: Optional[str] = None,
+        link_status: Optional[str] = None,
+    ) -> list[dict[str, object]]:
+        """
+        按项目级权限过滤查询 Remote Registry 台账：
+        - 强制要求传入并校验 project_id，严格防止不同项目之间的外部会话与 Remote 入口数据泄露；
+        - 聚合返回 Project、Task、Session、RuntimeInstance、Machine 与 ExternalSessionRef 完整映射。
+        """
+        clean_pid = (project_id or "").strip()
+        if not clean_pid:
+            raise CrossProjectReferenceError(
+                problem="查询 Remote Registry 台账必须指定所属项目 ID",
+                cause="未传入 project_id，禁止无项目作用域的跨项目台账枚举",
+                fix="请在请求中携带明确的 project_id 参数以执行项目级权限隔离。",
+            )
+
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            proj = uow.session.get(ProjectModel, clean_pid)
+            if proj is None:
+                raise EntityNotFoundError(
+                    problem="目标项目不存在",
+                    cause=f"未找到 project_id: {clean_pid}",
+                    fix="请确认项目 ID 正确。",
+                )
+
+            stmt = select(ExternalSessionRefModel).where(
+                ExternalSessionRefModel.project_id == clean_pid
+            )
+            if runtime_instance_id:
+                stmt = stmt.where(ExternalSessionRefModel.runtime_instance_id == runtime_instance_id)
+            if link_status:
+                stmt = stmt.where(ExternalSessionRefModel.link_status == link_status)
+            stmt = stmt.order_by(ExternalSessionRefModel.updated_at.desc())
+
+            refs = list(uow.session.execute(stmt).scalars().all())
+            if not refs:
+                return []
+
+            sessions_map = {
+                s.id: s
+                for s in uow.session.execute(
+                    select(SessionModel).where(SessionModel.project_id == clean_pid)
+                )
+                .scalars()
+                .all()
+            }
+            tasks_map = {
+                t.id: t
+                for t in uow.session.execute(
+                    select(TaskModel).where(TaskModel.project_id == clean_pid)
+                )
+                .scalars()
+                .all()
+            }
+            instances_map = {
+                inst.id: inst
+                for inst in uow.session.execute(select(RuntimeInstanceModel)).scalars().all()
+            }
+            providers_map = {
+                p.id: p
+                for p in uow.session.execute(select(RuntimeProviderModel)).scalars().all()
+            }
+            machines_map = {
+                m.id: m
+                for m in uow.session.execute(select(MachineModel)).scalars().all()
+            }
+
+            entries: list[dict[str, object]] = []
+            for r in refs:
+                sess = sessions_map.get(r.session_id)
+                if sess is None or sess.project_id != clean_pid:
+                    continue
+                task = tasks_map.get(sess.task_id) if sess.task_id else None
+                inst = instances_map.get(r.runtime_instance_id)
+                provider = providers_map.get(inst.provider_id) if inst else None
+                machine = machines_map.get(inst.machine_id) if inst else None
+
+                entries.append(
+                    {
+                        "id": r.id,
+                        "project": {
+                            "id": proj.id,
+                            "name": proj.name,
+                            "slug": proj.slug,
+                        },
+                        "task": (
+                            {
+                                "id": task.id,
+                                "title": task.title,
+                                "platform_status": task.platform_status,
+                            }
+                            if task
+                            else None
+                        ),
+                        "session": {
+                            "id": sess.id,
+                            "title": sess.title,
+                            "platform_status": sess.platform_status,
+                            "agent_reported_status": sess.agent_reported_status,
+                            "runtime_status": sess.runtime_status,
+                            "connection_status": sess.connection_status,
+                            "status_seq": sess.status_seq,
+                        },
+                        "runtime_instance": (
+                            {
+                                "id": inst.id,
+                                "display_name": inst.display_name,
+                                "runtime_version": inst.runtime_version,
+                                "connector_version": inst.connector_version,
+                                "control_level": inst.control_level,
+                                "health_status": inst.health_status,
+                                "provider_key": provider.provider_key if provider else "unknown",
+                                "provider_name": provider.display_name if provider else "Unknown",
+                            }
+                            if inst
+                            else None
+                        ),
+                        "machine": (
+                            {
+                                "id": machine.id,
+                                "display_name": machine.display_name,
+                                "os": machine.os,
+                                "hostname_alias": machine.hostname_alias,
+                                "connection_kind": machine.connection_kind,
+                                "health_status": machine.health_status,
+                            }
+                            if machine
+                            else None
+                        ),
+                        "external_ref": {
+                            "id": r.id,
+                            "project_id": r.project_id,
+                            "session_id": r.session_id,
+                            "runtime_instance_id": r.runtime_instance_id,
+                            "external_session_id": r.external_session_id,
+                            "remote_entry_kind": r.remote_entry_kind,
+                            "remote_entry_url": r.remote_entry_url,
+                            "masked_remote_url": mask_remote_url_for_display(r.remote_entry_url),
+                            "link_status": r.link_status,
+                            "last_activity_at": r.last_activity_at,
+                            "created_at": r.created_at,
+                            "updated_at": r.updated_at,
+                        },
+                    }
+                )
+            return entries
 

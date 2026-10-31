@@ -28,7 +28,10 @@ from backend.db.models.runtime import (
     RuntimeProviderModel,
 )
 from backend.db.models.session import ExternalSessionRefModel, SessionModel
+from backend.domain.exceptions import CrossProjectReferenceError
+from backend.domain.types import mask_remote_url_for_display
 from backend.security.auth_guard import DevicePairingAuthManager
+from backend.security.mcp_token_guard import hash_mcp_token
 
 
 def extract_bearer_token(request: Request) -> Optional[str]:
@@ -70,6 +73,48 @@ def verify_http_client(request: Request) -> str:
         status_code=401,
         detail="未授权的访问请求，请在电脑终端扫描一次性配对二维码",
     )
+
+
+def enforce_project_scope(request: Request, target_project_id: str) -> str:
+    """
+    强制执行项目级权限过滤：
+    1. target_project_id 必须非空；
+    2. 若请求携带 X-Project-Scope（限定项目上下文头）或 X-MCP-Project-Token（项目级令牌），
+       强制验证该令牌或作用域与 target_project_id 完全一致，严禁跨项目数据泄露。
+    """
+    clean_pid = (target_project_id or "").strip()
+    if not clean_pid:
+        raise CrossProjectReferenceError(
+            problem="缺少项目级权限过滤参数 project_id",
+            cause="请求未指定 project_id，拒绝无项目边界的全局访问",
+            fix="请传入明确的 project_id 参数。",
+        )
+
+    scoped_header = (request.headers.get("X-Project-Scope") or "").strip()
+    if scoped_header and scoped_header != clean_pid:
+        raise CrossProjectReferenceError(
+            problem="拦截跨项目越权访问请求",
+            cause=f"当前请求作用域限定为项目 '{scoped_header}'，禁止读取或操作项目 '{clean_pid}' 的数据",
+            fix="请切换至目标项目上下文后再访问。",
+            context={"scoped_project_id": scoped_header, "target_project_id": clean_pid},
+        )
+
+    mcp_raw_token = (request.headers.get("X-MCP-Project-Token") or "").strip()
+    if mcp_raw_token:
+        project_service = getattr(request.app.state, "project_service", None)
+        if project_service is not None:
+            tokens = project_service.list_mcp_tokens(clean_pid)
+            token_hash = hash_mcp_token(mcp_raw_token)
+            matched = any(t.token_hash == token_hash and not t.is_revoked for t in tokens)
+            if not matched:
+                raise CrossProjectReferenceError(
+                    problem="项目级令牌无权访问目标项目数据",
+                    cause=f"提供的 X-MCP-Project-Token 不属于项目 '{clean_pid}' 或已被吊销",
+                    fix="请使用目标项目签发的有效令牌。",
+                    context={"target_project_id": clean_pid},
+                )
+
+    return clean_pid
 
 
 # -------------------- ORM -> Dict 序列化函数 --------------------
@@ -264,6 +309,7 @@ def serialize_external_ref(ref: ExternalSessionRefModel) -> dict[str, Any]:
         "external_session_id": ref.external_session_id,
         "remote_entry_kind": ref.remote_entry_kind,
         "remote_entry_url": ref.remote_entry_url,
+        "masked_remote_url": mask_remote_url_for_display(ref.remote_entry_url),
         "link_status": ref.link_status,
         "last_activity_at": ref.last_activity_at,
         "created_at": ref.created_at,

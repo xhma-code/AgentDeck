@@ -176,7 +176,13 @@ class LinkStatus(StrEnum):
 
 
 class ControlLevel(StrEnum):
-    """统一控制能力等级（L0-L3）。"""
+    """
+    统一控制能力等级（严格对齐 v1.3 定义）：
+    - L0：官方 Remote 入口（仅登记与跳转官方远程入口）
+    - L1：Runtime 注册、状态与能力信息管理（含 MCP 主动协同回写）
+    - L2：程序化控制（通过经验证的官方 SDK / HTTP API / App Server Stdio 发送受控指令）
+    - L3：审批与恢复能力（支持原生权限审批拦截、跨中断会话恢复等高阶控制）
+    """
 
     L0 = "L0"
     L1 = "L1"
@@ -197,6 +203,8 @@ class EvidenceSource(StrEnum):
 
     OFFICIAL_DOCS = "official_docs"
     INTEGRATION_TEST = "integration_test"
+    LOCAL_TEST = "local_test"
+    SPIKE_VERIFIED = "spike_verified"
     INFERRED = "inferred"
 
 

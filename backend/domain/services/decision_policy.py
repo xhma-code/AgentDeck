@@ -27,6 +27,20 @@ from backend.domain.types import DecisionOptionItem
 
 HIGH_RISK_LEVELS = {DecisionRiskLevel.HIGH.value, DecisionRiskLevel.CRITICAL.value}
 
+# 统一交互式 Decision 提交重试与错误分类策略（前后端共享单一事实源）
+DECISION_RETRY_POLICY: dict[str, object] = {
+    "max_retries": 3,
+    "backoff_ms": [1000, 2000, 4000],
+    "retryable_http_statuses": [408, 429, 500, 502, 503, 504],
+    "network_error_categories": [
+        "NETWORK_UNREACHABLE",
+        "REQUEST_TIMEOUT",
+        "SERVER_TRANSIENT_5XX",
+        "RATE_LIMITED_429",
+    ],
+    "final_failure_state": "draft_preserved_manual_retry",
+}
+
 
 def validate_decision_creation_policy(
     *,

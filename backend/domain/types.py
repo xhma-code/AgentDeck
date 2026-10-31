@@ -107,19 +107,45 @@ def validate_safe_remote_url(raw_url: str) -> str:
     """
     校验并清理官方 Remote 入口链接（v1.3 第 13.3 节安全边界）：
     1. 空字符串合法（表示尚未配置深链，不伪造 URL）。
-    2. 仅允许 http / https 协议。
-    3. 严禁包含用户名密码 (userinfo) 或一次性认证 Token / API Key 查询参数与 Fragment。
+    2. 严禁包含控制字符或空白字符注入。
+    3. 仅允许 http / https 协议，且必须具备合法主机名与合法端口。
+    4. 严禁包含用户名密码 (userinfo) 或一次性认证 Token / API Key 查询参数、路径密钥与 Fragment。
     """
     cleaned = (raw_url or "").strip()
     if not cleaned:
         return ""
 
-    parsed = urlparse(cleaned)
-    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+    if any(ch.isspace() or ord(ch) < 32 for ch in cleaned):
         raise SecurityBoundaryError(
-            problem="Remote 入口链接格式不合法",
-            cause=f"仅支持包含合法主机名的 http/https 链接，收到协议: '{parsed.scheme or '空'}'",
-            fix="请配置厂商官方标准 Remote 页面地址（不含私有协议或本地命令行）。",
+            problem="Remote 入口链接包含非法空白或控制字符",
+            cause="URL 中检测到空格、换行或不可见控制字符",
+            fix="请提供标准格式的单行 http/https 官方 Remote 链接。",
+        )
+
+    try:
+        parsed = urlparse(cleaned)
+        port = parsed.port
+    except ValueError as exc:
+        raise SecurityBoundaryError(
+            problem="Remote 入口链接格式或端口不合法",
+            cause=f"URL 解析失败: {exc}",
+            fix="请检查 URL 主机名与端口号（1-65535）。",
+        ) from exc
+
+    scheme = (parsed.scheme or "").lower()
+    hostname = (parsed.hostname or "").strip()
+    if scheme not in ("http", "https") or not hostname or "." not in hostname and hostname != "localhost":
+        raise SecurityBoundaryError(
+            problem="Remote 入口链接协议或主机名不合法",
+            cause=f"仅支持包含有效域名或 localhost 的 http/https 链接，收到协议: '{parsed.scheme or '空'}', 主机: '{hostname or '空'}'",
+            fix="请配置厂商官方标准 Remote 页面地址（禁止 javascript:/file:/ssh:/ws: 等协议）。",
+        )
+
+    if port is not None and (port < 1 or port > 65535):
+        raise SecurityBoundaryError(
+            problem="Remote 入口链接端口超出有效范围",
+            cause=f"收到无效端口号: {port}",
+            fix="请使用 1 至 65535 之间的合法端口。",
         )
 
     if parsed.username or parsed.password:
@@ -127,6 +153,13 @@ def validate_safe_remote_url(raw_url: str) -> str:
             problem="拒绝保存包含账号密码凭证的 Remote 链接",
             cause="URL netloc 中检测到明文 userinfo 认证段",
             fix="请移除 URL 中的用户名与密码部分后再登记。",
+        )
+
+    if SECRET_VALUE_PATTERN.search(parsed.path or ""):
+        raise SecurityBoundaryError(
+            problem="拒绝保存路径中包含密钥特征的 Remote 链接",
+            cause="URL 路径段命中敏感密钥特征规则",
+            fix="请移除 URL 路径中的敏感密钥后再保存。",
         )
 
     for key, val in parse_qsl(parsed.query, keep_blank_values=True):
@@ -153,4 +186,27 @@ def validate_safe_remote_url(raw_url: str) -> str:
             )
 
     return cleaned
+
+
+def mask_remote_url_for_display(raw_url: str) -> str:
+    """
+    生成用于界面展示的脱敏 Remote URL 摘要（隐藏长路径尾部参数，保留协议、主机与首级入口路径）。
+    """
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return ""
+    try:
+        parsed = urlparse(cleaned)
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        segments = [seg for seg in (parsed.path or "").split("/") if seg]
+        if not segments:
+            return f"{parsed.scheme}://{parsed.netloc}/"
+        if len(segments) == 1 and len(segments[0]) <= 24:
+            return f"{parsed.scheme}://{parsed.netloc}/{segments[0]}"
+        first_seg = segments[0][:20]
+        last_tail = segments[-1][-6:] if len(segments[-1]) > 8 else segments[-1]
+        return f"{parsed.scheme}://{parsed.netloc}/{first_seg}/.../{last_tail}"
+    except Exception:
+        return ""
 

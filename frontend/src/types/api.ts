@@ -145,9 +145,53 @@ export interface ExternalSessionRefItem {
   external_session_id: string;
   remote_entry_kind: string;
   remote_entry_url: string;
+  masked_remote_url?: string;
   link_status: string;
   last_activity_at: string | null;
   created_at: string;
+  updated_at?: string;
+}
+
+export interface RemoteRegistryEntryItem {
+  id: string;
+  project: {
+    id: string;
+    name: string;
+    slug: string;
+  };
+  task: {
+    id: string;
+    title: string;
+    platform_status: string;
+  } | null;
+  session: {
+    id: string;
+    title: string;
+    platform_status: string;
+    agent_reported_status: string;
+    runtime_status: string;
+    connection_status: string;
+    status_seq: number;
+  };
+  runtime_instance: {
+    id: string;
+    display_name: string;
+    runtime_version: string;
+    connector_version: string;
+    control_level: 'L0' | 'L1' | 'L2' | 'L3';
+    health_status: string;
+    provider_key: string;
+    provider_name: string;
+  } | null;
+  machine: {
+    id: string;
+    display_name: string;
+    os: string;
+    hostname_alias: string;
+    connection_kind: string;
+    health_status: string;
+  } | null;
+  external_ref: ExternalSessionRefItem;
 }
 
 export interface SessionItem {

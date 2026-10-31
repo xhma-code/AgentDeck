@@ -21,7 +21,7 @@ import json
 import uuid
 from typing import Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.db.base import utc_now_iso
@@ -133,9 +133,14 @@ class DecisionService:
                         cause=f"任务 {task_id} 不属于项目 {project_id}",
                         fix="请核对项目上下文。",
                     )
-                task.platform_status = TaskPlatformStatus.WAITING_INTERACTION.value
-                task.version += 1
-                task.updated_at = now
+                if task.platform_status in (
+                    TaskPlatformStatus.DRAFT.value,
+                    TaskPlatformStatus.READY.value,
+                    TaskPlatformStatus.IN_PROGRESS.value,
+                ):
+                    task.platform_status = TaskPlatformStatus.WAITING_INTERACTION.value
+                    task.version += 1
+                    task.updated_at = now
 
             if step_id is not None:
                 step = uow.session.get(StepModel, step_id)
@@ -151,9 +156,14 @@ class DecisionService:
                         cause=f"步骤 {step_id} 不属于项目 {project_id}",
                         fix="请核对项目上下文。",
                     )
-                step.platform_status = StepPlatformStatus.WAITING_INTERACTION.value
-                step.version += 1
-                step.updated_at = now
+                if step.platform_status in (
+                    StepPlatformStatus.PENDING.value,
+                    StepPlatformStatus.READY.value,
+                    StepPlatformStatus.IN_PROGRESS.value,
+                ):
+                    step.platform_status = StepPlatformStatus.WAITING_INTERACTION.value
+                    step.version += 1
+                    step.updated_at = now
 
             if session_id is not None:
                 sess = uow.session.get(SessionModel, session_id)
@@ -169,10 +179,14 @@ class DecisionService:
                         cause=f"会话 {session_id} 不属于项目 {project_id}",
                         fix="请核对项目上下文。",
                     )
-                sess.platform_status = SessionPlatformStatus.WAITING_INTERACTION.value
-                sess.status_seq += 1
-                sess.last_activity_at = now
-                sess.updated_at = now
+                if sess.platform_status in (
+                    SessionPlatformStatus.ACTIVE.value,
+                    SessionPlatformStatus.IDLE.value,
+                ):
+                    sess.platform_status = SessionPlatformStatus.WAITING_INTERACTION.value
+                    sess.status_seq += 1
+                    sess.last_activity_at = now
+                    sess.updated_at = now
 
             if execution_id is not None:
                 execution = uow.session.get(ExecutionModel, execution_id)
@@ -188,8 +202,12 @@ class DecisionService:
                         cause=f"执行 {execution_id} 不属于项目 {project_id}",
                         fix="请核对项目上下文。",
                     )
-                execution.platform_status = ExecutionPlatformStatus.WAITING_INTERACTION.value
-                execution.updated_at = now
+                if execution.platform_status in (
+                    ExecutionPlatformStatus.QUEUED.value,
+                    ExecutionPlatformStatus.RUNNING.value,
+                ):
+                    execution.platform_status = ExecutionPlatformStatus.WAITING_INTERACTION.value
+                    execution.updated_at = now
 
             decision_id = str(uuid.uuid4())
             options_json = json.dumps([o.model_dump() for o in parsed_options], ensure_ascii=False)
@@ -347,15 +365,53 @@ class DecisionService:
                 "resolved_by": resolved_by.value,
                 "resolved_at": now,
             }
-            decision.status = DecisionStatus.RESOLVED.value
-            decision.chosen_option_id = effective_option_id
-            decision.custom_note = clean_note
-            decision.resolution_payload_json = json.dumps(resolution_payload, ensure_ascii=False)
-            decision.resolved_by = resolved_by.value
-            decision.resolution_idempotency_key = clean_idem
-            decision.resolved_at = now
-            decision.version += 1
-            decision.updated_at = now
+            resolution_payload_str = json.dumps(resolution_payload, ensure_ascii=False)
+
+            # 使用数据库级原子条件更新 (CAS: WHERE id = :id AND status = 'pending')
+            # 确保人工提交与超时结算在并发竞争时仅有一个事务成功落定
+            cas_result = uow.session.execute(
+                update(DecisionModel)
+                .where(
+                    DecisionModel.id == decision.id,
+                    DecisionModel.status == DecisionStatus.PENDING.value,
+                )
+                .values(
+                    status=DecisionStatus.RESOLVED.value,
+                    chosen_option_id=effective_option_id,
+                    custom_note=clean_note,
+                    resolution_payload_json=resolution_payload_str,
+                    resolved_by=resolved_by.value,
+                    resolution_idempotency_key=clean_idem,
+                    resolved_at=now,
+                    version=DecisionModel.version + 1,
+                    updated_at=now,
+                )
+            )
+            if cas_result.rowcount != 1:
+                uow.session.expire(decision)
+                uow.session.refresh(decision)
+                if decision.status == DecisionStatus.RESOLVED.value:
+                    if clean_idem and decision.resolution_idempotency_key == clean_idem:
+                        return decision, True
+                    if (
+                        decision.chosen_option_id == effective_option_id
+                        and (decision.custom_note or "") == clean_note
+                    ):
+                        return decision, True
+                raise VersionConflictError(
+                    problem="该决策点已被并发请求处理，当前提交未落定",
+                    cause=f"当前状态已变更为 '{decision.status}'，处理来源为 '{decision.resolved_by}'",
+                    fix="当前决策已完成同步，前端弹窗可直接关闭并刷新状态。",
+                    context={
+                        "decision_id": decision.id,
+                        "current_status": decision.status,
+                        "resolved_by": decision.resolved_by or "",
+                        "chosen_option_id": decision.chosen_option_id or "",
+                    },
+                )
+
+            uow.session.expire(decision)
+            uow.session.refresh(decision)
 
             if clean_idem:
                 existing_cmd = uow.session.get(CommandIdempotencyModel, clean_idem)
@@ -373,7 +429,7 @@ class DecisionService:
                         )
                     )
 
-            # 2. 检查关联实体是否还有其他未处理的 pending 决策，若无则解除 waiting_interaction
+            # 2. 同一事务内检查关联实体是否还有其他未处理的 pending 决策，若无则原子恢复 waiting_interaction
             self._restore_waiting_entities_if_unblocked(uow, decision, now)
 
             actor = (
@@ -403,6 +459,88 @@ class DecisionService:
             )
             uow.commit()
             return decision, False
+
+    def expire_decision(
+        self,
+        *,
+        decision_id: str,
+        project_id: Optional[str] = None,
+        reason: str = "决策倒计时超时未处理，已按策略置为过期",
+    ) -> DecisionModel:
+        """
+        将超时且不允许自动通过的 pending Decision 原子置为 expired：
+        - 严格使用 WHERE id = :id AND status = 'pending' 防止与人工提交并发冲突；
+        - 若人工提交已抢先落定，抛出 409 VersionConflictError，绝不覆盖人工答案。
+        """
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            assert uow.session is not None
+            decision = uow.session.get(DecisionModel, decision_id)
+            if decision is None:
+                raise EntityNotFoundError(
+                    problem="目标决策记录不存在",
+                    cause=f"未找到 decision_id: {decision_id}",
+                    fix="请刷新待决策列表后重试。",
+                )
+            if project_id is not None and decision.project_id != project_id:
+                raise CrossProjectReferenceError(
+                    problem="禁止跨项目操作决策",
+                    cause=f"决策 {decision_id} 不属于项目 {project_id}",
+                    fix="请核对项目上下文。",
+                )
+            if decision.status == DecisionStatus.EXPIRED.value:
+                return decision
+
+            now = utc_now_iso()
+            payload_str = json.dumps(
+                {"expired_at": now, "reason": (reason or "").strip()},
+                ensure_ascii=False,
+            )
+            cas_result = uow.session.execute(
+                update(DecisionModel)
+                .where(
+                    DecisionModel.id == decision.id,
+                    DecisionModel.status == DecisionStatus.PENDING.value,
+                )
+                .values(
+                    status=DecisionStatus.EXPIRED.value,
+                    custom_note=(reason or "").strip()[:1000],
+                    resolution_payload_json=payload_str,
+                    resolved_by=DecisionResolvedBy.SYSTEM.value,
+                    resolved_at=now,
+                    version=DecisionModel.version + 1,
+                    updated_at=now,
+                )
+            )
+            if cas_result.rowcount != 1:
+                uow.session.expire(decision)
+                uow.session.refresh(decision)
+                if decision.status == DecisionStatus.EXPIRED.value:
+                    return decision
+                raise VersionConflictError(
+                    problem="决策已被人工或并发请求处理，无法标记为过期",
+                    cause=f"当前状态为 '{decision.status}'，处理来源为 '{decision.resolved_by}'",
+                    fix="该决策已有最终结论，无需执行超时过期。",
+                    context={"decision_id": decision.id, "current_status": decision.status},
+                )
+
+            uow.session.expire(decision)
+            uow.session.refresh(decision)
+            self._restore_waiting_entities_if_unblocked(uow, decision, now)
+            uow.record_event(
+                project_id=decision.project_id,
+                entity_type="decision",
+                entity_id=decision.id,
+                event_type="decision.expired",
+                actor_type=ActorType.SYSTEM,
+                payload={
+                    "reason": (reason or "").strip(),
+                    "task_id": decision.task_id,
+                    "step_id": decision.step_id,
+                    "session_id": decision.session_id,
+                },
+            )
+            uow.commit()
+            return decision
 
     def get_decision(self, decision_id: str) -> DecisionModel:
         with SqlAlchemyUnitOfWork(self._session_factory) as uow:
@@ -447,7 +585,11 @@ class DecisionService:
         resolved_decision: DecisionModel,
         now_iso: str,
     ) -> None:
-        """若关联的 Task/Step/Session/Execution 已无其他 pending Decision，将其从 waiting_interaction 恢复为活跃态。"""
+        """
+        在同一事务内检查关联的 Task/Step/Session/Execution 是否还有其他未处理的 pending Decision。
+        仅当剩余 pending == 0 且目标实体当前处于 waiting_interaction 时，使用原子条件更新恢复状态，
+        绝不覆盖 paused / completed / archived 等其他原因产生的状态。
+        """
         assert uow.session is not None
         uow.session.flush()
 
@@ -459,11 +601,18 @@ class DecisionService:
                 )
             ).scalar()
             if not rem_step:
-                step = uow.session.get(StepModel, resolved_decision.step_id)
-                if step and step.platform_status == StepPlatformStatus.WAITING_INTERACTION.value:
-                    step.platform_status = StepPlatformStatus.IN_PROGRESS.value
-                    step.version += 1
-                    step.updated_at = now_iso
+                uow.session.execute(
+                    update(StepModel)
+                    .where(
+                        StepModel.id == resolved_decision.step_id,
+                        StepModel.platform_status == StepPlatformStatus.WAITING_INTERACTION.value,
+                    )
+                    .values(
+                        platform_status=StepPlatformStatus.IN_PROGRESS.value,
+                        version=StepModel.version + 1,
+                        updated_at=now_iso,
+                    )
+                )
 
         if resolved_decision.task_id:
             rem_task = uow.session.execute(
@@ -473,11 +622,18 @@ class DecisionService:
                 )
             ).scalar()
             if not rem_task:
-                task = uow.session.get(TaskModel, resolved_decision.task_id)
-                if task and task.platform_status == TaskPlatformStatus.WAITING_INTERACTION.value:
-                    task.platform_status = TaskPlatformStatus.IN_PROGRESS.value
-                    task.version += 1
-                    task.updated_at = now_iso
+                uow.session.execute(
+                    update(TaskModel)
+                    .where(
+                        TaskModel.id == resolved_decision.task_id,
+                        TaskModel.platform_status == TaskPlatformStatus.WAITING_INTERACTION.value,
+                    )
+                    .values(
+                        platform_status=TaskPlatformStatus.IN_PROGRESS.value,
+                        version=TaskModel.version + 1,
+                        updated_at=now_iso,
+                    )
+                )
 
         if resolved_decision.session_id:
             rem_sess = uow.session.execute(
@@ -487,12 +643,19 @@ class DecisionService:
                 )
             ).scalar()
             if not rem_sess:
-                sess = uow.session.get(SessionModel, resolved_decision.session_id)
-                if sess and sess.platform_status == SessionPlatformStatus.WAITING_INTERACTION.value:
-                    sess.platform_status = SessionPlatformStatus.ACTIVE.value
-                    sess.status_seq += 1
-                    sess.last_activity_at = now_iso
-                    sess.updated_at = now_iso
+                uow.session.execute(
+                    update(SessionModel)
+                    .where(
+                        SessionModel.id == resolved_decision.session_id,
+                        SessionModel.platform_status == SessionPlatformStatus.WAITING_INTERACTION.value,
+                    )
+                    .values(
+                        platform_status=SessionPlatformStatus.ACTIVE.value,
+                        status_seq=SessionModel.status_seq + 1,
+                        last_activity_at=now_iso,
+                        updated_at=now_iso,
+                    )
+                )
 
         if resolved_decision.execution_id:
             rem_exec = uow.session.execute(
@@ -502,7 +665,14 @@ class DecisionService:
                 )
             ).scalar()
             if not rem_exec:
-                execution = uow.session.get(ExecutionModel, resolved_decision.execution_id)
-                if execution and execution.platform_status == ExecutionPlatformStatus.WAITING_INTERACTION.value:
-                    execution.platform_status = ExecutionPlatformStatus.RUNNING.value
-                    execution.updated_at = now_iso
+                uow.session.execute(
+                    update(ExecutionModel)
+                    .where(
+                        ExecutionModel.id == resolved_decision.execution_id,
+                        ExecutionModel.platform_status == ExecutionPlatformStatus.WAITING_INTERACTION.value,
+                    )
+                    .values(
+                        platform_status=ExecutionPlatformStatus.RUNNING.value,
+                        updated_at=now_iso,
+                    )
+                )

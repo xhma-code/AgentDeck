@@ -154,6 +154,15 @@ class MachineRegisterRequest(BaseModel):
     health_status: RuntimeHealthStatus = Field(default=RuntimeHealthStatus.ONLINE)
 
 
+class MachineUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    hostname_alias: Optional[str] = Field(default=None, max_length=120)
+    connection_kind: Optional[MachineConnectionKind] = Field(default=None)
+    health_status: Optional[RuntimeHealthStatus] = Field(default=None)
+
+
 class RuntimeInstanceRegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
@@ -164,6 +173,18 @@ class RuntimeInstanceRegisterRequest(BaseModel):
     connector_version: str = Field(default="none", max_length=64)
     control_level: ControlLevel = Field(default=ControlLevel.L0)
     health_status: RuntimeHealthStatus = Field(default=RuntimeHealthStatus.UNKNOWN)
+    capabilities: Optional[list[CapabilityManifestItem]] = Field(default=None)
+    model_endpoint_descriptor: Optional[ModelEndpointDescriptor] = Field(default=None)
+
+
+class RuntimeInstanceUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    runtime_version: Optional[str] = Field(default=None, max_length=64)
+    connector_version: Optional[str] = Field(default=None, max_length=64)
+    control_level: Optional[ControlLevel] = Field(default=None)
+    health_status: Optional[RuntimeHealthStatus] = Field(default=None)
     capabilities: Optional[list[CapabilityManifestItem]] = Field(default=None)
     model_endpoint_descriptor: Optional[ModelEndpointDescriptor] = Field(default=None)
 
@@ -189,6 +210,14 @@ class SessionStatusUpdateRequest(BaseModel):
     expected_status_seq: Optional[int] = Field(default=None, ge=1)
 
 
+class SessionConnectionStatusUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connection_status: ConnectionStatus = Field(..., description="独立连接状态（connected/disconnected/unknown）")
+    sync_link_status: Optional[LinkStatus] = Field(default=None, description="可选同步更新外部会话链接状态")
+    expected_status_seq: Optional[int] = Field(default=None, ge=1)
+
+
 class ExternalSessionRefBindRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -197,6 +226,16 @@ class ExternalSessionRefBindRequest(BaseModel):
     remote_entry_kind: RemoteEntryKind = Field(default=RemoteEntryKind.NONE)
     remote_entry_url: str = Field(default="", max_length=1000)
     link_status: LinkStatus = Field(default=LinkStatus.ACTIVE)
+
+
+class ExternalSessionRefUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    runtime_instance_id: Optional[str] = Field(default=None, min_length=1)
+    external_session_id: Optional[str] = Field(default=None, max_length=160)
+    remote_entry_kind: Optional[RemoteEntryKind] = Field(default=None)
+    remote_entry_url: Optional[str] = Field(default=None, max_length=1000)
+    link_status: Optional[LinkStatus] = Field(default=None)
 
 
 # -------------------- Execution & Attempt --------------------
@@ -246,6 +285,12 @@ class DecisionResolveRequest(BaseModel):
     custom_note: str = Field(default="", max_length=4000)
     resolved_by: DecisionResolvedBy = Field(default=DecisionResolvedBy.USER_MANUAL)
     idempotency_key: Optional[str] = Field(default=None, max_length=120)
+
+
+class DecisionExpireRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="决策倒计时超时未处理，已按策略置为过期", max_length=1000)
 
 
 # -------------------- Artifact --------------------

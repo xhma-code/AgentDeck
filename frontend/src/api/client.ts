@@ -1,11 +1,14 @@
 import type {
   ArtifactItem,
+  CapabilityManifestItem,
   DecisionItem,
   EventItem,
+  ExternalSessionRefItem,
   MachineItem,
   McpTokenItem,
   OverviewResponse,
   ProjectItem,
+  RemoteRegistryEntryItem,
   RuntimeInstanceItem,
   RuntimeProviderItem,
   SessionItem,
@@ -17,6 +20,19 @@ import type {
 } from '../types/api';
 
 const TOKEN_STORAGE_KEY = 'agentdeck_device_token';
+
+/**
+ * 统一交互式 Decision 提交重试策略（与后端 DECISION_RETRY_POLICY 严格一致）：
+ * - 第 1 次重试等待 1000ms (1s)
+ * - 第 2 次重试等待 2000ms (2s)
+ * - 第 3 次重试等待 4000ms (4s)
+ */
+export const DECISION_RETRY_POLICY = {
+  maxRetries: 3,
+  backoffMs: [1000, 2000, 4000] as const,
+  retryableHttpStatuses: new Set([408, 429, 500, 502, 503, 504]),
+  finalFailureState: 'draft_preserved_manual_retry',
+};
 
 export function getStoredToken(): string {
   return localStorage.getItem(TOKEN_STORAGE_KEY) || '';
@@ -324,13 +340,7 @@ export const apiClient = {
     task: TaskItem | null;
     steps: StepItem[];
     runtime_instance: RuntimeInstanceItem | null;
-    external_refs: Array<{
-      id: string;
-      remote_entry_kind: string;
-      remote_entry_url: string;
-      external_session_id: string;
-      link_status: string;
-    }>;
+    external_refs: ExternalSessionRefItem[];
     decisions: DecisionItem[];
     artifacts: ArtifactItem[];
     timeline_events: EventItem[];
@@ -346,15 +356,70 @@ export const apiClient = {
       external_session_id: string;
       remote_entry_kind: string;
       remote_entry_url: string;
+      link_status?: string;
     },
-  ): Promise<{ ok: boolean }> {
+  ): Promise<{ ok: boolean; external_ref: ExternalSessionRefItem }> {
     return requestJson(
       `/api/v1/projects/${projectId}/sessions/${sessionId}/external-refs`,
       {
         method: 'POST',
+        headers: { 'X-Project-Scope': projectId },
         body: JSON.stringify(payload),
       },
     );
+  },
+
+  updateExternalSessionRef(
+    projectId: string,
+    sessionId: string,
+    refId: string,
+    payload: {
+      runtime_instance_id?: string;
+      external_session_id?: string;
+      remote_entry_kind?: string;
+      remote_entry_url?: string;
+      link_status?: string;
+    },
+  ): Promise<{ ok: boolean; external_ref: ExternalSessionRefItem }> {
+    return requestJson(
+      `/api/v1/projects/${projectId}/sessions/${sessionId}/external-refs/${refId}`,
+      {
+        method: 'PATCH',
+        headers: { 'X-Project-Scope': projectId },
+        body: JSON.stringify(payload),
+      },
+    );
+  },
+
+  updateSessionConnectionStatus(
+    projectId: string,
+    sessionId: string,
+    payload: {
+      connection_status: 'connected' | 'disconnected' | 'unknown';
+      sync_link_status?: 'active' | 'stale' | 'disconnected' | 'unknown';
+      expected_status_seq?: number;
+    },
+  ): Promise<{ ok: boolean; session: SessionItem }> {
+    return requestJson(
+      `/api/v1/projects/${projectId}/sessions/${sessionId}/connection`,
+      {
+        method: 'PATCH',
+        headers: { 'X-Project-Scope': projectId },
+        body: JSON.stringify(payload),
+      },
+    );
+  },
+
+  listProjectRemoteRegistry(
+    projectId: string,
+  ): Promise<{
+    ok: boolean;
+    project_id: string;
+    remotes: RemoteRegistryEntryItem[];
+  }> {
+    return requestJson(`/api/v1/projects/${encodeURIComponent(projectId)}/remotes`, {
+      headers: { 'X-Project-Scope': projectId },
+    });
   },
 
   listDecisions(params?: {
@@ -379,9 +444,10 @@ export const apiClient = {
   },
 
   /**
-   * 指数退避幂等提交决策答案（800ms -> 1600ms -> 3200ms）：
-   * - 网络抖动或 5xx 时使用同一 Idempotency-Key 自动重试最多 3 次；
-   * - 遇到 409 Conflict 时视为已被其他端或幂等处理完成，安全结束。
+   * 指数退避幂等提交决策答案（1000ms -> 2000ms -> 4000ms）：
+   * - 网络抖动或可重试服务端错误（408/429/5xx）时使用同一 Idempotency-Key 自动重试最多 3 次；
+   * - 遇到 409 Conflict 时视为已被其他端或幂等处理完成，安全结束；
+   * - 最终失败时抛出错误，由调用方保留本地草稿供人工一键重试。
    */
   async resolveDecisionWithRetry(
     decisionId: string,
@@ -397,7 +463,7 @@ export const apiClient = {
     already_resolved_conflict?: boolean;
     decision?: DecisionItem;
   }> {
-    const delays = [800, 1600, 3200];
+    const delays = DECISION_RETRY_POLICY.backoffMs;
     let lastErr: unknown = null;
 
     for (let attempt = 0; attempt <= delays.length; attempt++) {
@@ -415,7 +481,7 @@ export const apiClient = {
           if (err.status === 409) {
             return { ok: true, already_resolved_conflict: true };
           }
-          if (err.status >= 400 && err.status < 500) {
+          if (!DECISION_RETRY_POLICY.retryableHttpStatuses.has(err.status)) {
             throw err;
           }
         }
@@ -438,6 +504,34 @@ export const apiClient = {
     return requestJson('/api/v1/machines');
   },
 
+  registerMachine(payload: {
+    display_name: string;
+    os_type?: string;
+    hostname_alias?: string;
+    connection_kind?: string;
+    health_status?: string;
+  }): Promise<{ ok: boolean; machine: MachineItem }> {
+    return requestJson('/api/v1/machines', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  updateMachine(
+    machineId: string,
+    payload: {
+      display_name?: string;
+      hostname_alias?: string;
+      connection_kind?: string;
+      health_status?: string;
+    },
+  ): Promise<{ ok: boolean; machine: MachineItem }> {
+    return requestJson(`/api/v1/machines/${machineId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+
   listRuntimeInstances(): Promise<{
     ok: boolean;
     instances: RuntimeInstanceItem[];
@@ -450,8 +544,10 @@ export const apiClient = {
     machine_id: string;
     display_name?: string;
     runtime_version?: string;
+    connector_version?: string;
     control_level?: string;
     health_status?: string;
+    capabilities?: CapabilityManifestItem[];
     model_endpoint_descriptor?: {
       provider_label: string;
       model_label: string;
@@ -460,6 +556,23 @@ export const apiClient = {
   }): Promise<{ ok: boolean; instance: RuntimeInstanceItem }> {
     return requestJson('/api/v1/runtimes/instances', {
       method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  updateRuntimeInstance(
+    instanceId: string,
+    payload: {
+      display_name?: string;
+      runtime_version?: string;
+      connector_version?: string;
+      control_level?: string;
+      health_status?: string;
+      capabilities?: CapabilityManifestItem[];
+    },
+  ): Promise<{ ok: boolean; instance: RuntimeInstanceItem }> {
+    return requestJson(`/api/v1/runtimes/instances/${instanceId}`, {
+      method: 'PATCH',
       body: JSON.stringify(payload),
     });
   },
