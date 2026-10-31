@@ -1,11 +1,11 @@
+# -*- coding: utf-8 -*-
 """
-工作区目录探测、Git 状态只读巡检与项目快捷工作流发现模块。
+工作区目录探测、Git 状态只读巡检与受控文档读取模块。
 
 职责划分：
-1. 识别真正工程项目特征（`.git`, `pyproject.toml`, `package.json` 等）与缓存过滤系统临时目录。
+1. 识别工程项目特征（`.git`, `pyproject.toml`, `package.json` 等）与缓存过滤系统临时目录。
 2. 轻量只读查询指定工作区的 Git 分支、未提交变更文件列表与 Unified Diff。
-3. 发现项目根目录下的自定义工作流与高频快捷动作。
-4. 本地文档与源码安全读取器（强制受控 Project.root_path 白名单与防 symlink/junction 逃逸）。
+3. 本地文档与源码安全读取器（强制受控 Project.root_path 白名单与防 symlink/junction 逃逸）。
 """
 
 from __future__ import annotations
@@ -20,18 +20,16 @@ from backend.core.workspace_git import (
     get_git_workspace_diff,
     get_git_workspace_status,
 )
-from backend.core.workspace_workflows import (
-    discover_quick_workflows,
-    parse_skill_meta,
+from backend.security.path_guard import (
+    ADHOC_DIR_NAMES,
+    normalize_project_path,
+    resolve_and_verify_path_within_roots,
 )
 
-# 兼容内部私有函数旧引用
 _get_git_repo_sig = get_git_repo_sig
 
-# 目录工程特征磁盘探测缓存：norm_key -> (expire_ts, has_marker, real_folder_name)
 _DIR_MARKER_CACHE: dict[str, tuple[float, bool, str]] = {}
 
-# 识别“真正工程项目”的标志性文件/目录集合
 PROJECT_MARKER_NAMES = (
     ".git",
     "pyproject.toml",
@@ -48,30 +46,6 @@ PROJECT_MARKER_NAMES = (
     "README.md",
 )
 
-# 随手打开的临时会话系统目录特征（强制排除出项目列表）
-ADHOC_DIR_NAMES = {
-    "system32",
-    "syswow64",
-    "windows",
-    "downloads",
-    "desktop",
-    "documents",
-    "temp",
-    "tmp",
-    "appdata",
-}
-
-
-def normalize_project_path(raw_path: str) -> str:
-    """统一正斜杠、去除重复与末尾斜杠并规范化 Windows 盘符为小写，避免同项目因大小写/斜杠不同被拆开。"""
-    if not raw_path:
-        return ""
-    import re
-    cleaned = re.sub(r"/+", "/", str(raw_path).strip().replace("\\", "/")).rstrip("/")
-    if len(cleaned) >= 2 and cleaned[1] == ":":
-        cleaned = cleaned[0].lower() + cleaned[1:]
-    return cleaned
-
 
 def decode_workspace_uri(raw_uri: str) -> str:
     """将 file:///d%3A/foo 形式的 URI 解码为干净的本地路径字符串。"""
@@ -81,7 +55,6 @@ def decode_workspace_uri(raw_uri: str) -> str:
     if first_uri.startswith("file://"):
         parsed = urlparse(first_uri)
         decoded = unquote(parsed.path or "")
-        # Windows 路径如 /d:/Development -> d:/Development
         if len(decoded) >= 3 and decoded[0] == "/" and decoded[2] == ":":
             decoded = decoded[1:]
         return normalize_project_path(decoded)
@@ -93,14 +66,7 @@ def evaluate_project_dir(
     bookmarked_keys: Optional[set[str]] = None,
     hidden_keys: Optional[set[str]] = None,
 ) -> tuple[bool, str, str]:
-    """
-    判定指定目录是否属于真正的工程项目（而非随手打开的临时会话文件夹）。
-    返回 `(是否为真项目, 规范化路径, 项目名称)`：
-    1. 若在手动隐藏集合 (`hidden_keys`) 中 -> False
-    2. 若在手动收藏集合 (`bookmarked_keys`) 中 -> True
-    3. 若为 Home 根目录、Windows/System32、Downloads、隐藏点目录 (.xxx) -> False
-    4. 若目录包含 `.git` / `pyproject.toml` / `package.json` / `pom.xml` 等工程特征 -> True
-    """
+    """判定指定目录是否属于真正的工程项目。"""
     norm = normalize_project_path(raw_path)
     if not norm:
         return False, "", ""
@@ -115,11 +81,9 @@ def evaluate_project_dir(
     if bookmarked_keys and key in bookmarked_keys:
         return True, norm, folder_name
 
-    # 排除隐藏目录和常见系统/临时叶子目录名
     if not folder_name or folder_name.startswith(".") or folder_name.lower() in ADHOC_DIR_NAMES:
         return False, norm, ""
 
-    # 排除用户 Home 根目录
     try:
         home_norm = normalize_project_path(str(Path.home())).lower()
         if key == home_norm:
@@ -132,7 +96,6 @@ def evaluate_project_dir(
     if any(seg.lower() in ("windows", "system32", "syswow64") for seg in parts):
         return False, norm, ""
 
-    # 检查本地目录是否包含工程特征文件（带 120s 内存缓存）
     now_ts = time.monotonic()
     cached = _DIR_MARKER_CACHE.get(key)
     if cached and cached[0] > now_ts:
@@ -184,20 +147,14 @@ class WorkspaceDocumentReader:
         *,
         allowed_roots: Optional[Sequence[str | Path]] = None,
     ) -> dict[str, Any]:
-        """
-        安全读取指定文件内容（强制受控 Project.root_path 白名单与防 symlink/junction 逃逸）。
-        若路径无效抛出 ValueError；文件不存在抛出 FileNotFoundError；越界或敏感文件拦截抛出 PermissionError。
-        """
+        """安全读取指定文件内容（强制受控 Project.root_path 白名单与防 symlink/junction 逃逸）。"""
         raw_clean = (raw_path or "").split("#")[0].split("?")[0].strip()
         norm_path = decode_workspace_uri(raw_clean)
         if not norm_path:
             raise ValueError("无效的文件路径")
 
-        # 只接受绝对路径/file:// URI，拒绝相对路径：避免解析到服务器 CWD 下的错误文件或路径穿越
         if not Path(norm_path).is_absolute():
             raise ValueError(f"不支持相对路径（缺少目录与盘符）: {norm_path}")
-
-        from backend.v2.security.path_guard import resolve_and_verify_path_within_roots
 
         file_obj = resolve_and_verify_path_within_roots(norm_path, allowed_roots or ())
         if not file_obj.exists() or not file_obj.is_file():

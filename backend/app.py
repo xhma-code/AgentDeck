@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-AgentDeck 主应用入口与 FastAPI 工厂。
-负责中间件装配、生命周期管理、路由挂载与静态资源托管。
+AgentDeck 主应用入口与 FastAPI 工厂（Clean-Slate v1.3 架构）。
+负责中间件装配、21 张规范表初始化、应用服务挂载、统一异常处理与 React 前端静态资源托管。
 """
 
 from __future__ import annotations
@@ -13,118 +13,116 @@ from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.api.router import api_v1_router
+from backend.application.artifact_service import ArtifactService
+from backend.application.decision_service import DecisionService
+from backend.application.event_service import EventService
+from backend.application.execution_service import ExecutionService
+from backend.application.planning_service import PlanningService
+from backend.application.project_service import ProjectService
+from backend.application.runtime_registry_service import RuntimeRegistryService
+from backend.application.session_service import SessionService
+from backend.config import AppSettings, get_settings
 from backend.core.awake_lock import WindowsAwakeLock
-from backend.core.database import MetaDatabase
 from backend.core.logger import PROJECT_ROOT, log_structured_error
 from backend.core.network import TailscaleStatus, detect_tailscale_status
-from backend.core.tailscale_auth import PairingAuthManager
-from backend.engines.process_pool import AgentOrchestrator
-from backend.adapters.schema_guard import verify_adapter_schemas
-from backend.routes.push import router as push_router
-from backend.routes.auth import router as auth_router
-from backend.routes.deps import verify_request_auth
-from backend.routes.schemas import (
-    AddWorkspaceRequest,
-    CreateSessionRequest,
-    HideWorkspaceRequest,
-    PairCodeExchangeRequest,
-    SendPromptRequest,
-    SessionMetaUpdateRequest,
-    ToolApprovalDecisionRequest,
-    check_etag_matches,
-)
-from backend.routes.sessions import router as sessions_router
-from backend.routes.static_pwa import router as static_pwa_router
-from backend.routes.system import router as system_router
-from backend.routes.websocket import router as websocket_router
-from backend.routes.workspaces import router as workspaces_router
-from backend.v2.api.router import router as v2_router
-from backend.v2.config import AppV2Settings, get_v2_settings
-from backend.v2.db.engine import create_session_factory, create_sqlite_v2_engine
-from backend.v2.domain.exceptions import DomainError
-import backend.v2.db.models  # noqa: F401 确保 ORM 元数据完整注册
-
-__all__ = [
-    "create_app",
-    "PairCodeExchangeRequest",
-    "CreateSessionRequest",
-    "SendPromptRequest",
-    "ToolApprovalDecisionRequest",
-    "SessionMetaUpdateRequest",
-    "AddWorkspaceRequest",
-    "HideWorkspaceRequest",
-    "check_etag_matches",
-    "verify_request_auth",
-]
+from backend.core.push_service import WebPushService
+from backend.db.base import Base, sync_comments_to_connection
+from backend.db.engine import create_session_factory, create_sqlite_engine
+import backend.db.models  # noqa: F401 确保全部 21 张 ORM 模型注册到 Base.metadata
+from backend.domain.exceptions import DomainError
+from backend.security.auth_guard import DevicePairingAuthManager
 
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
+FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
+FRONTEND_PUBLIC_DIR = FRONTEND_DIR / "public"
 
 
 def create_app(
-    meta_db: Optional[MetaDatabase] = None,
-    v2_settings: Optional[AppV2Settings] = None,
+    settings: Optional[AppSettings] = None,
+    *,
+    auto_init_schema: bool = True,
 ) -> FastAPI:
-    """工厂函数：创建并配置 AgentDeck FastAPI 应用实例。"""
-    db = meta_db or MetaDatabase()
-    settings = v2_settings or get_v2_settings()
-    # 若测试传入了自定义 meta_db.db_path，使 v2 引擎指向同一数据库文件以保持一致隔离
-    target_db_path = db.db_path if meta_db is not None else settings.db_path
-    v2_engine = create_sqlite_v2_engine(
-        db_path=target_db_path,
-        busy_timeout_ms=settings.sqlite_busy_timeout_ms,
+    """创建并配置 AgentDeck Clean-Slate FastAPI 应用实例。"""
+    cfg = settings or get_settings()
+    engine = create_sqlite_engine(
+        db_path=cfg.db_path,
+        busy_timeout_ms=cfg.sqlite_busy_timeout_ms,
     )
-    v2_session_factory = create_session_factory(v2_engine)
+    session_factory = create_session_factory(engine)
+
+    if auto_init_schema:
+        Base.metadata.create_all(bind=engine)
+        with engine.begin() as conn:
+            sync_comments_to_connection(conn)
+
+    project_service = ProjectService(session_factory)
+    planning_service = PlanningService(session_factory)
+    runtime_registry_service = RuntimeRegistryService(session_factory)
+    session_service = SessionService(session_factory)
+    execution_service = ExecutionService(session_factory)
+    decision_service = DecisionService(session_factory)
+    artifact_service = ArtifactService(session_factory)
+    event_service = EventService(session_factory)
+
+    if auto_init_schema:
+        runtime_registry_service.ensure_seed_data()
 
     ts_status: TailscaleStatus = detect_tailscale_status()
-    auth_mgr = PairingAuthManager(meta_db=db, pair_code_ttl_sec=600)
+    auth_mgr = DevicePairingAuthManager(session_factory=session_factory, pair_code_ttl_sec=60)
+    push_service = WebPushService(
+        session_factory=session_factory,
+        keys_file=cfg.db_path.parent / "vapid_keys.json",
+    )
     awake_lock = WindowsAwakeLock()
-    orchestrator = AgentOrchestrator(meta_db=db)
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(_app: FastAPI):
         awake_lock.acquire()
-        verify_adapter_schemas(db)
-        await orchestrator.start_background_services()
         try:
             yield
         finally:
-            await orchestrator.stop_background_services()
-            v2_engine.dispose()
+            engine.dispose()
             awake_lock.release()
 
     app = FastAPI(
         title="AgentDeck — 多项目 AI 研发异步编排驾驶舱",
-        version="2.2.0",
+        version="1.3.0",
         lifespan=lifespan,
     )
 
-    # 安全收敛：禁止 allow_origins=["*"] 与 allow_credentials=True 的危险组合，
-    # 仅放行受控本机、Tailscale/ZeroTier/私网段及显式配置的非通配 Origin
     safe_extra_origins = [
-        o.strip() for o in settings.cors_extra_origins if o and o.strip() and o.strip() != "*"
+        o.strip() for o in cfg.cors_extra_origins if o and o.strip() and o.strip() != "*"
     ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=safe_extra_origins,
-        allow_origin_regex=settings.cors_origin_regex,
+        allow_origin_regex=cfg.cors_origin_regex,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-    # 挂载核心单例到 app.state 供路由与测试访问
-    app.state.meta_db = db
-    app.state.v2_settings = settings
-    app.state.v2_engine = v2_engine
-    app.state.v2_session_factory = v2_session_factory
+    # 挂载服务单例至 app.state
+    app.state.settings = cfg
+    app.state.engine = engine
+    app.state.session_factory = session_factory
+    app.state.project_service = project_service
+    app.state.planning_service = planning_service
+    app.state.runtime_registry_service = runtime_registry_service
+    app.state.session_service = session_service
+    app.state.execution_service = execution_service
+    app.state.decision_service = decision_service
+    app.state.artifact_service = artifact_service
+    app.state.event_service = event_service
     app.state.ts_status = ts_status
     app.state.auth_mgr = auth_mgr
+    app.state.push_service = push_service
     app.state.awake_lock = awake_lock
-    app.state.orchestrator = orchestrator
 
     @app.exception_handler(DomainError)
     async def domain_error_handler(_request: Request, exc: DomainError) -> JSONResponse:
@@ -137,10 +135,10 @@ def create_app(
                 "problem": exc.problem,
                 "cause": exc.cause,
                 "fix": exc.fix,
+                "context": exc.context,
             },
         )
 
-    # 全局未捕获异常中间件（统一汇聚写入 logs/error.log）
     @app.middleware("http")
     async def unified_error_middleware(request: Request, call_next):
         try:
@@ -157,27 +155,39 @@ def create_app(
                 content={"ok": False, "error": diag},
             )
 
-    # 注册 v2 新架构路由（/api/v2/*）与保留期 v1 旧业务路由
-    app.include_router(v2_router)
-    app.include_router(auth_router)
-    app.include_router(system_router)
-    app.include_router(workspaces_router)
-    app.include_router(sessions_router)
-    app.include_router(websocket_router)
-    app.include_router(push_router)
+    app.include_router(api_v1_router)
 
-    # 挂载静态资源与 PWA 路由（PWA 路由优先拦截动态 manifest 与首屏注入）
-    app.include_router(static_pwa_router)
+    if (FRONTEND_DIST_DIR / "assets").exists():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(FRONTEND_DIST_DIR / "assets")),
+            name="frontend_assets",
+        )
 
-    class NoCacheStaticFiles(StaticFiles):
-        async def get_response(self, path: str, scope):
-            response = await super().get_response(path, scope)
-            if path.endswith((".js", ".css", ".html", ".json")):
-                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                response.headers["Pragma"] = "no-cache"
-            return response
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa_or_static(full_path: str):
+        clean_rel = (full_path or "").strip("/")
+        if clean_rel.startswith("api/"):
+            return JSONResponse(status_code=404, content={"ok": False, "error": "API 端点不存在"})
 
-    if FRONTEND_DIR.exists():
-        app.mount("/static", NoCacheStaticFiles(directory=str(FRONTEND_DIR)), name="static")
+        for base_dir in (FRONTEND_DIST_DIR, FRONTEND_PUBLIC_DIR, FRONTEND_DIR):
+            if clean_rel and base_dir.exists():
+                candidate = (base_dir / clean_rel).resolve()
+                if candidate.is_relative_to(base_dir.resolve()) and candidate.is_file():
+                    return FileResponse(str(candidate))
+
+        dist_index = FRONTEND_DIST_DIR / "index.html"
+        if dist_index.is_file():
+            return FileResponse(str(dist_index))
+
+        dev_index = FRONTEND_DIR / "index.html"
+        if dev_index.is_file():
+            return FileResponse(str(dev_index))
+
+        return HTMLResponse(
+            content="<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><title>AgentDeck</title></head>"
+            "<body><h1>AgentDeck Clean-Slate API Running</h1></body></html>",
+            status_code=200,
+        )
 
     return app
