@@ -4,8 +4,8 @@
 > **阶段审批状态**：  
 > - **Phase 5.2（数据模型与 Alembic 迁移）**：已正式批准并 100% 验收通过（26 张规范表已落地，全量快照比对与临时表安全兜底均已实测通过）；  
 > - **DEFECT-EXEC-001（Attempt started_at 约束冲突）**：已修复闭环，已补充端到端生产 REST API 双重断言验证；  
-> - **Phase 5.3（调度引擎与投递工作单元）**：方案持续深化修订中，**尚未正式授权编码**；  
-> - **Phase 5.4–5.6（真实 Web Push 外呼、通知中心 SSE 与前端 UI）**：严格保持暂缓。  
+> - **Phase 5.3（调度引擎与投递工作单元）**：已获得正式编码授权并完成全部代码实现与 16 项专项自动化测试验证（16 passed in 5.44s），进入验收阶段；  
+> - **Phase 5.4–5.6（真实 Web Push 外呼、通知中心 SSE 与前端 UI）**：严格保持暂缓，等待下一阶段审批授权。  
 > **基线对齐**：AgentDeck v1.3.0、Clean-Slate 26 张规范表、Phase 1–4 已验证基座。  
 > **本轮核查依据（真实执行）**：`backend/migrations/env.py`、`backend/migrations/versions/20261101_0002_phase5_notification_foundation.py`、`backend/db/migration.py`、`backend/db/backup.py`、`backend/db/models/notification.py`、`backend/db/models/system.py`、`backend/db/uow.py`。
 

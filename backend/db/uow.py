@@ -24,6 +24,17 @@ from backend.domain.types import SECRET_VALUE_PATTERN, SENSITIVE_QUERY_KEYS
 
 if TYPE_CHECKING:
     from backend.db.models.event import EventModel
+    from backend.db.models.notification import NotificationOutboxModel
+
+# 需通知事件白名单（v1.3.0 Phase 5.3 规范：仅对高价值业务事件派生 Outbox 任务）
+NOTIFICATION_EVENT_WHITELIST: frozenset[str] = frozenset({
+    "task.blocked",
+    "task.failed",
+    "step.failed",
+    "execution.failed",
+    "decision.created",
+    "decision.timeout",
+})
 
 
 def _sanitize_event_payload(payload: Optional[dict[str, Any]]) -> str:
@@ -122,15 +133,52 @@ class SqlAlchemyUnitOfWork:
         return evt
 
     def commit(self) -> None:
-        """在单一 SQLite 事务内先后刷入业务实体与领域事件并原子提交。"""
+        """在单一 SQLite 事务内原子刷入业务实体、领域事件与 Outbox 记录并提交。"""
         if self.session is None:
             raise RuntimeError("UnitOfWork 尚未进入上下文，无法提交事务")
         try:
+            # 1. 刷入业务实体，生成实体主键
             self.session.flush()
+
             if self._pending_events:
-                self.session.add_all(self._pending_events)
+                # 2. 提取待提交事件局部快照并立即清空队列（防重入）
+                events_to_commit = list(self._pending_events)
                 self._pending_events.clear()
+
+                # 3. 注册领域事件
+                self.session.add_all(events_to_commit)
+
+                # 4. 强制刷盘，取得 SQLite 分配生成的 events.seq_id 自增主键
                 self.session.flush()
+
+                # 5. 遍历匹配白名单，派生构造 NotificationOutboxModel 记录
+                from backend.db.models.notification import NotificationOutboxModel
+
+                outbox_records: list[NotificationOutboxModel] = []
+                now_iso = utc_now_iso()
+                for evt in events_to_commit:
+                    if evt.event_type in NOTIFICATION_EVENT_WHITELIST:
+                        outbox_records.append(
+                            NotificationOutboxModel(
+                                id=str(uuid.uuid4()),
+                                event_seq_id=evt.seq_id,
+                                event_type=evt.event_type,
+                                payload_json=evt.payload_json or "{}",
+                                status="pending",
+                                attempt_count=0,
+                                max_attempts=5,
+                                next_retry_at=now_iso,
+                                created_at=now_iso,
+                                updated_at=now_iso,
+                            )
+                        )
+
+                # 6. 注册并刷入 Outbox 实体（验证外键与唯一约束）
+                if outbox_records:
+                    self.session.add_all(outbox_records)
+                    self.session.flush()
+
+            # 7. 单事务原子最终提交
             self.session.commit()
         except Exception as exc:
             self._pending_events.clear()
