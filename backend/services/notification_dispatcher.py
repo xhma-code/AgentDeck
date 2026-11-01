@@ -231,6 +231,8 @@ class NotificationDispatcher:
             try:
                 # 显式 BEGIN IMMEDIATE 开启独立写事务
                 session.execute(text("BEGIN IMMEDIATE;"))
+                # 获得写锁后即刻刷新当前绝对时间，杜绝等待写锁阶段产生的时钟漂移
+                now = self._now_func()
 
                 # 1. 前置 Fencing 与租约有效性校验
                 outbox_check = (
@@ -259,15 +261,24 @@ class NotificationDispatcher:
                 # 3. 语义映射：推导分类、优先级、标题与聚合键
                 category = "system_alert"
                 priority = "normal"
+                payload_status = str(
+                    claim.payload.get("platform_status")
+                    or claim.payload.get("agent_reported_status")
+                    or ""
+                ).lower()
+
                 if claim.event_type.startswith("decision."):
                     category = "decision_required"
                     priority = "high"
-                elif claim.event_type.startswith("task.blocked"):
+                elif claim.event_type == "task.blocked" or payload_status == "blocked":
                     category = "task_blocked"
                     priority = "high"
-                elif claim.event_type in ("task.failed", "step.failed", "execution.failed"):
+                elif "failed" in claim.event_type or payload_status == "failed":
                     category = "execution_failed"
                     priority = "urgent"
+                elif "completed" in claim.event_type or payload_status == "completed":
+                    category = "task_completed"
+                    priority = "normal"
 
                 aggregation_key = f"{category}:{entity_type}:{entity_id}"
                 title = claim.payload.get("title") or f"事件通知：{claim.event_type}"
@@ -390,27 +401,28 @@ class NotificationDispatcher:
                 session.add(notif_event)
                 session.flush()
 
-                # 6. 基于当前派生事务启动时的活跃订阅快照，批量生成 notification_deliveries
-                active_subs = (
-                    session.query(PushSubscriptionModel.subscription_id, PushSubscriptionModel.device_id)
-                    .filter(PushSubscriptionModel.is_active == 1)
-                    .all()
-                )
-                for sub_id, dev_id in active_subs:
-                    delivery = NotificationDeliveryModel(
-                        id=str(uuid.uuid4()),
-                        notification_id=target_notif_id,
-                        subscription_id=sub_id,
-                        device_id=dev_id,
-                        status="pending",
-                        attempt_count=0,
-                        max_attempts=4,
-                        next_retry_at=now,
-                        created_at=now,
-                        updated_at=now,
+                # 6. 仅在创建新通知时批量生成 notification_deliveries（聚合更新时沿用首发通知的既有 Deliveries，避免触发 uq_notif_deliveries_notif_sub 唯一冲突）
+                if is_change_created:
+                    active_subs = (
+                        session.query(PushSubscriptionModel.subscription_id, PushSubscriptionModel.device_id)
+                        .filter(PushSubscriptionModel.is_active == 1)
+                        .all()
                     )
-                    session.add(delivery)
-                session.flush()
+                    for sub_id, dev_id in active_subs:
+                        delivery = NotificationDeliveryModel(
+                            id=str(uuid.uuid4()),
+                            notification_id=target_notif_id,
+                            subscription_id=sub_id,
+                            device_id=dev_id,
+                            status="pending",
+                            attempt_count=0,
+                            max_attempts=4,
+                            next_retry_at=now,
+                            created_at=now,
+                            updated_at=now,
+                            )
+                        session.add(delivery)
+                    session.flush()
 
                 # 7. 写入 notification_changes 变更流（供 SSE 消费）
                 change_record = NotificationChangeModel(
@@ -423,7 +435,8 @@ class NotificationDispatcher:
                 session.add(change_record)
                 session.flush()
 
-                # 8. 后置 Fencing CAS 回写：断言身份、generation 与租约有效性
+                # 8. 后置 Fencing CAS 回写：重新获取此时绝对时间，断言身份、generation 与租约有效性
+                commit_now = self._now_func()
                 cas_stmt = (
                     sa.update(NotificationOutboxModel)
                     .where(
@@ -431,15 +444,15 @@ class NotificationDispatcher:
                         NotificationOutboxModel.status == "processing",
                         NotificationOutboxModel.locked_by == self.dispatcher_id,
                         NotificationOutboxModel.attempt_count == claim.claimed_attempt_count,
-                        NotificationOutboxModel.lease_expires_at > now,
+                        NotificationOutboxModel.lease_expires_at > commit_now,
                     )
                     .values(
                         status="processed",
-                        processed_at=now,
+                        processed_at=commit_now,
                         locked_by=None,
                         locked_at=None,
                         lease_expires_at=None,
-                        updated_at=now,
+                        updated_at=commit_now,
                     )
                 )
                 cas_res = session.execute(cas_stmt)

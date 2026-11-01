@@ -170,10 +170,10 @@ class WorkspaceDocumentReader:
             raise PermissionError(f"暂不支持直接文本预览该类型文件 ({file_obj.name})")
 
         stat = file_obj.stat()
-        raw_bytes = file_obj.read_bytes()
-        is_truncated = len(raw_bytes) > max_bytes
-        if is_truncated:
-            raw_bytes = raw_bytes[:max_bytes]
+        with file_obj.open("rb") as f:
+            chunk = f.read(max_bytes + 1)
+        is_truncated = len(chunk) > max_bytes
+        raw_bytes = chunk[:max_bytes] if is_truncated else chunk
 
         content = raw_bytes.decode("utf-8", errors="replace")
         if is_truncated:

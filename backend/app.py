@@ -46,6 +46,7 @@ def create_app(
     settings: Optional[AppSettings] = None,
     *,
     auto_init_schema: bool = False,
+    read_only: bool = False,
 ) -> FastAPI:
     """
     创建并配置 AgentDeck Clean-Slate FastAPI 应用实例。
@@ -80,6 +81,7 @@ def create_app(
     push_service = WebPushService(
         session_factory=session_factory,
         keys_file=cfg.db_path.parent / "vapid_keys.json",
+        read_only=read_only,
     )
     awake_lock = WindowsAwakeLock()
 

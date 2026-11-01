@@ -402,13 +402,27 @@ def authenticate_mcp_token(
         )
 
     now_iso = utc_now_iso()
-    if record.expires_at and record.expires_at <= now_iso:
-        raise SecurityBoundaryError(
-            problem="MCP 访问被拒绝（令牌已过期）",
-            cause=f"令牌 {record.token_prefix}*** 已于 {record.expires_at} 过期",
-            fix="请为该项目轮换签发新的 MCP Token。",
-            context={"token_id": record.id, "mcp_error_code": "MCP_UNAUTHORIZED"},
-        )
+    if record.expires_at:
+        is_expired = False
+        try:
+            exp_dt = parse_iso_datetime(record.expires_at)
+            now_dt = datetime.now(timezone.utc)
+            is_expired = exp_dt <= now_dt
+        except Exception as exc:
+            raise SecurityBoundaryError(
+                problem="MCP 访问被拒绝（令牌过期时间格式异常）",
+                cause=f"令牌过期时间解析失败: {exc}",
+                fix="请为该项目重新生成合法的项目 MCP Token。",
+                context={"token_id": record.id, "mcp_error_code": "MCP_UNAUTHORIZED"},
+            ) from exc
+
+        if is_expired:
+            raise SecurityBoundaryError(
+                problem="MCP 访问被拒绝（令牌已过期）",
+                cause=f"令牌 {record.token_prefix}*** 已于 {record.expires_at} 过期",
+                fix="请为该项目轮换签发新的 MCP Token。",
+                context={"token_id": record.id, "mcp_error_code": "MCP_UNAUTHORIZED"},
+            )
 
     clean_claimed = (claimed_project_id or "").strip()
     if clean_claimed and clean_claimed != record.project_id:

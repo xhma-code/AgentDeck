@@ -255,6 +255,8 @@ class NotificationDeliveryWorker:
         with self._session_factory() as session:
             try:
                 session.execute(text("BEGIN IMMEDIATE;"))
+                # 外呼结束且成功获得写锁后即刻刷新当前绝对时间，确保 Fencing 租约判定与时间戳精准反映锁内时钟
+                now = self._now_func()
 
                 # 判定状态机目标状态与重试参数
                 target_status = "delivered"

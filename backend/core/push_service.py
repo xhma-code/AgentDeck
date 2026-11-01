@@ -40,15 +40,26 @@ class WebPushService:
         self,
         session_factory: sessionmaker[Session],
         keys_file: Optional[Path] = None,
+        read_only: bool = False,
     ) -> None:
         self.session_factory = session_factory
         settings = get_settings()
         self.keys_file = keys_file or (settings.resolved_db_path.parent / "vapid_keys.json")
-        self.keys_file.parent.mkdir(parents=True, exist_ok=True)
+        self._read_only = read_only
         self._vapid = py_vapid.Vapid()
         self._private_key_pem: str = ""
         self._public_key_b64: str = ""
-        self._init_keys()
+        if not read_only:
+            self.keys_file.parent.mkdir(parents=True, exist_ok=True)
+            self._init_keys()
+        else:
+            if self.keys_file.exists():
+                try:
+                    data = json.loads(self.keys_file.read_text(encoding="utf-8"))
+                    self._private_key_pem = data.get("private_key_pem", "")
+                    self._public_key_b64 = data.get("public_key_b64", "")
+                except Exception:
+                    pass
         self._lock = threading.Lock()
         self._last_push_timestamps: dict[str, float] = {}
 
@@ -80,6 +91,12 @@ class WebPushService:
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
             self.keys_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            # 显式收紧私钥文件读取权限（仅当前用户读写 0600）
+            try:
+                import stat
+                self.keys_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            except Exception:
+                pass
             logger.info("已生成并持久化全新 VAPID 密钥对至: %s", self.keys_file)
         except Exception as exc:
             log_structured_error(

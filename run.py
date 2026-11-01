@@ -170,9 +170,19 @@ def free_port_if_occupied(port: int) -> None:
             proc = psutil.Process(pid)
             cmdline = " ".join(proc.cmdline() or []).lower()
             proc_name = (proc.name() or "").lower()
+            proc_cwd = ""
+            try:
+                proc_cwd = str(proc.cwd()).lower()
+            except Exception:
+                pass
+
             is_agentdeck = (
                 ("python" in proc_name or "uvicorn" in proc_name)
-                and ("run.py" in cmdline or project_root_str in cmdline or "agentdeck" in cmdline)
+                and (
+                    project_root_str in cmdline
+                    or project_root_str == proc_cwd
+                    or (proc_cwd.startswith(project_root_str) and "run.py" in cmdline)
+                )
             )
             if is_agentdeck:
                 logger.warning("检测到本系统历史残留进程 (PID %d) 占用端口 %d，正在安全回收...", pid, port)
@@ -187,9 +197,9 @@ def free_port_if_occupied(port: int) -> None:
 
 
 def run_doctor(port: int = 8765) -> int:
-    """运行 AgentDeck Clean-Slate 环境诊断体检（增强全新未初始化库容错）。"""
+    """运行 AgentDeck Clean-Slate 环境诊断体检（增强全新未初始化库容错与严格只读防护）。"""
     settings = get_settings()
-    app = create_app(settings=settings, auto_init_schema=False)
+    app = create_app(settings=settings, auto_init_schema=False, read_only=True)
     pragmas = inspect_sqlite_pragmas(app.state.engine)
     migration_status = inspect_migration_status(app.state.engine, settings.db_path)
 

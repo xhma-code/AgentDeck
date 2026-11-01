@@ -30,11 +30,43 @@ if TYPE_CHECKING:
 NOTIFICATION_EVENT_WHITELIST: frozenset[str] = frozenset({
     "task.blocked",
     "task.failed",
+    "task.completed",
+    "step.blocked",
     "step.failed",
+    "step.completed",
     "execution.failed",
+    "execution.completed",
     "decision.created",
+    "decision.expired",
     "decision.timeout",
+    "decision.auto_recommended_submitted",
 })
+
+
+def is_notification_eligible_event(evt: EventModel) -> bool:
+    """
+    判断领域事件是否属于通知派发白名单（v1.3.0 Phase 5.3 规范）：
+    1. 显式白名单事件：decision.*、直接命名为 *.blocked, *.failed, *.completed 的状态事件；
+    2. 动态状态流转事件（*.status_updated）：根据事件发生时 payload 中的实际状态判断，
+       仅当状态流转至 blocked、failed、completed、needs_revalidation 等高价值阶段时触发 Outbox。
+    """
+    if evt.event_type in NOTIFICATION_EVENT_WHITELIST:
+        return True
+
+    # 动态状态变更过滤
+    if evt.event_type in ("task.status_updated", "step.status_updated", "execution.status_updated", "session.status_updated"):
+        try:
+            payload = json.loads(evt.payload_json or "{}")
+            plat_status = str(payload.get("platform_status") or "").lower()
+            agent_status = str(payload.get("agent_reported_status") or "").lower()
+            if plat_status in ("blocked", "failed", "completed", "needs_revalidation"):
+                return True
+            if agent_status in ("blocked_by_decision", "failed", "completed"):
+                return True
+        except Exception:
+            pass
+
+    return False
 
 
 def _sanitize_event_payload(payload: Optional[dict[str, Any]]) -> str:
@@ -157,7 +189,7 @@ class SqlAlchemyUnitOfWork:
                 outbox_records: list[NotificationOutboxModel] = []
                 now_iso = utc_now_iso()
                 for evt in events_to_commit:
-                    if evt.event_type in NOTIFICATION_EVENT_WHITELIST:
+                    if is_notification_eligible_event(evt):
                         outbox_records.append(
                             NotificationOutboxModel(
                                 id=str(uuid.uuid4()),
