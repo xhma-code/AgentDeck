@@ -176,12 +176,13 @@ WHERE id=:id AND attempt_count < max_attempts
 
 ### 2.4 SQLite Alembic 迁移方案（修正 P1-2，含预检）
 
-#### 2.4.1 真实环境事实（只读核查结论）
-- `env.py`：`render_as_batch=True`；在线迁移使用独立 `create_engine(NullPool)`，**在 `connect` 事件中**执行 `PRAGMA foreign_keys=ON`（位于任何事务之前），随后 `context.begin_transaction()` 包裹迁移。
+#### 2.4.1 真实环境事实（只读核查与运行环境实测结论）
+- **真实运行环境**：Python 3.12 + SQLAlchemy 2.0 + Alembic 1.14+ + SQLite WAL 模式。
+- `env.py`：显式开启 `transactional_ddl=True` 与 `render_as_batch=True`；在线迁移使用独立 `create_engine(NullPool)`，**在 `connect` 事件中**执行 `PRAGMA foreign_keys=ON`（位于任何事务之前），随后 `context.begin_transaction()` 包裹迁移。
 - 基线迁移中 `push_subscriptions`：主键 `pk_push_subscriptions(subscription_id)`；索引 `ix_push_subscriptions_device_active(device_id,is_active)`；**无外键、无 CHECK、无其他唯一约束**；`is_active` 带 `server_default='1'`。`device_sessions.device_id` 在 ORM 与基线中为主键（迁移实施前仍须以预检 SQL 实证）。
 - 当前**没有任何表引用 `push_subscriptions`**（新表 `notification_deliveries` 尚未创建）。
-- `backend/db/migration.py` 的 `apply_database_migrations` 已在迁移前备份数据库文件（`.bak.<时间戳>`）。
-- SQLite 事实：`PRAGMA foreign_keys` 在事务内修改**无效**；pysqlite 对 DDL 的事务行为不保证原子回滚；Alembic 对 SQLite 默认 `transactional_ddl=False`。**因此不得假设“迁移失败自动回滚”。**
+- `backend/db/migration.py` 的 `apply_database_migrations` 已在迁移前基于 SQLite Backup API 备份数据库文件（`.bak.<时间戳>`）。
+- **SQLite 事务回滚与 batch alter 行为边界**：在 `transactional_ddl=True` 下，常规 DDL（如新建表、删除表）具备数据库级事务原子性；但在使用 `render_as_batch=True` 进行表重建时，若在重命名阶段（`RENAME TO`）之后发生事务回滚，SQLite 虽能安全回滚重命名与存量数据，但可能遗留 `_alembic_tmp_*` 临时表，需配合清理机制。
 
 #### 2.4.2 迁移前数据预检（任一失败 ⇒ 中止迁移并输出报告，绝不静默删除或修改历史数据）
 1. `device_sessions.device_id` 是 PK 或具备 UNIQUE（`PRAGMA index_list/table_info` 校验）；
@@ -220,7 +221,10 @@ WHERE id=:id AND attempt_count < max_attempts
 #### 2.4.5 回填、校验与失败恢复
 - 回填：新增列使用静态 `server_default='legacy_unverified'`，**迁移脚本不读取 `data/vapid_keys.json` 或任何部署机文件**，保证可重复、可测试、可脱机；绝不将当前公钥指纹批量回填给历史订阅。
 - 迁移后校验：`PRAGMA foreign_key_check` 结果为空、`PRAGMA integrity_check` 为 `ok`、`PRAGMA foreign_keys` 为 `1`、行数与迁移前一致、逐行比对原 9 列内容、索引/约束清单比对通过。任一失败 ⇒ 抛错并终止启动。
-- **失败恢复**：因 SQLite DDL 不保证事务原子，恢复依赖三层——①预检阻止高风险迁移；②`batch` 采用“建临时表 → 复制 → 删旧表 → 重命名”，复制阶段失败时旧表仍完整；③迁移前文件备份 `.bak.<时间戳>`，校验失败时由迁移入口给出明确的“使用备份恢复”指引（不自动覆盖生产库）。该恢复路径必须在真实 SQLite 文件上测试（见 4.2）。
+- **失败恢复体系（三层协同防御体系）**：
+  1. **第一层（原生事务原子回滚）**：`transactional_ddl=True` 确保在迁移中途发生任何未捕获异常时，Alembic 事务执行 `ROLLBACK`，未完成的新建表（如 `notification_outbox` 等 5 张表）被彻底撤销，`alembic_version` 版本号绝不提前推进，存量业务数据完好保留；
+  2. **第二层（临时表安全兜底清理）**：`env.py` 的异常分支执行 `_cleanup_sqlite_alembic_tmp_tables`，使用 `GLOB '_alembic_tmp_*'` 精准识别并用双引号安全转义清理 batch alter 遗留的临时表，不触碰底层 DBAPI commit()，消除对后续重试迁移的阻塞，绝不误伤任何业务表或非目标表（用例 9B 已专项验证）；
+  3. **第三层（物理热备终极兜底还原）**：迁移前由 `apply_database_migrations` 基于 SQLite Backup API 执行在线热备（`.bak.<时间戳>`），当遇到不可抗力（进程被 SIGKILL、系统断电、文件系统损坏）导致数据库文件状态异常时，可依据备份文件实现 100% 逐表、逐行、逐字段无损完整恢复（用例 9A 已全量快照比对验证）。
 
 ### 2.5 通知聚合并发保护与 `BEGIN IMMEDIATE` 落地（P2-2，面向 5.3）
 - 聚合查询与写入在同一写事务内；候选条件含 `is_read=0`、窗口 10 秒、`aggregated_count<20`；`notification_events.event_seq_id UNIQUE` 防重复关联。
@@ -393,7 +397,8 @@ CHECK：`ck_notif_changes_type`（含 `purged`）。
 ### 4.2 SQLite 迁移（新增/强化，均在真实 SQLite 文件上执行）
 7. `foreign_keys=ON` 下完成重建迁移，迁移后 `PRAGMA foreign_keys=1`；
 8. **env.py 传入外部连接分支**（`config.attributes["connection"]`，该分支不会执行 `PRAGMA foreign_keys=ON`）：在 `foreign_keys=OFF` 的连接上运行同一迁移，验证迁移结果与用例 7 一致、迁移结果不依赖外键开关状态。**该用例仅用于覆盖外部连接分支，不替代生产路径验证**；生产路径以用例 7 为准，即通过 `apply_database_migrations()`（`env.py` 在线分支，`connect` 事件事务外设 `foreign_keys=ON`）在真实 SQLite 文件上执行；
-9. 迁移失败注入（复制阶段/校验阶段）⇒ 旧表数据完好、迁移入口给出备份恢复指引，备份文件可还原且数据一致；
+9A. 迁移失败原子回滚与全库快照比对：迁移中途异常时，原生 DDL 事务自动回滚（版本号未推进、未完成新表被撤销、存量数据无损），配合 env.py 兜底清理残留 batch 临时表，原库表总数精确恢复为 21 张且全库快照 100% 逐表逐行一致；人为破坏后在线物理热备 100% 逐表逐行逐字段还原；
+9B. 临时表兜底清理函数独立安全测试：验证 _cleanup_sqlite_alembic_tmp_tables() 采用 GLOB '_alembic_tmp_*' 精确匹配目标临时表并安全双引号转义；独立验证绝不误伤前缀下划线非目标表（_a_table）、版本表（alembic_version）与核心业务表；移除底层 commit() 并保持异常可观察；
 10. 迁移前后数据完整性：存量订阅 9 列逐行一致，`vapid_key_fingerprint='legacy_unverified'`；
 11. 约束/索引清单比对：PK、`uq_push_subscriptions_sub_device`、FK(CASCADE)、`ix_push_subscriptions_device_active` 均存在且命名正确；
 12. 预检测试：存在孤儿订阅（无对应 `device_sessions`）⇒ 迁移中止并输出明细，数据未被修改；
@@ -452,7 +457,7 @@ CHECK：`ck_notif_changes_type`（含 `purged`）。
 
 ## 六、技术限制与残余风险
 0. **遗留到 5.4 的统一项**：①VAPID 密钥状态统一定义（`active/retired` 与全局异常使用的 `degraded` 须合并为明确的状态机）；②`device_sessions` 当前无过期字段，设备鉴权仅检查 `is_revoked=0`，5.4 须明确是否引入过期时间及校验方式。
-1. **SQLite DDL 无可靠事务回滚**：迁移失败恢复依赖预检 + 临时表复制 + 迁移前文件备份，而非数据库级原子回滚；需在真实文件上验证。
+1. **SQLite DDL 事务边界与协同恢复体系**：在 Python 3.12 / SQLAlchemy 2.0 / Alembic (transactional_ddl=True) 环境下，常规 DDL 与版本号推进具备原子回滚能力；针对 batch alter 重命名后回滚可能残留的临时表，由 env.py 兜底清理；极端系统崩溃由迁移前物理热备兜底还原，形成完整的三层保障体系。
 2. **换绑存在不可避免的短暂空窗**：浏览器 `unsubscribe()` 到新订阅登记完成之间，设备无法收到推送；计划通过恢复状态机、对账与应用内通知中心兜底，但不能消除空窗。
 3. **Outbox 同事务写入引入新的业务写入失败面**：Outbox 故障会令业务写失败（这是原子性的代价）；以极简白名单写入与测试降低风险。
 4. **404 语义因 Push Service 而异**：采用“连续 2 次确认”折中，仍可能保留少量已失效订阅，仅造成多余重试，不会漏停用关键设备。

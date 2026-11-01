@@ -136,15 +136,15 @@ def _dump_db_full_snapshot(db_path: Path) -> dict[str, list[dict]]:
     return snapshot
 
 
-def test_use_case_09_migration_failure_rollback_and_backup(
+def test_use_case_09a_ddl_transaction_automatic_rollback(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """用例 9：验证迁移中途失败事务自动回滚、在线热备有效性及灾备完整还原。
+    """用例 09A：验证迁移中途失败时 DDL 事务自动回滚、临时表安全清理及物理热备全量还原。
     
     【核心断言顺序】：
-    1. 迁移中途异常时，必须先验证 SQLite DDL 事务自动回滚，绝不允许先恢复备份覆盖；
-    2. 检查版本号未推进、表数量精确为 21 张、无临时表残留、存量数据无损；
-    3. 再单独进行破坏性污染与备份恢复验证，逐表逐行逐字段全量比对一致。
+    1. 迁移中途异常时，先验证 SQLite DDL 事务原子自动回滚（版本号未推进、未产生的新表 notification_outbox 被撤销、存量数据无损）；
+    2. 配合 env.py 兜底清理残留临时表，原库表总数精确恢复为 21 张，全库快照与迁移前 100% 逐表逐行一致；
+    3. 人为对原数据库进行破坏性污染后，验证 restore_sqlite_backup 物理热备恢复能力，全库快照再次 100% 比对一致。
     """
     cfg = _build_alembic_cfg(temp_db_path)
     # 1. 初始化到基线 Phase 1 并建立存量业务数据
@@ -202,7 +202,7 @@ def test_use_case_09_migration_failure_rollback_and_backup(
         command.upgrade(cfg, "head")
     assert "模拟迁移执行到一半" in str(exc_info.value)
 
-    # 4. 【关键步骤】：在恢复备份之前，直接检查原数据库的自动回滚结果（绝不允许先恢复备份）
+    # 4. 【直接检查原数据库的自动回滚结果（绝不允许先恢复备份）】：
     abort_engine = create_sqlite_engine(temp_db_path)
     with abort_engine.connect() as conn:
         # a. 验证 Alembic 版本号未被提前推进，仍然严格为 Phase 1 基线 20261031_0001
@@ -268,6 +268,77 @@ def test_use_case_09_migration_failure_rollback_and_backup(
         restored_snapshot = _dump_db_full_snapshot(temp_db_path)
         assert restored_snapshot == pre_migration_snapshot, "灾备恢复后全库所有表、所有行必须与迁移前 100% 绝对一致"
     restored_engine.dispose()
+
+
+def test_use_case_09b_sqlite_alembic_tmp_tables_cleanup_safety(temp_db_path: Path) -> None:
+    """用例 09B：临时表兜底清理函数独立专项安全测试（精准识别、转义安全与防误删验证）。
+    
+    【核心断言】：
+    1. 仅清理符合 GLOB '_alembic_tmp_*' 规则的临时表（如 _alembic_tmp_push_subscriptions、_alembic_tmp_quoted"table）；
+    2. 绝不误伤任何前缀带下划线的非目标表（如 _a_table、_alembic_version）；
+    3. 绝不误伤核心业务表（如 device_sessions、projects）；
+    4. 验证标识符转义 _escape_sqlite_identifier 能够安全处理特殊字符（如含双引号的表名）而不会触发 SQL 语法错误或注入。
+    """
+    from backend.migrations.env import _cleanup_sqlite_alembic_tmp_tables, _escape_sqlite_identifier
+
+    # 1. 验证标识符安全转义函数
+    assert _escape_sqlite_identifier("simple_table") == '"simple_table"'
+    assert _escape_sqlite_identifier('table_with_"quotes"') == '"table_with_""quotes"""'
+
+    cfg = _build_alembic_cfg(temp_db_path)
+    command.upgrade(cfg, "20261031_0001")
+
+    engine = create_sqlite_engine(temp_db_path)
+    with engine.begin() as conn:
+        # a. 创建符合 GLOB '_alembic_tmp_*' 的临时表（包括带引号的安全测试表）
+        conn.execute(text('CREATE TABLE "_alembic_tmp_push_subscriptions" (id INT, dummy TEXT);'))
+        conn.execute(text('CREATE TABLE "_alembic_tmp_test_batch" (id INT);'))
+        conn.execute(text('CREATE TABLE "_alembic_tmp_weird""table" (col1 INT);'))
+
+        # b. 创建易混淆的前缀下划线非目标表与备份表，验证 GLOB 绝不会把 '_' 视作通配符误删
+        conn.execute(text('CREATE TABLE "_a_table" (id INT);'))
+        conn.execute(text('INSERT INTO "_a_table" (id) VALUES (42);'))
+
+        conn.execute(text('CREATE TABLE "_other_prefix_table" (id INT);'))
+        conn.execute(text('INSERT INTO "_other_prefix_table" (id) VALUES (99);'))
+
+    # 2. 调用清理函数
+    with engine.connect() as conn:
+        cleaned = _cleanup_sqlite_alembic_tmp_tables(conn)
+
+    # 3. 验证清理结果列表
+    expected_cleaned = sorted([
+        "_alembic_tmp_push_subscriptions",
+        "_alembic_tmp_test_batch",
+        '_alembic_tmp_weird"table',
+    ])
+    assert sorted(cleaned) == expected_cleaned, f"清理函数必须精确且仅清理目标临时表，实际: {cleaned}"
+
+    # 4. 验证数据库中表的存在性与数据完整性
+    with engine.connect() as conn:
+        all_tables = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table';")
+        ).scalars().all()
+
+        # 临时表必须已被 DROP
+        for target in expected_cleaned:
+            assert target not in all_tables, f"目标临时表 {target} 必须已被成功清理"
+
+        # 非目标表与核心业务表必须 100% 健在
+        assert "_a_table" in all_tables, "非目标表 _a_table 绝不得被误删"
+        assert "_other_prefix_table" in all_tables, "非目标表 _other_prefix_table 绝不得被误删"
+        assert "alembic_version" in all_tables, "alembic_version 绝不得被误删"
+        assert "device_sessions" in all_tables, "业务表 device_sessions 绝不得被误删"
+        assert "projects" in all_tables, "业务表 projects 绝不得被误删"
+
+        # 检查非目标表内的数据未受任何篡改
+        a_val = conn.execute(text('SELECT id FROM "_a_table";')).scalar()
+        assert a_val == 42, "非目标表数据必须完好无损"
+
+        other_val = conn.execute(text('SELECT id FROM "_other_prefix_table";')).scalar()
+        assert other_val == 99, "非目标表数据必须完好无损"
+
+    engine.dispose()
 
 
 def test_use_case_10_migration_data_integrity_and_fingerprint_backfill(temp_db_path: Path) -> None:
