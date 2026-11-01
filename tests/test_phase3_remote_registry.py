@@ -514,7 +514,7 @@ def test_browser_e2e_decision_modal_and_remote_registry(tmp_path: Path) -> None:
         db_filename="e2e_test.db",
         port=app_port,
     )
-    app = create_app(settings)
+    app = create_app(settings, auto_init_schema=True)
 
     config = uvicorn.Config(app, host="127.0.0.1", port=app_port, log_level="error")
     server = uvicorn.Server(config)

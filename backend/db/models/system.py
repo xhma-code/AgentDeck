@@ -7,7 +7,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import Index, Integer, PrimaryKeyConstraint, String, Text
+from sqlalchemy import (
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    PrimaryKeyConstraint,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.db.base import Base
@@ -51,6 +59,13 @@ class PushSubscriptionModel(Base):
     __tablename__ = "push_subscriptions"
     __table_args__ = (
         Index("ix_push_subscriptions_device_active", "device_id", "is_active"),
+        UniqueConstraint("subscription_id", "device_id", name="uq_push_subscriptions_sub_device"),
+        ForeignKeyConstraint(
+            ["device_id"],
+            ["device_sessions.device_id"],
+            name="fk_push_subscriptions_device_id_device_sessions",
+            ondelete="CASCADE",
+        ),
         {"comment": "移动端 PWA 原生 Web Push 推送订阅凭据表"},
     )
 
@@ -68,6 +83,13 @@ class PushSubscriptionModel(Base):
     )
     auth_key: Mapped[str] = mapped_column(
         Text, nullable=False, comment="客户端鉴权密钥（Base64 URL-safe）"
+    )
+    vapid_key_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="legacy_unverified",
+        server_default="legacy_unverified",
+        comment="订阅绑定的 VAPID 公钥 SHA-256 指纹（存量为 legacy_unverified）",
     )
     user_agent: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="客户端浏览器 User-Agent"

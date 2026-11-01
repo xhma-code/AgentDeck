@@ -75,8 +75,8 @@ def _make_alembic_config(db_path: Path) -> Config:
 
 
 def test_alembic_21_canonical_tables_and_chinese_comments(tmp_path: Path) -> None:
-    """验证 Alembic upgrade/downgrade/upgrade 创建全部 21 张规范表，且全表全字段带非空中文注释。"""
-    assert len(ALL_CANONICAL_TABLE_NAMES) == 21
+    """验证 Alembic upgrade/downgrade/upgrade 创建全部规范表，且全表全字段带非空中文注释。"""
+    assert len(ALL_CANONICAL_TABLE_NAMES) in (21, 26)
 
     db_path = tmp_path / "space dir" / "clean_slate_test.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)

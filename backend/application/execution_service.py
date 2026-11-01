@@ -158,7 +158,7 @@ class ExecutionService:
                 exit_code=None,
                 error_summary="",
                 model_endpoint_descriptor_json=endpoint_json,
-                started_at=None,
+                started_at=now,
                 ended_at=None,
             )
             uow.session.add(execution)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-统一导出 AgentDeck 全部 21 张规范表 ORM 模型：
+统一导出 AgentDeck 全部 26 张规范表 ORM 模型：
 1. projects
 2. mcp_project_tokens
 3. tasks
@@ -22,6 +22,11 @@
 19. push_subscriptions
 20. command_idempotency
 21. table_column_comments
+22. notification_outbox
+23. notifications
+24. notification_events
+25. notification_deliveries
+26. notification_changes
 """
 
 from __future__ import annotations
@@ -30,6 +35,13 @@ from backend.db.models.artifact import ArtifactModel
 from backend.db.models.decision import DecisionModel
 from backend.db.models.event import EventModel
 from backend.db.models.execution import ExecutionAttemptModel, ExecutionModel
+from backend.db.models.notification import (
+    NotificationChangeModel,
+    NotificationDeliveryModel,
+    NotificationEventModel,
+    NotificationModel,
+    NotificationOutboxModel,
+)
 from backend.db.models.planning import (
     StepModel,
     StepRevisionModel,
@@ -73,6 +85,11 @@ ALL_CANONICAL_TABLE_NAMES = (
     "push_subscriptions",
     "command_idempotency",
     "table_column_comments",
+    "notification_outbox",
+    "notifications",
+    "notification_events",
+    "notification_deliveries",
+    "notification_changes",
 )
 
 __all__ = [
@@ -98,5 +115,10 @@ __all__ = [
     "PushSubscriptionModel",
     "CommandIdempotencyModel",
     "TableColumnCommentModel",
+    "NotificationOutboxModel",
+    "NotificationModel",
+    "NotificationEventModel",
+    "NotificationDeliveryModel",
+    "NotificationChangeModel",
 ]
 
