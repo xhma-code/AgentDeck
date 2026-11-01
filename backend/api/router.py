@@ -34,6 +34,7 @@ from backend.api.deps import (
     serialize_step_revision,
     serialize_task,
     serialize_task_revision,
+    resolve_authenticated_device_id,
     verify_http_client,
 )
 from backend.api.schemas import (
@@ -322,8 +323,14 @@ async def get_vapid_public_key(request: Request) -> dict[str, Any]:
 @api_v1_router.post("/push/subscribe", dependencies=[Depends(verify_http_client)])
 async def subscribe_web_push(request: Request, body: PushSubscribeRequest) -> dict[str, Any]:
     st = _services(request)
+    auth_device_id = resolve_authenticated_device_id(request)
+    if body.device_id and body.device_id != auth_device_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"禁止跨设备绑定推送订阅：请求设备 ID '{body.device_id}' 与认证设备身份 '{auth_device_id}' 不一致",
+        )
     res = st.push_service.subscribe(
-        device_id=body.device_id,
+        device_id=auth_device_id,
         subscription_info=body.subscription,
         user_agent=body.user_agent or request.headers.get("User-Agent", ""),
     )
@@ -1514,19 +1521,43 @@ async def mcp_http_post_endpoint(request: Request) -> Response:
             },
         )
 
-    raw_body = await request.body()
-    if len(raw_body) > MAX_MCP_HTTP_BODY_BYTES:
-        return JSONResponse(
-            status_code=413,
-            content={
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {
-                    "code": -32600,
-                    "message": f"MCP 请求体大小 ({len(raw_body)} bytes) 超出上限 ({MAX_MCP_HTTP_BODY_BYTES} bytes)",
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            cl = int(content_length)
+            if cl > MAX_MCP_HTTP_BODY_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": -32600,
+                            "message": f"MCP 请求体大小 ({cl} bytes) 超出上限 ({MAX_MCP_HTTP_BODY_BYTES} bytes)",
+                        },
+                    },
+                )
+        except ValueError:
+            pass
+
+    body_chunks = []
+    received_bytes = 0
+    async for chunk in request.stream():
+        received_bytes += len(chunk)
+        if received_bytes > MAX_MCP_HTTP_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32600,
+                        "message": f"MCP 请求体大小超出上限 ({MAX_MCP_HTTP_BODY_BYTES} bytes)",
+                    },
                 },
-            },
-        )
+            )
+        body_chunks.append(chunk)
+    raw_body = b"".join(body_chunks)
 
     st = _services(request)
     dispatcher: VersionedMcpServerDispatcher = st.mcp_dispatcher

@@ -21,8 +21,9 @@ from pathlib import Path
 from typing import Optional
 
 from backend.config import AppSettings
-from backend.db.base import Base, sync_comments_to_connection
+from backend.db.base import sync_comments_to_connection
 from backend.db.engine import create_session_factory, create_sqlite_engine
+from backend.db.migration import apply_database_migrations
 import backend.db.models  # noqa: F401
 from backend.domain.exceptions import SecurityBoundaryError
 from backend.mcp.server import VersionedMcpServerDispatcher
@@ -86,11 +87,11 @@ def run_stdio_loop(argv: Optional[list[str]] = None) -> int:
         return 2
 
     settings = _build_settings_from_env()
+    apply_database_migrations(db_path=settings.db_path, target_revision="head")
     engine = create_sqlite_engine(
         db_path=settings.db_path,
         busy_timeout_ms=settings.sqlite_busy_timeout_ms,
     )
-    Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
         sync_comments_to_connection(conn)
     session_factory = create_session_factory(engine)

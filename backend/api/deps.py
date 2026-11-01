@@ -6,9 +6,11 @@ FastAPI 依赖注入、客户端鉴权与 ORM 实体序列化工具。
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request
+from sqlalchemy import select
 
 from backend.db.base import utc_now_iso
 from backend.db.models.artifact import ArtifactModel
@@ -32,11 +34,12 @@ from backend.db.models.session import ExternalSessionRefModel, SessionModel
 from backend.db.uow import SqlAlchemyUnitOfWork
 from backend.domain.exceptions import CrossProjectReferenceError, SecurityBoundaryError
 from backend.domain.types import mask_remote_url_for_display
-from backend.security.auth_guard import DevicePairingAuthManager
+from backend.security.auth_guard import DevicePairingAuthManager, LOCAL_DEVICE_ID
 from backend.security.mcp_token_guard import (
     MCP_TOKEN_PREFIX_TAG,
     VerifiedMcpPrincipal,
     hash_mcp_token,
+    parse_iso_datetime,
     verify_mcp_project_token,
 )
 
@@ -59,15 +62,24 @@ def verify_http_client(request: Request) -> str:
     """
     校验 Web 管理端 HTTP 请求访问权限：
     1. 本机回环地址 (`127.0.0.1` / `::1` / `localhost` / TestClient) 默认免 Token 放行（仅限 Web UI，MCP 独立守卫不走此函数）；
-    2. 远端设备需携带有效设备 Token 或来自已配对未吊销的 Tailscale/ZeroTier 虚拟专网 IP。
+    2. 远端设备需携带有效设备 Token 或来自已配对未吊销的 Tailscale/ZeroTier 虚拟专网 IP；
+    3. Fail-Closed 守卫：客户端地址缺失或远端访问但鉴权服务未就绪时，一律拒绝。
     """
-    client_host = request.client.host if request.client else "127.0.0.1"
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        raise HTTPException(
+            status_code=401,
+            detail="无法识别的客户端网络地址，拒绝访问",
+        )
     if client_host in ("127.0.0.1", "::1", "localhost", "testclient"):
         return client_host
 
     auth_mgr: Optional[DevicePairingAuthManager] = getattr(request.app.state, "auth_mgr", None)
     if auth_mgr is None:
-        return client_host
+        raise HTTPException(
+            status_code=503,
+            detail="系统鉴权服务未就绪，拒绝非本机访问",
+        )
 
     token = extract_bearer_token(request)
     if auth_mgr.verify_token(token, client_ip=client_host):
@@ -80,6 +92,34 @@ def verify_http_client(request: Request) -> str:
         status_code=401,
         detail="未授权的访问请求，请在电脑终端扫描一次性配对二维码",
     )
+
+
+def resolve_authenticated_device_id(request: Request) -> str:
+    """
+    从当前 HTTP 请求中反查已通过鉴权的真实 device_id：
+    1. 本机回环地址：自动获取或创建 Local Desktop 对应的设备记录以满足外键约束；
+    2. 远端访问：严格根据设备 Bearer Token 或受信任 VPN IP 反查已配对设备记录，未匹配时拒绝。
+    """
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        raise HTTPException(status_code=401, detail="无法识别的客户端网络地址，拒绝访问")
+
+    auth_mgr: Optional[DevicePairingAuthManager] = getattr(request.app.state, "auth_mgr", None)
+
+    if client_host in ("127.0.0.1", "::1", "localhost", "testclient"):
+        if auth_mgr is not None:
+            return auth_mgr.get_or_create_local_device(client_ip=client_host)
+        return LOCAL_DEVICE_ID
+
+    if auth_mgr is None:
+        raise HTTPException(status_code=503, detail="系统鉴权服务未就绪，拒绝非本机访问")
+
+    token = extract_bearer_token(request)
+    device_id = auth_mgr.get_authenticated_device_id(token, client_ip=client_host)
+    if device_id:
+        return device_id
+
+    raise HTTPException(status_code=401, detail="未授权的移动设备，拒绝绑定")
 
 
 def enforce_project_scope(request: Request, target_project_id: str) -> str:
@@ -179,8 +219,16 @@ def verify_mcp_auth(
             raise HTTPException(status_code=401, detail="MCP 令牌不存在或无效")
         if record.is_revoked != 0:
             raise HTTPException(status_code=403, detail="MCP 令牌已被吊销")
-        if record.expires_at and record.expires_at <= now_iso:
-            raise HTTPException(status_code=403, detail="MCP 令牌已过期")
+        if record.expires_at:
+            is_expired = False
+            try:
+                exp_dt = parse_iso_datetime(record.expires_at)
+                now_dt = datetime.now(timezone.utc)
+                is_expired = exp_dt <= now_dt
+            except ValueError:
+                is_expired = record.expires_at <= now_iso
+            if is_expired:
+                raise HTTPException(status_code=403, detail="MCP 令牌已过期")
 
         scopes = frozenset(json.loads(record.scopes_json or "[]"))
         if required_scope and required_scope not in scopes:

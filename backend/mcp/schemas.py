@@ -332,7 +332,6 @@ class ArtifactRegisterArgs(BaseModel):
         description="项目内相对路径（严禁 Windows 盘符、UNC 路径、绝对路径或 '..' 穿越）",
     )
     task_id: Optional[str] = Field(default=None, max_length=64, description="关联任务 ID")
-    step_id: Optional[str] = Field(default=None, max_length=64, description="可选关联步骤 ID")
     session_id: Optional[str] = Field(default=None, max_length=64, description="关联会话 ID")
     execution_id: Optional[str] = Field(default=None, max_length=64, description="关联执行记录 ID")
     metadata: Optional[dict[str, Any]] = Field(

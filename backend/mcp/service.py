@@ -62,6 +62,7 @@ from backend.domain.exceptions import (
 from backend.domain.services.decision_policy import (
     HIGH_RISK_LEVELS,
     validate_decision_creation_policy,
+    validate_decision_entity_consistency,
 )
 from backend.mcp.auth import TOOL_REQUIRED_SCOPES
 from backend.mcp.idempotency import McpIdempotencyService
@@ -291,9 +292,10 @@ class McpCollaborationService:
                     return {"task": None, "claimed": False, "claimed_by_session_id": None}, False
                 return self._build_task_detail_payload(uow, project_id, task, claimed_session_id=None), False
 
-        # 认领模式：若未显式传入 idempotency_key，按 (task_id or "auto", session_id) 生成确定性认领幂等键
+        # 认领模式：若未显式传入 idempotency_key，生成单次有效的唯一幂等键，避免旧快照绕过新状态与重验检查
         sess_id_clean = (args.claim_for_session_id or "").strip()
-        idem_key = (args.idempotency_key or "").strip() or f"claim:{args.task_id or 'auto'}:{sess_id_clean}"
+        clean_custom_idem = (args.idempotency_key or "").strip()
+        idem_key = clean_custom_idem or f"claim:{args.task_id or 'auto'}:{sess_id_clean}:{uuid.uuid4()}"
 
         def _claim_op(uow: SqlAlchemyUnitOfWork) -> tuple[str, str, dict[str, Any]]:
             assert uow.session is not None
@@ -336,6 +338,32 @@ class McpCollaborationService:
                     fix="请等待用户在平台确认重验通过后再认领该任务。",
                     context={"task_id": task.id, "mcp_error_code": "MCP_STATE_NOT_ALLOWED"},
                 )
+
+            # 显式指定或自动挑选的任务必须处于允许认领的就绪或进行中状态
+            if task.platform_status not in (
+                TaskPlatformStatus.READY.value,
+                TaskPlatformStatus.IN_PROGRESS.value,
+            ):
+                raise InvariantViolationError(
+                    problem="目标任务当前状态不允许被认领执行",
+                    cause=f"任务 '{task.title}' 当前 platform_status 为 '{task.platform_status}'（仅限 ready 或 in_progress 状态的任务可被认领）",
+                    fix="请认领处于 ready 状态的待执行任务，不能认领 draft、completed、cancelled 或 blocked 任务。",
+                    context={"task_id": task.id, "platform_status": task.platform_status, "mcp_error_code": "MCP_STATE_NOT_ALLOWED"},
+                )
+
+            # 检查 Session 当前占用情况：若会话当前绑定了另一个未完成的任务，禁止直接换绑
+            if sess.task_id and sess.task_id != task.id:
+                prev_task = uow.session.get(TaskModel, sess.task_id)
+                if prev_task and prev_task.platform_status not in (
+                    TaskPlatformStatus.COMPLETED.value,
+                    TaskPlatformStatus.CANCELLED.value,
+                ):
+                    raise InvariantViolationError(
+                        problem="当前会话已绑定正在执行的任务，禁止重复认领新任务",
+                        cause=f"会话 {sess.id} 当前正处于任务 {prev_task.id} ({prev_task.title}) 的执行生命周期中 (状态: {prev_task.platform_status})",
+                        fix="请先完成或释放当前任务，或为新任务创建独立的协同会话。",
+                        context={"session_id": sess.id, "current_task_id": prev_task.id, "target_task_id": task.id, "mcp_error_code": "MCP_STATE_NOT_ALLOWED"},
+                    )
 
             # 检查是否已被同项目下另一个活跃/等待交互的 Session 抢占认领
             competing_sess = uow.session.execute(
@@ -388,7 +416,7 @@ class McpCollaborationService:
 
             uow.session.refresh(task)
             sess.task_id = task.id
-            sess.last_heartbeat_at = now
+            sess.last_activity_at = now
             sess.updated_at = now
 
             uow.record_event(
@@ -497,7 +525,6 @@ class McpCollaborationService:
             if t.platform_status not in (
                 TaskPlatformStatus.READY.value,
                 TaskPlatformStatus.IN_PROGRESS.value,
-                TaskPlatformStatus.DRAFT.value,
             ):
                 continue
             if t.needs_revalidation:
@@ -770,7 +797,7 @@ class McpCollaborationService:
                         cause=f"session_id={args.session_id} 与项目 {project_id} 不匹配",
                         fix="请核对协同会话 ID。",
                     )
-                sess.last_heartbeat_at = now
+                sess.last_activity_at = now
                 sess.updated_at = now
 
             # 核心不变量 #7：只更新 agent_reported_status，绝不自动把 platform_status 改为 completed
@@ -900,7 +927,7 @@ class McpCollaborationService:
                         cause=f"session_id={args.session_id} 与项目 {project_id} 不匹配",
                         fix="请核对会话 ID。",
                     )
-                sess.last_heartbeat_at = now
+                sess.last_activity_at = now
                 sess.updated_at = now
 
             step.agent_reported_status = args.agent_reported_status
@@ -1004,6 +1031,7 @@ class McpCollaborationService:
                     fix="请确认项目已创建。",
                 )
 
+            task = None
             if args.task_id is not None:
                 task = uow.session.get(TaskModel, args.task_id)
                 if task is None or task.project_id != project_id:
@@ -1012,9 +1040,8 @@ class McpCollaborationService:
                         cause=f"task_id={args.task_id} 与 project_id={project_id} 不匹配",
                         fix="请核对任务与项目归属。",
                     )
-                task.agent_reported_status = "blocked_by_decision"
-                task.updated_at = utc_now_iso()
 
+            step = None
             if args.step_id is not None:
                 step = uow.session.get(StepModel, args.step_id)
                 if step is None or step.project_id != project_id:
@@ -1023,9 +1050,8 @@ class McpCollaborationService:
                         cause=f"step_id={args.step_id} 与 project_id={project_id} 不匹配",
                         fix="请核对步骤与项目归属。",
                     )
-                step.agent_reported_status = "blocked_by_decision"
-                step.updated_at = utc_now_iso()
 
+            sess = None
             if args.session_id is not None:
                 sess = uow.session.get(SessionModel, args.session_id)
                 if sess is None or sess.project_id != project_id:
@@ -1034,9 +1060,30 @@ class McpCollaborationService:
                         cause=f"session_id={args.session_id} 与 project_id={project_id} 不匹配",
                         fix="请核对会话与项目归属。",
                     )
+
+            # 复用领域拓扑校验函数，严格校验 Task、Step、Session 实体关联拓扑一致性
+            validate_decision_entity_consistency(
+                task_id=args.task_id,
+                step_id=args.step_id,
+                step_task_id=step.task_id if step is not None else None,
+                session_id=args.session_id,
+                session_task_id=sess.task_id if sess is not None else None,
+            )
+
+            now_iso = utc_now_iso()
+            if task is not None:
+                task.agent_reported_status = "blocked_by_decision"
+                task.updated_at = now_iso
+
+            if step is not None:
+                step.agent_reported_status = "blocked_by_decision"
+                step.updated_at = now_iso
+
+            if sess is not None:
                 sess.platform_status = SessionPlatformStatus.WAITING_INTERACTION.value
-                sess.last_heartbeat_at = utc_now_iso()
-                sess.updated_at = utc_now_iso()
+                sess.status_seq = (sess.status_seq or 0) + 1
+                sess.last_activity_at = now_iso
+                sess.updated_at = now_iso
 
             now = utc_now_iso()
             dec_id = str(uuid.uuid4())
@@ -1236,7 +1283,7 @@ class McpCollaborationService:
                         cause=f"session_id={args.session_id} 与 project_id={project_id} 不匹配",
                         fix="请核对会话与项目归属。",
                     )
-                sess.last_heartbeat_at = utc_now_iso()
+                sess.last_activity_at = utc_now_iso()
 
             if args.execution_id is not None:
                 execution = uow.session.get(ExecutionModel, args.execution_id)

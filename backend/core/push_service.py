@@ -28,6 +28,7 @@ from backend.config import get_settings
 from backend.core.logger import log_structured_error, logger
 from backend.db.base import utc_now_iso
 from backend.db.models.system import PushSubscriptionModel
+from backend.domain.exceptions import SecurityBoundaryError
 
 VAPID_CLAIMS_SUBJECT = "mailto:admin@agentdeck.local"
 
@@ -93,6 +94,13 @@ class WebPushService:
         """获取供客户端 pushManager.subscribe() 使用的 URL-safe Base64 编码公钥。"""
         return self._public_key_b64
 
+    @property
+    def vapid_key_fingerprint(self) -> str:
+        """获取当前活跃 VAPID 公钥的 SHA-256 十六进制指纹。"""
+        if not self._public_key_b64:
+            return "legacy_unverified"
+        return hashlib.sha256(self._public_key_b64.encode("utf-8")).hexdigest()
+
     def subscribe(
         self,
         device_id: str,
@@ -100,6 +108,10 @@ class WebPushService:
         user_agent: str = "",
     ) -> dict[str, Any]:
         """注册或更新前端传入的 PushSubscription 凭据。"""
+        clean_dev_id = (device_id or "").strip()
+        if not clean_dev_id or clean_dev_id == "default":
+            raise ValueError("PushSubscription 必须绑定明确有效的 device_id")
+
         endpoint = str(subscription_info.get("endpoint") or "")
         keys = subscription_info.get("keys") or {}
         p256dh = str(keys.get("p256dh") or "")
@@ -110,16 +122,18 @@ class WebPushService:
 
         subscription_id = hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
         now = utc_now_iso()
+        fp = self.vapid_key_fingerprint
 
         with self.session_factory() as session:
             existing = session.get(PushSubscriptionModel, subscription_id)
             if existing is None:
                 existing = PushSubscriptionModel(
                     subscription_id=subscription_id,
-                    device_id=device_id or "default",
+                    device_id=clean_dev_id,
                     endpoint=endpoint,
                     p256dh_key=p256dh,
                     auth_key=auth,
+                    vapid_key_fingerprint=fp,
                     user_agent=(user_agent or "")[:240],
                     created_at=now,
                     last_pushed_at=None,
@@ -127,15 +141,22 @@ class WebPushService:
                 )
                 session.add(existing)
             else:
-                existing.device_id = device_id or existing.device_id
+                # 严格校验订阅所有权：禁止跨设备劫持或覆盖已有订阅的所有权
+                if existing.device_id != clean_dev_id:
+                    raise SecurityBoundaryError(
+                        problem="拦截跨设备推送订阅篡改",
+                        cause=f"订阅 {subscription_id[:8]} 已属于设备 {existing.device_id}，禁止由设备 {clean_dev_id} 重新绑定",
+                        fix="每个设备需生成独立的推送凭据。",
+                    )
                 existing.endpoint = endpoint
                 existing.p256dh_key = p256dh
                 existing.auth_key = auth
+                existing.vapid_key_fingerprint = fp
                 existing.user_agent = (user_agent or "")[:240]
                 existing.is_active = 1
             session.commit()
 
-        logger.info("已成功绑定 PWA Web Push 订阅 (device_id: %s, id: %s)", device_id, subscription_id[:8])
+        logger.info("已成功绑定 PWA Web Push 订阅 (device_id: %s, id: %s)", clean_dev_id, subscription_id[:8])
         return {"ok": True, "subscription_id": subscription_id}
 
     def send_notification(

@@ -187,13 +187,26 @@ def free_port_if_occupied(port: int) -> None:
 
 
 def run_doctor(port: int = 8765) -> int:
-    """运行 AgentDeck Clean-Slate 环境诊断体检。"""
+    """运行 AgentDeck Clean-Slate 环境诊断体检（增强全新未初始化库容错）。"""
     settings = get_settings()
     app = create_app(settings=settings, auto_init_schema=False)
     pragmas = inspect_sqlite_pragmas(app.state.engine)
     migration_status = inspect_migration_status(app.state.engine, settings.db_path)
-    providers = app.state.runtime_registry_service.list_providers()
-    machines = app.state.runtime_registry_service.list_machines()
+
+    providers_desc = "待执行迁移 (Alembic uninitialized)"
+    machines_desc = "待执行迁移 (Alembic uninitialized)"
+    if migration_status.get("current_revision"):
+        try:
+            providers = app.state.runtime_registry_service.list_providers()
+            providers_desc = str([p.provider_key for p in providers])
+        except Exception as exc:
+            providers_desc = f"表尚未创建: {exc}"
+        try:
+            machines = app.state.runtime_registry_service.list_machines()
+            machines_desc = str([m.display_name for m in machines])
+        except Exception as exc:
+            machines_desc = f"表尚未创建: {exc}"
+
     print("\n" + "═" * 72)
     print(f"  🩺 AgentDeck v{VERSION} 环境诊断体检报告")
     print("═" * 72)
@@ -202,9 +215,14 @@ def run_doctor(port: int = 8765) -> int:
     mig_mark = "[✓]" if migration_status["is_synced"] else "[!]"
     print(f"  {mig_mark} Alembic 迁移版本: 当前={migration_status['current_revision']} | 目标Head={migration_status['head_revision']}")
     print(f"  [✓] 规范表数量: {len(ALL_CANONICAL_TABLE_NAMES)} 张")
-    print(f"  [✓] RuntimeProviders: {[p.provider_key for p in providers]}")
-    print(f"  [✓] Machines: {[m.display_name for m in machines]}")
-    print(f"  [✓] VAPID 公钥长度: {len(app.state.push_service.get_public_key())}")
+    item_mark = "[✓]" if migration_status.get("current_revision") else "[i]"
+    print(f"  {item_mark} RuntimeProviders: {providers_desc}")
+    print(f"  {item_mark} Machines: {machines_desc}")
+    try:
+        vapid_pub = app.state.push_service.get_public_key()
+        print(f"  [✓] VAPID 公钥长度: {len(vapid_pub)}")
+    except Exception:
+        print("  [i] VAPID 公钥: 未初始化或只读跳过")
     print(f"  [i] 监听端口: {port}")
     print("═" * 72 + "\n")
     app.state.engine.dispose()

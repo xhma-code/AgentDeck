@@ -175,7 +175,7 @@ def create_app(
         if clean_rel.startswith("api/"):
             return JSONResponse(status_code=404, content={"ok": False, "error": "API 端点不存在"})
 
-        for base_dir in (FRONTEND_DIST_DIR, FRONTEND_PUBLIC_DIR, FRONTEND_DIR):
+        for base_dir in (FRONTEND_DIST_DIR, FRONTEND_PUBLIC_DIR):
             if clean_rel and base_dir.exists():
                 candidate = (base_dir / clean_rel).resolve()
                 if candidate.is_relative_to(base_dir.resolve()) and candidate.is_file():

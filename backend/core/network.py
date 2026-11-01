@@ -132,11 +132,13 @@ def detect_primary_lan_ip() -> str:
             if any(bad in nic_lower for bad in virtual_keywords):
                 continue
             for a in addrs:
-                if (
-                    getattr(a.family, "name", "") == "AF_INET"
-                    and not a.address.startswith(("127.", "169.254."))
-                    and a.address.startswith(("192.168.", "10.", "172."))
-                ):
+                if getattr(a.family, "name", "") == "AF_INET":
+                    try:
+                        ip_obj = ipaddress.ip_address(a.address)
+                        if not ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                            continue
+                    except ValueError:
+                        continue
                     if any(w in nic_lower for w in ["wlan", "wi-fi", "wifi", "wireless"]):
                         wifi_candidates.append(a.address)
                     else:

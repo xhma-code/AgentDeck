@@ -16,11 +16,12 @@ import json
 import secrets
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from sqlalchemy import select
 
-from backend.db.base import utc_now_iso
+from backend.db.base import parse_iso_datetime, utc_now_iso
 from backend.db.models.project import McpProjectTokenModel, ProjectModel
 from backend.db.uow import SqlAlchemyUnitOfWork
 from backend.domain.enums import ActorType
@@ -223,13 +224,22 @@ def verify_mcp_project_token(
         )
 
     now_iso = utc_now_iso()
-    if record.expires_at and record.expires_at <= now_iso:
-        raise SecurityBoundaryError(
-            problem="MCP 访问被拒绝（令牌已过期）",
-            cause=f"令牌 {record.token_prefix}*** 已于 {record.expires_at} 过期",
-            fix="请为该项目轮换签发新的 MCP Token。",
-            context={"token_id": record.id, "target_project_id": target_project_id},
-        )
+    if record.expires_at:
+        is_expired = False
+        try:
+            exp_dt = parse_iso_datetime(record.expires_at)
+            now_dt = datetime.now(timezone.utc)
+            is_expired = exp_dt <= now_dt
+        except ValueError:
+            is_expired = record.expires_at <= now_iso
+
+        if is_expired:
+            raise SecurityBoundaryError(
+                problem="MCP 访问被拒绝（令牌已过期）",
+                cause=f"令牌 {record.token_prefix}*** 已于 {record.expires_at} 过期",
+                fix="请为该项目轮换签发新的 MCP Token。",
+                context={"token_id": record.id, "target_project_id": target_project_id},
+            )
 
     if record.project_id != target_project_id:
         raise SecurityBoundaryError(

@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.db.base import utc_now_iso
+from backend.core.logger import log_structured_error, logger
+from backend.db.base import parse_iso_datetime, utc_now_iso
 from backend.db.models.decision import DecisionModel
 from backend.db.models.execution import ExecutionModel
 from backend.db.models.planning import StepModel, TaskModel
@@ -63,6 +65,41 @@ class DecisionService:
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
+
+    @staticmethod
+    def _assert_decision_reached_deadline(decision: DecisionModel, operation: str) -> None:
+        """校验决策倒计时是否已设定且当前时间已达到或超过截止时间（Fail-Closed 守卫）。"""
+        if (decision.timeout_sec or 0) <= 0:
+            raise InvariantViolationError(
+                problem=f"当前决策未配置倒计时超时，无法执行{operation}",
+                cause=f"decision.timeout_sec={decision.timeout_sec}，代表该决策需永久等待人工处理",
+                fix="请由人工手动处理决策，或在创建决策时设置有效的 timeout_sec。",
+            )
+
+        try:
+            created_dt = parse_iso_datetime(decision.created_at)
+        except Exception as exc:
+            log_structured_error(
+                problem="解析决策创建时间失败",
+                cause=str(exc),
+                fix="请检查决策 created_at 格式是否符合 UTC ISO 8601 规范。",
+                exc=exc,
+            )
+            raise InvariantViolationError(
+                problem="决策创建时间格式异常，拒绝执行超时操作（Fail-Closed）",
+                cause=f"created_at={decision.created_at}: {exc}",
+                fix="请核对决策创建时间记录。",
+            ) from exc
+
+        deadline_ts = created_dt.timestamp() + decision.timeout_sec
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if now_ts < deadline_ts:
+            remaining = deadline_ts - now_ts
+            raise InvariantViolationError(
+                problem=f"决策尚未达到超时截止时间，拒绝提前执行{operation}",
+                cause=f"决策创建于 {decision.created_at}，倒计时 {decision.timeout_sec} 秒，距离截止还有 {remaining:.1f} 秒",
+                fix="请等待倒计时结束后再执行超时结算或由人工手动提交。",
+            )
 
     def create_decision(
         self,
@@ -384,6 +421,16 @@ class DecisionService:
                     valid_option_ids=valid_option_ids,
                 )
 
+            # 超时自动推荐提交必须在服务端校验超时策略与真实等待时间
+            if resolved_by == DecisionResolvedBy.TIMEOUT_AUTO_RECOMMENDED:
+                if decision.timeout_policy != DecisionTimeoutPolicy.AUTO_SUBMIT_RECOMMENDED.value:
+                    raise InvariantViolationError(
+                        problem="当前决策超时策略不允许自动提交",
+                        cause=f"决策 timeout_policy 为 '{decision.timeout_policy}'，非 auto_submit_recommended",
+                        fix="请由人工手动确认并提交决策。",
+                    )
+                self._assert_decision_reached_deadline(decision, "超时自动推荐提交")
+
             now = utc_now_iso()
             resolution_payload = {
                 "chosen_option_id": effective_option_id,
@@ -515,6 +562,16 @@ class DecisionService:
                 )
             if decision.status == DecisionStatus.EXPIRED.value:
                 return decision
+            if decision.status != DecisionStatus.PENDING.value:
+                raise VersionConflictError(
+                    problem="决策已被人工或并发请求处理，无法标记为过期",
+                    cause=f"当前状态为 '{decision.status}'，处理来源为 '{decision.resolved_by}'",
+                    fix="该决策已有最终结论，无需执行超时过期。",
+                    context={"decision_id": decision.id, "current_status": decision.status},
+                )
+
+            # 校验倒计时是否真正结束（Fail-Closed 守卫）
+            self._assert_decision_reached_deadline(decision, "标记过期")
 
             now = utc_now_iso()
             payload_str = json.dumps(

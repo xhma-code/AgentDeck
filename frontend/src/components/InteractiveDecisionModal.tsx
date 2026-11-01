@@ -326,9 +326,11 @@ export const InteractiveDecisionModal: React.FC<InteractiveDecisionModalProps> =
                 type="button"
                 className="btn"
                 style={{ minHeight: 26, padding: '0 8px', fontSize: 11 }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setPausedByInteraction((p) => !p);
+                  setPausedByInteraction((prev) => !prev);
                 }}
               >
                 {pausedByInteraction ? (

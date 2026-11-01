@@ -30,6 +30,20 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_iso_datetime(iso_str: str) -> datetime:
+    """
+    将 ISO 8601 字符串解析为带时区的 UTC datetime 对象。
+    支持 'Z' 后缀和任意时区偏移（如 +08:00）。
+    """
+    clean = (iso_str or "").strip()
+    if clean.endswith("Z") or clean.endswith("z"):
+        clean = clean[:-1] + "+00:00"
+    dt = datetime.fromisoformat(clean)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 class Base(DeclarativeBase):
     """AgentDeck ORM 实体统一基类。"""
 

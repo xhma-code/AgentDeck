@@ -113,6 +113,7 @@ class ExecutionService:
                         fix="请选择同项目下的协同会话。",
                     )
 
+            rt = None
             if runtime_instance_id is not None:
                 rt = uow.session.get(RuntimeInstanceModel, runtime_instance_id)
                 if rt is None:

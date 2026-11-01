@@ -26,6 +26,9 @@ from backend.db.base import utc_now_iso
 from backend.db.models.system import DeviceSessionModel
 
 
+LOCAL_DEVICE_ID = "00000000-0000-0000-0000-000000000001"
+
+
 class DevicePairingAuthManager:
     """基于 SQLAlchemy `device_sessions` 表的远程移动设备扫码配对与访问令牌管理器。"""
 
@@ -134,6 +137,60 @@ class DevicePairingAuthManager:
             row.last_active_at = utc_now_iso()
             session.commit()
             return True
+
+    def get_or_create_local_device(self, client_ip: str = "127.0.0.1") -> str:
+        """获取或初始化本机（回环/桌面端）的常驻设备记录，确保满足数据库外键约束。"""
+        with self.session_factory() as session:
+            dev = session.get(DeviceSessionModel, LOCAL_DEVICE_ID)
+            if dev is None:
+                iso_now = utc_now_iso()
+                dev = DeviceSessionModel(
+                    device_id=LOCAL_DEVICE_ID,
+                    device_name="Local Desktop",
+                    auth_token_hash="local_desktop_loopback_hash",
+                    tailscale_ip=client_ip,
+                    created_at=iso_now,
+                    last_active_at=iso_now,
+                    is_revoked=0,
+                )
+                session.add(dev)
+                session.commit()
+            else:
+                dev.last_active_at = utc_now_iso()
+                session.commit()
+            return LOCAL_DEVICE_ID
+
+    def get_authenticated_device_id(
+        self,
+        raw_token: Optional[str],
+        client_ip: str = "",
+    ) -> Optional[str]:
+        """从请求 Token 或受信任 VPN IP 反查当前已配对设备的真实 device_id。"""
+        if raw_token:
+            token_hash = self._hash_token(raw_token)
+            with self.session_factory() as session:
+                stmt = select(DeviceSessionModel).where(
+                    DeviceSessionModel.auth_token_hash == token_hash,
+                    DeviceSessionModel.is_revoked == 0,
+                )
+                row = session.execute(stmt).scalar_one_or_none()
+                if row is not None:
+                    row.tailscale_ip = merge_ips(row.tailscale_ip, client_ip)
+                    row.last_active_at = utc_now_iso()
+                    session.commit()
+                    return row.device_id
+        if client_ip and is_trusted_vpn_network(client_ip):
+            with self.session_factory() as session:
+                stmt = (
+                    select(DeviceSessionModel)
+                    .where(DeviceSessionModel.is_revoked == 0)
+                    .order_by(DeviceSessionModel.created_at.desc())
+                )
+                rows = list(session.execute(stmt).scalars().all())
+                for r in rows:
+                    if client_ip in parse_ips(r.tailscale_ip):
+                        return r.device_id
+        return None
 
     def issue_token_for_trusted_vpn_ip(self, client_ip: str, device_name: str = "PWA Standalone") -> Optional[str]:
         """为已在数据库完成扫码配对且未吊销的受信任 VPN IP 设备颁发/续订合法访问 Token。"""

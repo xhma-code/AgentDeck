@@ -54,6 +54,8 @@ class AgentReportedStatus(StrEnum):
 
     UNKNOWN = "unknown"
     RUNNING = "running"
+    IN_PROGRESS = "in_progress"
+    BLOCKED_BY_DECISION = "blocked_by_decision"
     WAITING_INTERACTION = "waiting_interaction"
     WAITING_INPUT = "waiting_input"
     COMPLETED = "completed"

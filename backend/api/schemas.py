@@ -5,9 +5,10 @@ Phase 2 `/api/v1/*` Pydantic v2 请求与响应契约定义。
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.domain.enums import (
     AgentReportedStatus,
@@ -63,6 +64,21 @@ class ProjectUpdateRequest(BaseModel):
     summary_next_action: Optional[str] = Field(default=None, max_length=1000)
 
 
+def validate_iso_utc_expires_at(v: Optional[str]) -> Optional[str]:
+    """统一校验并转换带时区的 ISO 8601 过期时间字符串为 UTC 格式。"""
+    if not v:
+        return None
+    clean = v.strip()
+    try:
+        raw = clean[:-1] + "+00:00" if (clean.endswith("Z") or clean.endswith("z")) else clean
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            raise ValueError("expires_at 必须包含明确的时区信息（如 'Z' 或 '+08:00'）")
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    except Exception as exc:
+        raise ValueError(f"expires_at 必须为合法的 ISO 8601 时间字符串且含时区: {exc}") from exc
+
+
 class McpTokenIssueRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -79,12 +95,22 @@ class McpTokenIssueRequest(BaseModel):
     )
     expires_at: Optional[str] = Field(default=None)
 
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expires_at(cls, v: Optional[str]) -> Optional[str]:
+        return validate_iso_utc_expires_at(v)
+
 
 class McpTokenRotateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     token_name: Optional[str] = Field(default=None, max_length=120, description="可选的新令牌名称")
     expires_at: Optional[str] = Field(default=None, description="可选的新令牌过期时间（ISO 8601）")
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expires_at(cls, v: Optional[str]) -> Optional[str]:
+        return validate_iso_utc_expires_at(v)
 
 
 
@@ -329,7 +355,7 @@ class PairExchangeRequest(BaseModel):
 class PushSubscribeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    device_id: str = Field(default="default", max_length=64)
+    device_id: Optional[str] = Field(default=None, max_length=64)
     subscription: dict[str, Any]
     user_agent: str = Field(default="", max_length=240)
 

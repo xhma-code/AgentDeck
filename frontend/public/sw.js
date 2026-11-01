@@ -4,11 +4,10 @@ const CACHE_NAME = "agentdeck-shell-20261025_git_sync_v15";
 const APP_SHELL = [
   "/",
   "/index.html",
-  "/static/app.js",
-  "/static/styles.css",
-  "/static/tailwind.min.js",
-  "/static/manifest.json",
+  "/manifest.json",
   "/apple-touch-icon.png",
+  "/icon-192.png",
+  "/icon-512.png",
   "/favicon.ico"
 ];
 
