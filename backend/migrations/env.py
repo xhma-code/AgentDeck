@@ -44,6 +44,24 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _cleanup_sqlite_alembic_tmp_tables(connection) -> None:
+    """针对 SQLite 在 batch alter 迁移事务异常回滚后可能残留的临时表进行兜底清理。"""
+    try:
+        raw_conn = connection.connection if hasattr(connection, "connection") else connection
+        if hasattr(raw_conn, "dbapi_connection"):
+            raw_conn = raw_conn.dbapi_connection
+        cur = raw_conn.cursor()
+        rows = cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_alembic_tmp_%';"
+        ).fetchall()
+        for row in rows:
+            t_name = row[0]
+            cur.execute(f"DROP TABLE IF EXISTS [{t_name}];")
+        raw_conn.commit()
+    except Exception:
+        pass
+
+
 def run_migrations_online() -> None:
     """在线 SQLite 迁移模式（强制开启 WAL 与外键检查）。"""
     provided_conn = config.attributes.get("connection")
@@ -52,9 +70,14 @@ def run_migrations_online() -> None:
             connection=provided_conn,
             target_metadata=target_metadata,
             render_as_batch=True,
+            transactional_ddl=True,
         )
-        with context.begin_transaction():
-            context.run_migrations()
+        try:
+            with context.begin_transaction():
+                context.run_migrations()
+        except Exception:
+            _cleanup_sqlite_alembic_tmp_tables(provided_conn)
+            raise
         return
 
     url = _resolve_sqlalchemy_url()
@@ -82,9 +105,14 @@ def run_migrations_online() -> None:
                 connection=connection,
                 target_metadata=target_metadata,
                 render_as_batch=True,
+                transactional_ddl=True,
             )
-            with context.begin_transaction():
-                context.run_migrations()
+            try:
+                with context.begin_transaction():
+                    context.run_migrations()
+            except Exception:
+                _cleanup_sqlite_alembic_tmp_tables(connection)
+                raise
     finally:
         connectable.dispose()
 
