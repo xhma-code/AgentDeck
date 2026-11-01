@@ -226,7 +226,53 @@ def test_phase2_rest_api_full_lifecycle(tmp_path: Path) -> None:
         )
         assert r_conflict.status_code == 409
 
-        # 8. 受控文档读取与在线备份
+        # 8. 执行与运行尝试生命周期（真实生产 REST API 路径，严格覆盖 DEFECT-EXEC-001）
+        r_exec = client.post(
+            f"/api/v1/projects/{pid}/executions",
+            json={
+                "task_id": t1_id,
+                "step_id": s1_id,
+                "session_id": sess_id,
+                "runtime_instance_id": inst_id,
+                "summary_note": "首次排队触发执行",
+            },
+        )
+        assert r_exec.status_code == 201, r_exec.text
+        exec_data = r_exec.json()["execution"]
+        attempt1_data = r_exec.json()["attempt"]
+        eid = exec_data["id"]
+        assert exec_data["platform_status"] == "queued"
+        assert exec_data["started_at"] is None
+        assert attempt1_data["attempt_no"] == 1
+        assert attempt1_data["status"] == "queued"
+        assert attempt1_data["started_at"] is None, "生产 API 下 QUEUED Attempt 的 started_at 必须原生为 null"
+
+        # 通过 API 启动第 2 次尝试（RUNNING 状态）
+        r_att2 = client.post(
+            f"/api/v1/projects/{pid}/executions/{eid}/attempts",
+            json={
+                "runtime_instance_id": inst_id,
+            },
+        )
+        assert r_att2.status_code == 201, r_att2.text
+        attempt2_data = r_att2.json()["attempt"]
+        assert attempt2_data["attempt_no"] == 2
+        assert attempt2_data["status"] == "running"
+        assert attempt2_data["started_at"] is not None, "生产 API 下 RUNNING Attempt 的 started_at 必须具有有效启动时间戳"
+
+        # 查询该 Execution 下的所有 Attempts 列表并断言
+        r_list_att = client.get(f"/api/v1/executions/{eid}/attempts")
+        assert r_list_att.status_code == 200
+        attempts_list = r_list_att.json()["attempts"]
+        assert len(attempts_list) == 2
+        assert attempts_list[0]["attempt_no"] == 1
+        assert attempts_list[0]["status"] == "queued"
+        assert attempts_list[0]["started_at"] is None
+        assert attempts_list[1]["attempt_no"] == 2
+        assert attempts_list[1]["status"] == "running"
+        assert attempts_list[1]["started_at"] is not None
+
+        # 9. 受控文档读取与在线备份
         r_doc = client.get(
             "/api/v1/workspace/doc",
             params={"path": str(repo_dir / "README.md"), "project_id": pid},
@@ -238,7 +284,7 @@ def test_phase2_rest_api_full_lifecycle(tmp_path: Path) -> None:
         assert r_bak.status_code == 200
         assert Path(r_bak.json()["backup_path"]).exists()
 
-        # 9. 事件流查询
+        # 10. 事件流查询
         r_evts = client.get("/api/v1/events", params={"project_id": pid})
         assert r_evts.status_code == 200
         evt_types = {e["event_type"] for e in r_evts.json()["events"]}
@@ -246,4 +292,5 @@ def test_phase2_rest_api_full_lifecycle(tmp_path: Path) -> None:
         assert "task.revision_created" in evt_types
         assert "decision.created" in evt_types
         assert "decision.resolved" in evt_types
+        assert "execution.created" in evt_types
 

@@ -226,37 +226,159 @@ WHERE id=:id AND attempt_count < max_attempts
   2. **第二层（临时表安全兜底清理）**：`env.py` 的异常分支执行 `_cleanup_sqlite_alembic_tmp_tables`，使用 `GLOB '_alembic_tmp_*'` 精准识别并用双引号安全转义清理 batch alter 遗留的临时表，不触碰底层 DBAPI commit()，消除对后续重试迁移的阻塞，绝不误伤任何业务表或非目标表（用例 9B 已专项验证）；
   3. **第三层（物理热备终极兜底还原）**：迁移前由 `apply_database_migrations` 基于 SQLite Backup API 执行在线热备（`.bak.<时间戳>`），当遇到不可抗力（进程被 SIGKILL、系统断电、文件系统损坏）导致数据库文件状态异常时，可依据备份文件实现 100% 逐表、逐行、逐字段无损完整恢复（用例 9A 已全量快照比对验证）。
 
-### 2.5 通知聚合并发保护与 `BEGIN IMMEDIATE` 落地（P2-2，面向 5.3）
-- 聚合查询与写入在同一写事务内；候选条件含 `is_read=0`、窗口 10 秒、`aggregated_count<20`；`notification_events.event_seq_id UNIQUE` 防重复关联。
-- **实施约束**：`BEGIN IMMEDIATE` 必须是该事务的首条有效语句；使用**全新连接**并关闭 pysqlite/SQLAlchemy 的隐式 autobegin（如 `isolation_level=None` + 显式 `BEGIN IMMEDIATE`，或经 `connect`/`begin` 事件配置），避免“事务已开启”错误；捕获 `SQLITE_BUSY/database is locked`，配合 `busy_timeout` 与带抖动重试。
-- 唯一性兜底：除串行化外，为未读聚合窗口增加可验证的唯一性手段（实施时采用 3.2 的部分唯一索引 `uq_notifications_open_agg`），并以并发测试证明不产生重复通知或错误计数。
-- 验收测试必须使用**多个真实数据库连接/线程**，而非单连接协程模拟。
+### 2.5 SQLite 并发控制与 10 秒窗口聚合边界规范（面向 Phase 5.3 核心修订）
 
-### 2.6 派生写入事务边界与 Delivery Worker 状态机（第七轮补充）
+#### 2.5.1 SQLite 并发控制与 BUSY 重试原则（修正 P53-06）
+- **单写者物理事实**：SQLite WAL 模式支持多读者并发，但全局同时**只有一个写事务**。
+- **写锁获取规范**：所有涉及写入的调度与派生事务，必须以显式 `BEGIN IMMEDIATE` 作为事务的第一条语句启动，在起点立即获取排他写锁，严禁由隐式读事务升级为写事务（升级容易引发死锁）。
+- **`busy_timeout` 与应用层重试边界**：连接配置 `PRAGMA busy_timeout = 15000`（15 秒锁等待超时）。在捕获 `sqlite3.OperationalError: database is locked`（即 `SQLITE_BUSY` 或 `SQLITE_LOCKED`）时，执行应用层带随机抖动的指数退避（Exponential Backoff with Full Jitter）重试：
+  - 最大重试次数：固定为 3 次；
+  - 退避间隔：基数 50ms，每次乘 2，附加 0~50ms 随机抖动（50ms~300ms）；
+  - **整事务重试原则**：重试必须彻底回滚并释放当前失败事务上下文，从最外层的事务起点（开启全新的数据库连接与事务）重新开始，**严禁在受污染的半事务或脏连接中继续执行**；
+  - 超过 3 次重试仍失败：记录结构化 error 日志，安全退出当前调度周期，由外部守护循环在下一个周期重试；明确不承诺“杜绝死锁”，而是以有限重试与确定性回滚保证系统不挂死。
+- **并发验证规范**：验收测试必须使用**多个真实独立的 SQLite 数据库连接/多线程**进行并发压力实测，严禁使用单连接协程或共享内存模拟。
 
-#### 2.6.1 Dispatcher 派生写入的同事务要求
-`notifications` 的创建/聚合更新、`notification_events`、`notification_deliveries`、`notification_changes` 的派生写入，以及 `notification_outbox` 置为 `processed`，**必须在同一个数据库事务（`BEGIN IMMEDIATE`）内完成**；Fencing 校验（`locked_by=:disp AND status='processing'` 影响行数=1）失败则**整体回滚**。**Web Push 网络外呼严禁放入该事务**，由 Delivery Worker 独立执行。由此保证：Dispatcher 在写入 `processed` 前崩溃，则全部派生写入一并回滚，重试不会产生重复通知；`notification_events.event_seq_id UNIQUE` 为最终防重兜底。
+#### 2.5.2 10 秒通知聚合窗口全生命周期与边界定义（修正 P53-05）
+1. **窗口起始时间戳（`window_started_at`）**：
+   - 统一取**该聚合通知中第一条业务事件的发生时间戳（`event.created_at`）**，绝对不以 Dispatcher 物理调度处理的本地时间为准，保证事件时间归属客观确定、历史可重放。
+2. **聚合窗口候选判定条件**：
+   新到达的业务事件 $E$ 归入现有通知，必须同时满足以下 4 项条件：
+   - `project_id == E.project_id`（同项目，NULL 为全局）；
+   - `aggregation_key == E.aggregation_key`（同聚合键）；
+   - `is_window_open == 1`（窗口仍处于开启状态）；
+   - `is_read == 0`（通知尚未被用户标记已读）；
+   - 时间跨度在 10 秒内：$T_{	ext{event}} - 	ext{window\_started\_at} \le 10	ext{s}$；
+   - 聚合计数未满：`aggregated_count < 20`。
+3. **窗口关闭规则**：
+   当满足以下任一条件时，窗口立即关闭（`is_window_open = 0, updated_at = now`）：
+   - 时间超时：事件时间戳超过 10 秒（$T_{	ext{event}} - 	ext{window\_started\_at} > 10	ext{s}$）；
+   - 计数饱和：聚合事件数达到 20 条上限（`aggregated_count >= 20`）；
+   - 用户已读：用户主动或批量标记已读（`is_read = 1`）。
+4. **迟到事件规则（Late-Arriving Events）**：
+   - 当现有窗口已关闭后，后续到达的相同 `aggregation_key` 事件，**强制新开一个全新的独立通知实体**（新窗口 `is_window_open = 1`, `aggregated_count = 1`, `window_started_at = E.created_at`），**严禁追加或修改已关闭的历史通知**。
+5. **防重与计数保证**：
+   - `aggregated_count` 首条事件时初始化为 1，随后每合流一条事件原子自增 1；
+   - 在关联表 `notification_events` 中强制定义 `uq_notif_events_event_seq(event_seq_id)` 唯一约束，从数据库底层彻底杜绝同一业务事件被重复计入 `aggregated_count`。
+6. **物理排他兜底防线**：
+   - 利用 Phase 5.2 已建立的部分唯一索引 `uq_notifications_open_agg`（`UNIQUE(project_id, aggregation_key) WHERE is_window_open = 1`）；
+   - 即使多个并发连接产生极端竞态同时尝试打开新窗口，数据库引擎底层唯一约束直接拦截并回滚第二个写入，从物理上杜绝同一聚合键存在多个开放窗口的可能。
 
-#### 2.6.2 `notification_deliveries` 创建规则
-Dispatcher 在同一事务内为**当时所有 `is_active=1` 的订阅**各创建一条 delivery：`status='pending'`、`attempt_count=0`、`max_attempts=4`、`next_retry_at=utc_now_iso()`、锁字段为 NULL。此后新建的订阅不补发历史通知（用户通过通知中心查看）。
+---
 
-#### 2.6.3 状态流转
-| 场景 | 行为 |
-| :--- | :--- |
-| `pending`/`retry` 且 `next_retry_at<=now` | 原子认领：`status='processing'`、`locked_by`、`lease_expires_at=now+30s`、`attempt_count+1`（条件含 `attempt_count<max_attempts`） |
-| `processing` 且租约过期、`attempt_count<max_attempts` | 其他 Worker 通过第二路条件接管（同样认领 SQL，`status='processing' AND lease_expires_at<now`） |
-| `processing` 且租约过期、`attempt_count>=max_attempts` | 清理 SQL 置 `failed`，清锁，写 `failed_at/last_error`，保证不卡死 |
-| 网关 201 | `delivered`，写 `delivered_at`，清锁，更新 `push_subscriptions.last_pushed_at`；`legacy_unverified` 订阅同时修正指纹（见 2.3） |
-| 网关 410 | `gone`，写 `failed_at`，同一事务内将对应订阅 `is_active=0` |
-| 网关 404 | **统计范围=同一条 delivery 的连续 HTTP 尝试，不跨通知**。回写前读取该 delivery 当前 `last_http_status`：若为 404（即上一次尝试也是 404）⇒ 视同 410：delivery 置 `gone`、订阅 `is_active=0`；否则写 `last_http_status=404` 并 `retry`。任何非 404 响应都会覆盖 `last_http_status`，自然重置连续计数。订阅停用与 delivery 回写在同一事务内，且仅在 Fencing 回写成功（影响行数=1）时提交 |
-| 401 / 403 | `retry`（受 2.3 全局/单订阅规则约束），**不停用订阅**；达到上限 `failed` |
-| 429 | `retry`，`next_retry_at` 取 `Retry-After` 与退避的较大值 |
-| 5xx / 超时 / 网络错误 | `retry`，退避 `2*4^(attempt_count-1)` 秒（2s/8s/32s） |
-| 达到 `max_attempts` 仍失败 | `failed`，清锁，记 `failed_at`、`last_error`，写 error 日志 |
-| Worker 崩溃 | 租约过期后由接管路径或清理路径处理 |
-| 旧 Worker 恢复 | 所有结果回写必须带 `WHERE id=:id AND locked_by=:worker AND status='processing'`；影响行数为 0 则丢弃结果，且订阅停用等副作用同样不得执行（与 delivery 回写同一事务，仅在回写成功时提交） |
+### 2.6 Dispatcher 两阶段事务、Fencing 与 Delivery 状态机（核心重构）
 
-外呼超时 10 秒，小于 30 秒租约；SQLite 写冲突按 2.5 的 BUSY 规则重试。
+#### 2.6.1 UoW 事件白名单与同事务提交机制（修正 P53-08）
+- **需通知事件白名单（`NOTIFICATION_EVENT_WHITELIST`）**：
+  为避免大量高频无意义事件（如频繁心跳、纯读取）膨胀 Outbox 表，仅对以下明确需推送到通知中心的关键业务事件进行 Outbox 派生：
+  - `task.blocked`（任务因依赖或错误阻塞）
+  - `task.failed`（任务执行失败）
+  - `step.failed`（关键步骤执行失败）
+  - `execution.failed`（执行活动崩溃或非正常终止）
+  - `decision.created`（需要用户介入的交互式决策单创建）
+  - `decision.timeout`（决策等待超时告警）
+- **同事务原子提交**：
+  在 `backend/db/uow.py` 的 `SqlAlchemyUnitOfWork.commit()` 内：
+  1. 在执行物理 `session.commit()` 前，遍历当前事务累积的 `uow._events`；
+  2. 若 `event.event_type` 命中白名单，构造 `NotificationOutboxModel` 记录（初始状态 `pending`，`attempt_count=0`，`max_attempts=5`，`next_retry_at=now`）并通过 `session.add(...)` 注册；
+  3. 执行 `session.commit()`，确保**业务实体数据、事件表记录与 Outbox 表记录在同一个数据库事务中原子提交**；
+  4. 提交成功后立即执行 `uow._events.clear()`；
+  5. 异常处理：若提交中途抛错，触发 `session.rollback()` 并同步清空 `_events`，确保绝不发生跨事务重复派生；多次调用 `commit()` 具备天然幂等性。
+
+#### 2.6.2 Dispatcher 两阶段事务架构与租约生命周期（修正 P53-01）
+彻底纠正单事务模式下写锁长期占用导致租约接管无法执行的逻辑矛盾，明确采用解耦的两阶段独立事务：
+
+```
+[阶段一：认领短事务 (Claim)]
+  BEGIN IMMEDIATE
+  ├─ 执行超限终态清理 (attempt >= 5 转 failed)
+  ├─ 认领 1 条就绪记录: pending / retry / processing租约过期
+  ├─ UPDATE: status='processing', locked_by=:worker_id, lease=now+30s, attempt_count=attempt_count+1
+  COMMIT (释放 SQLite 写锁，允许其他进程并发)
+     │
+     ▼ (记录 Claim 凭证: id, locked_by, claimed_attempt_count)
+[阶段二：派生写入与 CAS 回写独立事务 (Materialization & CAS Commit)]
+  BEGIN IMMEDIATE
+  ├─ 前置 Fencing 校验: 检查 id, status='processing', locked_by, attempt_count, lease未过期
+  │    (若校验失败说明已被接管，立即整体回滚退出)
+  ├─ 聚合查询与写入: 更新未读开放通知(10s内) 或 INSERT 新通知 (受 uq_notifications_open_agg 保护)
+  ├─ INSERT notification_events (受 event_seq_id UNIQUE 防重)
+  ├─ 批量生成 notification_deliveries:
+  │    按当前派生事务开始时的 is_active=1 设备订阅快照批量生成 (pending, attempt=0, max=4, next=now)
+  ├─ INSERT notification_changes (记录变更流水供 SSE 消费)
+  ├─ 后置 Fencing CAS 回写:
+  │    UPDATE notification_outbox SET status='processed', processed_at=:now, locked_by=NULL, lease=NULL
+  │    WHERE id=:id AND status='processing' AND locked_by=:worker_id AND attempt_count=:claimed_attempt_count;
+  ├─ 校验更新影响行数:
+  │    若影响行数 == 0 (锁被夺取): 强制整体 ROLLBACK 撤销所有派生写入！
+  │    若影响行数 == 1: COMMIT 提交！
+  (实施铁律：严禁在阶段一或阶段二的任何事务内发起网络外呼！)
+```
+
+#### 2.6.3 Fencing Token 等价性证明与零 DDL 约束保障（修正 P53-02）
+- **核心要求**：必须具备单调递增标量（Monotonically Increasing Scalar），防止由于 Worker 实例标识被复用导致旧执行者错误提交。
+- **现有字段等价性数学证明**：
+  1. 在 `notification_outbox` 表中，`attempt_count` 字段定义为 `INTEGER NOT NULL DEFAULT 0`；
+  2. 每次执行认领（无论首发认领、重试认领、还是租约到期接管），认领 SQL 必然执行 `attempt_count = attempt_count + 1`；
+  3. `attempt_count` 初始为 0，随后单调严格递增（1, 2, 3, 4, 5），且在整个生命周期中**永不回退**；
+  4. 阶段一认领时返回并记录 `claimed_attempt_count`；
+  5. 阶段二回写时执行 CAS 复合校验：
+     ```sql
+     WHERE id = :id 
+       AND status = 'processing'
+       AND locked_by = :dispatcher_id 
+       AND attempt_count = :claimed_attempt_count;
+     ```
+  6. **推导结论**：即使 Worker A 发生卡顿超时，Worker B 接管并复用了相同的实例标识 `locked_by`，由于接管必然导致 `attempt_count` 由 1 变 2，Worker A 恢复后以 `claimed_attempt_count=1` 尝试回写时，命中行数必然为 0，触发整体回滚。
+  - **工程结论**：`attempt_count` 原生完全等价于独立 `fencing_token` 字段的职责，**无需进行任何表结构修改与新增迁移**，100% 兑现零 DDL 变更。
+
+#### 2.6.4 Outbox 与 Delivery 超限终态收敛清理（修正 P53-03）
+认领 SQL 中的 `attempt_count < max_attempts` 会将超限任务排除在认领范围之外。为防止超限记录永久卡死在 `processing` 或 `retry`，在调度循环与 Worker 循环开头设置独立的终态收敛操作：
+1. **Outbox 终态收敛 SQL**：
+   ```sql
+   UPDATE notification_outbox
+   SET status = 'failed',
+       failed_at = :now,
+       last_error = COALESCE(last_error, 'Maximum attempts reached with expired lease'),
+       locked_by = NULL,
+       locked_at = NULL,
+       lease_expires_at = NULL,
+       updated_at = :now
+   WHERE (status = 'processing' AND lease_expires_at < :now AND attempt_count >= max_attempts)
+      OR (status = 'retry' AND attempt_count >= max_attempts);
+   ```
+2. **Delivery 终态收敛 SQL**：
+   ```sql
+   UPDATE notification_deliveries
+   SET status = 'failed',
+       failed_at = :now,
+       last_error = COALESCE(last_error, 'Delivery attempts exceeded max_attempts'),
+       locked_by = NULL,
+       locked_at = NULL,
+       lease_expires_at = NULL,
+       updated_at = :now
+   WHERE (status = 'processing' AND lease_expires_at < :now AND attempt_count >= max_attempts)
+      OR (status = 'retry' AND attempt_count >= max_attempts);
+   ```
+
+#### 2.6.5 Delivery Worker 完整状态机与 Attempt 计数语义（修正 P53-04）
+- **Attempt 计数精确语义**：`attempt_count` 严格定义为**“已发起的投递尝试次数”**。
+- **状态流转全景规范**：
+
+| 当前状态 | 触发条件 | 目标状态 | attempt_count 处理 | 锁与租约字段 | 错误与重试字段处理 | 业务语义说明 |
+| :--- | :--- | :--- | :---: | :--- | :--- | :--- |
+| **-** | Dispatcher 派生写入 | `pending` | 初始化为 `0` | `locked_by=NULL`, `lease=NULL` | `max_attempts=4`, `next_retry_at=now` | 新投递单就绪，等待 Worker 认领 |
+| `pending` / `retry` / 租约超时 | `next_retry_at <= now` 且 `attempt < max` | `processing` | **`+1`** | `locked_by=:worker`, `lease=now+30s` | 保持 `last_error` 供排查 | 原子认领并正式发起投递尝试 |
+| `processing` | 适配器报告投递成功（201） | `delivered` | 不变 | 清空锁与租约 | `delivered_at=now`, `last_error=NULL` | 终态：投递成功，更新订阅最后活跃时间 |
+| `processing` | 暂时性网络错误 / 5xx / 429 | `retry`（若 `attempt < max`） | 不变 | 清空锁与租约 | 写 `last_error`，`next_retry_at=now+退避秒数` | 可重试错误：退避等待下一次认领 |
+| `processing` | 尝试超限仍失败 | `failed`（若 `attempt >= max`） | 不变 | 清空锁与租约 | `failed_at=now`，写 `last_error` | 终态：重试耗尽熔断，不影响订阅可用性 |
+| `processing` | 网关报告 410（明确过期） | `gone` | 不变 | 清空锁与租约 | `failed_at=now`，同事务停用订阅（`is_active=0`） | 终态：订阅明确失效并停用 |
+| `processing` | 网关连续第 2 次 404 | `gone` | 不变 | 清空锁与租约 | `failed_at=now`，同事务停用订阅（`is_active=0`） | 终态：视同 410 停用订阅 |
+| `processing` | 网关第 1 次 404 | `retry` | 不变 | 清空锁与租约 | 记录 `last_http_status=404`，退避重试 | 疑似失效：留待下一次投递复核 |
+| `processing` | 租约超时且未达到最大次数 | `processing`（接管） | **`+1`** | `locked_by=:new_worker`, `lease=now+30s` | 记录接管日志 | 故障自愈：前次尝试判定失联，计入新尝试 |
+| `processing` | 租约超时且已达到最大次数 | `failed` | 不变 | 清空锁与租约 | `failed_at=now`, 记录超时超限错误 | 终态：防止崩溃实例留下的任务永久卡死 |
+
+- **退避公式**：$2 	imes 4^{	ext{attempt\_count}-1}$ 秒（第 1 次失败后等待 2s，第 2 次 8s，第 3 次 32s）。
+- **Phase 5.3 成功标准限定**：Phase 5.3 中 Worker 的“成功”严格指 **Mock/Stub 适配器模拟成功**，严禁伪装为真实 Web Push 送达成功。真实网络协议与 VAPID 签名属于 Phase 5.4。
 
 ### 2.7 Web Push 安全规范与设备身份边界（面向 Phase 5.4，5.2 不实现）
 
@@ -386,13 +508,22 @@ CHECK：`ck_notif_changes_type`（含 `purged`）。
 
 ## 四、测试规划（扩充至 39 个专项用例）
 
-### 4.1 事务边界（新增）
-1. Outbox 写入失败（注入异常）⇒ 业务实体、`events`、`notification_outbox` **整体回滚**，三表均无残留；
-2. Outbox 成功提交后，Dispatcher 派生处理抛异常 ⇒ 业务实体与 `events` 不变，outbox 进入 `retry`，核心业务可继续读写；
-3. Pending 初始赋值：`next_retry_at` 非空且 ≤ now，`attempt_count=0`；
-4. Retry 超限转 `failed`，清锁，保留 `failed_at/last_error`；
-5. Processing 租约超时且超限转 `failed`；
-6. Fencing：被接管后旧 Dispatcher 回写影响 0 行并整体回滚。
+### 4.1 Phase 5.3 调度引擎与投递工作单元专项测试（统一编号 1–15，修正 P53-07）
+1. **用例 1（Outbox 写入同事务原子性）**：业务保存与 Outbox 写入在同一个 UoW 事务内；业务抛异常回滚 ⇒ 业务实体、`events` 与 `notification_outbox` 整体回滚零残留；业务成功提交 ⇒ 三者必然同时持久化；
+2. **用例 2（Dispatcher 阶段二派生写入崩溃回滚）**：在 Dispatcher 事务执行更新 `processed` 前注入崩溃 ⇒ `notifications`、`notification_events`、`notification_deliveries`、`notification_changes` 全部原子回滚；Outbox 状态保持未处理，重试后通知不重复；
+3. **用例 3（Dispatcher 租约超时接管）**：Dispatcher A 认领任务后模拟失联超时；Dispatcher B 成功通过超时接管逻辑认领该任务，Fencing 凭证（`attempt_count`）单调自增为 2；
+4. **用例 4（Dispatcher Fencing 回写保护）**：Dispatcher A 超时被 Dispatcher B 接管后，Dispatcher A 恢复并尝试回写 `processed`，由于 `attempt_count` 不匹配命中影响行数为 0，触发整体事务强制回滚，派生表零写入；
+5. **用例 5（Outbox 达到最大尝试次数终态熔断）**：构造 `attempt_count >= max_attempts` 且租约过期的记录，执行终态清理 SQL，断言记录自动流转为 `failed`，清空 `locked_by` 与租约，记录 `failed_at` 与 `last_error`，确认任务不卡死；
+6. **用例 6（Delivery Worker 原子认领与状态机流转）**：Worker 从 `pending` 状态原子认领投递单，验证 `status` 转为 `processing`、`attempt_count` 从 0 累加至 1、设置租约 30s，由 Stub 模拟成功后流转为 `delivered` 并清锁；
+7. **用例 7（Delivery Worker 租约超时接管）**：Worker A 认领投递单后失联超时，Worker B 成功认领接管，验证 `attempt_count` 再次累加为 2，租约更新为 Worker B；
+8. **用例 8（Delivery Worker 达到最大尝试次数终态熔断）**：`attempt_count >= 4` 且租约过期的 delivery 记录，执行清理后自动流转为 `failed` 终态，清空锁字段与租约，保留错误日志；
+9. **用例 9（Worker 认领后立即崩溃模拟）**：Worker 在认领成功但在网络发送前进程强制终止，验证投递单在租约到期后能被后续 Worker 顺畅接管自愈，不丢消息；
+10. **用例 10（相同 Worker 实例标识复用测试）**：Worker A 超时被相同/复用标识 `locked_by` 的实例接管，验证基于 `attempt_count` 单调递增的 Fencing 机制依然能精准拦截旧任务的回写提交；
+11. **用例 11（重复 Dispatcher 处理同一事件幂等性）**：构造并发重复派生相同事件，验证 `notification_events.event_seq_id UNIQUE` 约束能有效拦截并触发安全回滚，不生成多余的通知实体与投递单；
+12. **用例 12（订阅在 Dispatcher 处理期间变化的快照一致性）**：在 Dispatcher 派生事务开始前存在 2 个活跃订阅，处理中途外部并发插入第 3 个订阅；验证投递单严格基于派生事务启动时的订阅快照生成 2 条 delivery，新订阅不补发历史通知；
+13. **用例 13（SQLITE_BUSY 冲突注入与有限抖动重试）**：在测试连接中模拟排他写锁争用，验证 Dispatcher 和 Worker 能够执行带随机抖动的有限 3 次重试，且每次重试均从完整事务起点重新开始，超限后记录 error 日志安全退出；
+14. **用例 14（派生写入阶段任意子表插入失败的整体回滚）**：在阶段二事务中，模拟插入 `notification_changes` 时抛出系统故障，断言 `notifications`、`notification_events`、`notification_deliveries` 全部连带回滚，Outbox 不被标记为 `processed`；
+15. **用例 15（10 秒聚合窗口全场景边界测试）**：使用多个真实独立数据库连接并发插入，验证以首条事件时间为窗口起点、10s 超时截止边界、满 20 条上限关闭、用户已读关闭、迟到事件强制新开独立窗口、以及部分唯一索引 `uq_notifications_open_agg` 的物理排他性。
 
 ### 4.2 SQLite 迁移（新增/强化，均在真实 SQLite 文件上执行）
 7. `foreign_keys=ON` 下完成重建迁移，迁移后 `PRAGMA foreign_keys=1`；
