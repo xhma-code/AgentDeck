@@ -363,7 +363,7 @@ def upgrade() -> None:
         sa.Column("exit_code", sa.Integer(), nullable=True, comment="进程或调用退出码（可空）"),
         sa.Column("error_summary", sa.Text(), nullable=False, server_default="", comment="失败或异常高层诊断摘要（不含敏感凭证）"),
         sa.Column("model_endpoint_descriptor_json", sa.Text(), nullable=True, comment="可选非敏感模型环境说明快照（JSON）"),
-        sa.Column("started_at", sa.String(length=40), nullable=False, comment="本次尝试开始时间（UTC ISO 8601）"),
+        sa.Column("started_at", sa.String(length=40), nullable=True, comment="本次尝试开始时间（UTC ISO 8601，排队阶段为 NULL，正式启动赋予）"),
         sa.Column("ended_at", sa.String(length=40), nullable=True, comment="本次尝试结束时间（UTC ISO 8601，可空）"),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], name="fk_execution_attempts_project_id_projects", ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["execution_id"], ["executions.id"], name="fk_execution_attempts_execution_id_executions", ondelete="CASCADE"),

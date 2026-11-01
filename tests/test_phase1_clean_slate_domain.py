@@ -145,21 +145,9 @@ def test_alembic_21_canonical_tables_and_chinese_comments(tmp_path: Path) -> Non
 
 
 def test_domain_invariants_revisions_and_interactive_decisions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path
 ) -> None:
     """验证核心领域不变量、追加式修订传播、三层执行模型与交互式 Decision 超时安全/幂等机制。"""
-    # 隔离说明：Phase 4 (commit 79b78ab) 在未调整 DDL NOT NULL 的前提下将 attempt 状态设为 QUEUED 且 started_at=None，
-    # 存在业务层历史遗留缺陷。根据 Phase 5.2 架构审查指令，数据库阶段不直接修改 execution_service.py 业务代码，
-    # 本测试在测试运行时注入非空兜底，确保既有业务代码保持原状、业务修复单独提交。
-    orig_attempt_init = ExecutionAttemptModel.__init__
-
-    def _safe_attempt_init(self, *args, **kwargs):
-        if "started_at" in kwargs and kwargs["started_at"] is None:
-            kwargs["started_at"] = "2026-11-01T00:00:00Z"
-        orig_attempt_init(self, *args, **kwargs)
-
-    monkeypatch.setattr(ExecutionAttemptModel, "__init__", _safe_attempt_init)
-
     db_path = tmp_path / "domain_invariants.db"
     command.upgrade(_make_alembic_config(db_path), "head")
 
@@ -297,7 +285,11 @@ def test_domain_invariants_revisions_and_interactive_decisions(
             runtime_instance_id=rt_inst.id,
         )
         assert attempt1.attempt_no == 1
+        assert attempt1.status == "queued"
+        assert attempt1.started_at is None, "QUEUED 状态下 started_at 必须原生为 NULL"
         assert attempt2.attempt_no == 2
+        assert attempt2.status == "running"
+        assert attempt2.started_at is not None, "RUNNING 状态下 started_at 必须赋予真实启动时间"
         assert len(exec_svc.list_execution_attempts(execution.id)) == 2
 
         # 不变量 6：交互式 Decision —— 高风险决策严禁启用 auto_submit_recommended

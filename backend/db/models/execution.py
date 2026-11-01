@@ -146,8 +146,8 @@ class ExecutionAttemptModel(Base):
     model_endpoint_descriptor_json: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="可选非敏感模型环境说明快照（JSON）"
     )
-    started_at: Mapped[str] = mapped_column(
-        String(40), nullable=False, comment="本次尝试开始时间（UTC ISO 8601）"
+    started_at: Mapped[Optional[str]] = mapped_column(
+        String(40), nullable=True, comment="本次尝试开始时间（UTC ISO 8601，排队阶段为 NULL，正式启动赋予）"
     )
     ended_at: Mapped[Optional[str]] = mapped_column(
         String(40), nullable=True, comment="本次尝试结束时间（UTC ISO 8601，可空）"

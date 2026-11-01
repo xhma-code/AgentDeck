@@ -477,7 +477,7 @@ CHECK：`ck_notif_changes_type`（含 `purged`）。
 
 | 缺陷编号 | 归属阶段 | 模块与文件 | 严重等级 | 状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| **DEFECT-EXEC-001** | Phase 4 整改 (commit 79b78ab) | `backend/application/execution_service.py` & `execution_attempts` DDL | P1 | 已登记，移出 5.2，待独立修复 |
+| **DEFECT-EXEC-001** | Phase 4 整改 (commit 79b78ab) | `backend/application/execution_service.py` & `execution_attempts` DDL | P1 | **已修复闭环（方案 A 落地）** |
 
 ### 1. 缺陷根因追溯
 - 在 Clean-Slate Phase 1（commit `92ae217`）时，`ExecutionAttemptModel` 创建 Attempt 的状态为 `RUNNING`，字段赋值为 `started_at=now`，与 DDL 约束 `nullable=False` 完全匹配。
@@ -487,7 +487,9 @@ CHECK：`ck_notif_changes_type`（含 `purged`）。
 - Phase 5.2 严格遵守单一职责边界，不越界修改业务服务代码，已将对 `execution_service.py` 的修改彻底撤出 Phase 5.2 范围。
 - 在既有回归测试（`test_phase1_clean_slate_domain.py`）中，仅在测试运行时临时注入非空安全兜底，绝不伪装为生产问题已修复。
 
-### 3. 正式修复计划（进入 Phase 5.3 业务层改造时一并解决）
-- **推荐方案（方案 A）**：将 `execution_attempts.started_at` 字段约束放宽为 `nullable=True`（通过独立小版本迁移脚本或业务层调整），排队中为 NULL，在实例被调度、真正启动运行（`start_new_attempt` 或转为 `RUNNING`）时正式赋予 UTC 时间戳；
-- **备选方案（方案 B）**：保持 NOT NULL，将 `started_at` 重新解释为尝试记录的创建时间，或保持原创建赋值 `started_at=now`。
-- 本缺陷将在 Phase 5.3 启动前单独提交补丁或在 Phase 5.3 业务服务接入阶段作为前置任务闭环解决。
+### 3. 修复落地详情（Phase 5.3 前置修复专项完成）
+- **采纳方案 A 闭环**：
+  1. ORM 模型（`backend/db/models/execution.py`）：`started_at: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, ...)` 正式支持为可空；
+  2. 迁移 DDL（`20261031_0001_phase1_core_foundation.py`）：`execution_attempts.started_at` 字段调整为 `nullable=True`；
+  3. 业务逻辑（`backend/application/execution_service.py`）：排队 `QUEUED` 时原生保持 `started_at=None`，在调度运行推进到 `RUNNING` 时正式写入启动时间戳；
+  4. 测试与验证：彻底移除 `test_phase1_clean_slate_domain.py` 内部的临时 monkeypatch 注入，原生断言验证 `QUEUED` 状态下 `started_at is None` 及后续推进运行赋予时间戳，全量回归测试 100% 通过。
