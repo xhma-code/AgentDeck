@@ -33,9 +33,10 @@ from sqlalchemy.exc import IntegrityError
 from alembic import command
 from alembic.config import Config
 
+from backend.db.backup import create_sqlite_online_backup, restore_sqlite_backup
 from backend.db.base import collect_table_column_comments, sync_comments_to_connection, utc_now_iso
 from backend.db.engine import create_sqlite_engine, create_session_factory, inspect_sqlite_pragmas
-from backend.db.migration import get_alembic_config, apply_database_migrations
+from backend.db.migration import get_alembic_config, apply_database_migrations, backup_database_file
 from backend.db.models import ALL_CANONICAL_TABLE_NAMES
 from backend.db.models.notification import (
     NotificationChangeModel,
@@ -112,97 +113,172 @@ def test_use_case_08_external_connection_migration(temp_db_path: Path) -> None:
     raw_engine.dispose()
 
 
-def test_use_case_09_migration_failure_rollback_and_backup(temp_db_path: Path) -> None:
-    """用例 9：验证迁移失败时原库不受破坏，且备份文件有效可恢复。"""
+def test_use_case_09_migration_failure_rollback_and_backup(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """用例 9：验证迁移中途失败原子保护、在线热备有效性及灾备完整还原。"""
     cfg = _build_alembic_cfg(temp_db_path)
-    # 先初始化到基线 Phase 1
+    # 1. 初始化到基线 Phase 1 并建立存量业务数据
     command.upgrade(cfg, "20261031_0001")
 
-    # 创建一条合法的设备与订阅
     engine = create_sqlite_engine(temp_db_path)
     with engine.begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO device_sessions (device_id, device_name, auth_token_hash, created_at, last_active_at, is_revoked) "
-                "VALUES ('dev-1', 'Test Device', 'hash1', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', 0)"
+                "VALUES ('dev-pre-1', 'Desktop Workstation', 'hash1', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', 0)"
             )
         )
         conn.execute(
             text(
-                "INSERT INTO push_subscriptions (subscription_id, device_id, endpoint, p256dh_key, auth_key, created_at, is_active) "
-                "VALUES ('sub-1', 'dev-1', 'https://fcm.googleapis.com/test', 'p256', 'auth', '2026-11-01T00:00:00Z', 1)"
-            )
-        )
-        # 插入孤儿订阅触发 Phase 5 预检阻断
-        conn.execute(
-            text(
-                "INSERT INTO push_subscriptions (subscription_id, device_id, endpoint, p256dh_key, auth_key, created_at, is_active) "
-                "VALUES ('sub-orphan', 'dev-non-existent', 'https://fcm.googleapis.com/orphan', 'p256', 'auth', '2026-11-01T00:00:00Z', 1)"
+                "INSERT INTO push_subscriptions (subscription_id, device_id, endpoint, p256dh_key, auth_key, user_agent, created_at, is_active) "
+                "VALUES ('sub-pre-1', 'dev-pre-1', 'https://fcm.googleapis.com/test1', 'k1', 'a1', 'AgentBrowser/1.0', '2026-11-01T00:00:00Z', 1)"
             )
         )
     engine.dispose()
 
-    # 执行升级，预期因预检失败而终止抛错
-    with pytest.raises(Exception) as excinfo:
-        apply_database_migrations(temp_db_path, "head", create_backup=True)
-    assert "孤儿订阅" in str(excinfo.value)
+    # 2. 验证基于 SQLite Backup API 的热备功能与备份文件有效性
+    backup_file = backup_database_file(temp_db_path)
+    assert backup_file is not None and backup_file.exists(), "必须成功生成在线备份文件"
 
-    # 验证原数据库文件依然完好，且备份文件已生成
-    backups = list(temp_db_path.parent.glob(f"{temp_db_path.name}.bak.*"))
-    assert len(backups) >= 1, "必须生成时间戳数据库备份文件"
+    # 检查备份文件能否独立打开并通过 PRAGMA integrity_check
+    chk_conn = sqlite3.connect(f"file:{backup_file.as_posix()}?mode=ro", uri=True)
+    try:
+        integrity_res = chk_conn.execute("PRAGMA integrity_check;").fetchone()
+        assert integrity_res and integrity_res[0].lower() == "ok", "备份文件 integrity_check 必须通过"
 
-    # 清理孤儿数据后再次升级能够顺利通过
-    engine = create_sqlite_engine(temp_db_path)
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM push_subscriptions WHERE subscription_id = 'sub-orphan'"))
-    engine.dispose()
+        # 检查备份文件数据与迁移前原数据库 100% 一致
+        c_sub = chk_conn.execute("SELECT COUNT(*) FROM push_subscriptions;").fetchone()
+        assert c_sub and c_sub[0] == 1, "备份文件数据行数必须与原库一致"
+    finally:
+        chk_conn.close()
 
-    apply_database_migrations(temp_db_path, "head", create_backup=False)
+    # 3. 模拟迁移执行中途发生严重故障（例如创建第 23 张表时抛出非预期异常）
+    import importlib
+    mig_mod = importlib.import_module("backend.migrations.versions.20261101_0002_phase5_notification_foundation")
+
+    orig_create_table = mig_mod.op.create_table
+
+    def _failing_create_table(name, *args, **kwargs):
+        if name == "notifications":
+            raise RuntimeError("模拟迁移执行到一半时发生不可恢复系统异常")
+        return orig_create_table(name, *args, **kwargs)
+
+    monkeypatch.setattr(mig_mod.op, "create_table", _failing_create_table)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        command.upgrade(cfg, "head")
+    assert "模拟迁移执行到一半" in str(exc_info.value)
+
+    # 4. 模拟使用预先创建的备份文件执行灾难恢复
+    restore_sqlite_backup(backup_file, temp_db_path)
+
+    # 5. 验证灾难恢复后原数据库完整性与基线结构
+    restored_engine = create_sqlite_engine(temp_db_path)
+    with restored_engine.connect() as conn:
+        # 验证完整性检查与外键检查
+        integ = conn.execute(text("PRAGMA integrity_check;")).scalar()
+        assert str(integ).lower() == "ok", "恢复后的数据库 integrity_check 必须为 ok"
+
+        fk_issues = conn.execute(text("PRAGMA foreign_key_check;")).fetchall()
+        assert len(fk_issues) == 0, f"恢复后的数据库外键检查必须无错误: {fk_issues}"
+
+        # 验证恢复后表数量保持为 Phase 1 基线的 21 张表
+        tables = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version';")
+        ).scalars().all()
+        assert len(tables) == 21, f"恢复后表总数必须恢复为 21 张，实际: {len(tables)}"
+
+        # 验证存量业务数据 100% 完整保留
+        sub_rows = conn.execute(
+            text("SELECT subscription_id, device_id, endpoint FROM push_subscriptions;")
+        ).mappings().all()
+        assert len(sub_rows) == 1
+        assert sub_rows[0]["subscription_id"] == "sub-pre-1"
+        assert sub_rows[0]["device_id"] == "dev-pre-1"
+    restored_engine.dispose()
 
 
 def test_use_case_10_migration_data_integrity_and_fingerprint_backfill(temp_db_path: Path) -> None:
-    """用例 10：验证存量 push_subscriptions 数据 9 列逐行无损保留，且指纹回填为 legacy_unverified。"""
+    """用例 10：验证存量 push_subscriptions 数据批量（多样化特征）9 列逐行无损保留，且指纹回填为 legacy_unverified。"""
     cfg = _build_alembic_cfg(temp_db_path)
     command.upgrade(cfg, "20261031_0001")
 
-    # 插入存量记录
+    # 1. 插入多条具有全面代表性的存量设备与订阅记录
+    devices_data = [
+        ("dev-apple-1", "iPhone 15 Pro", "hash-apple", "2026-11-01T00:00:00Z", 0),
+        ("dev-android-1", "Pixel 9 Pro", "hash-android", "2026-11-01T00:00:00Z", 0),
+        ("dev-mac-1", "MacBook Pro M3", "hash-mac", "2026-11-01T00:00:00Z", 0),
+        ("dev-win-1", "Windows 11 Workstation", "hash-win", "2026-11-01T00:00:00Z", 0),
+    ]
+    # 9 列：subscription_id, device_id, endpoint, p256dh_key, auth_key, user_agent, created_at, last_pushed_at, is_active
+    subscriptions_seed = [
+        ("sub-1", "dev-apple-1", "https://push.apple.com/send/token1", "p256_k1", "auth_k1", "Mozilla/5.0 (iPhone; CPU OS 17_0)", "2026-11-01T00:01:00Z", "2026-11-01T00:05:00Z", 1),
+        ("sub-2", "dev-apple-1", "https://push.apple.com/send/token2", "p256_k2", "auth_k2", "Mozilla/5.0 (iPad; CPU OS 17_0)", "2026-11-01T00:02:00Z", None, 1),
+        ("sub-3", "dev-android-1", "https://fcm.googleapis.com/fcm/send/token3", "p256_k3", "auth_k3", "Mozilla/5.0 (Linux; Android 14)", "2026-11-01T00:03:00Z", "2026-11-01T00:06:00Z", 1),
+        ("sub-4", "dev-android-1", "https://fcm.googleapis.com/fcm/send/token4", "p256_k4", "auth_k4", None, "2026-11-01T00:04:00Z", None, 0),
+        ("sub-5", "dev-mac-1", "https://updates.push.services.mozilla.com/wpush/v2/token5", "p256_k5", "auth_k5", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", "2026-11-01T00:05:00Z", "2026-11-01T00:07:00Z", 1),
+        ("sub-6", "dev-win-1", "https://wns2-sn1.notify.windows.com/w/?token6", "p256_k6", "auth_k6", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "2026-11-01T00:06:00Z", None, 0),
+    ]
+
     engine = create_sqlite_engine(temp_db_path)
     with engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO device_sessions (device_id, device_name, auth_token_hash, created_at, last_active_at, is_revoked) "
-                "VALUES ('dev-apple-1', 'iPhone 15 Pro', 'tok-hash-1', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', 0)"
+        for d in devices_data:
+            conn.execute(
+                text("INSERT INTO device_sessions (device_id, device_name, auth_token_hash, created_at, last_active_at, is_revoked) VALUES (:did, :dname, :hash, :cat, :lat, :rev)"),
+                {"did": d[0], "dname": d[1], "hash": d[2], "cat": d[3], "lat": d[3], "rev": d[4]}
             )
-        )
-        conn.execute(
-            text(
-                "INSERT INTO push_subscriptions "
-                "(subscription_id, device_id, endpoint, p256dh_key, auth_key, user_agent, created_at, last_pushed_at, is_active) "
-                "VALUES ('sub-orig-1', 'dev-apple-1', 'https://push.apple.com/send/token1', 'key_p256_b64', 'auth_b64', "
-                "'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)', '2026-11-01T00:00:00Z', '2026-11-01T00:05:00Z', 1)"
+        for s in subscriptions_seed:
+            conn.execute(
+                text(
+                    "INSERT INTO push_subscriptions (subscription_id, device_id, endpoint, p256dh_key, auth_key, user_agent, created_at, last_pushed_at, is_active) "
+                    "VALUES (:sid, :did, :ep, :p256, :auth, :ua, :cat, :lpa, :act)"
+                ),
+                {"sid": s[0], "did": s[1], "ep": s[2], "p256": s[3], "auth": s[4], "ua": s[5], "cat": s[6], "lpa": s[7], "act": s[8]}
             )
-        )
+
+        # 2. 迁移前记录全量快照与总量
+        old_cols = ["subscription_id", "device_id", "endpoint", "p256dh_key", "auth_key", "user_agent", "created_at", "last_pushed_at", "is_active"]
+        pre_records = conn.execute(
+            text(f"SELECT {', '.join(old_cols)} FROM push_subscriptions ORDER BY subscription_id ASC;")
+        ).mappings().all()
+        pre_count = len(pre_records)
+        assert pre_count == len(subscriptions_seed)
+        pre_map = {r["subscription_id"]: dict(r) for r in pre_records}
     engine.dispose()
 
-    # 执行升级迁移
+    # 3. 执行升级迁移至 20261101_0002（此过程触发迁移脚本内建的逐行校验）
     command.upgrade(cfg, "20261101_0002")
 
+    # 4. 迁移后深度逐行核验
     engine = create_sqlite_engine(temp_db_path)
     with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT subscription_id, device_id, endpoint, p256dh_key, auth_key, user_agent, created_at, last_pushed_at, is_active, vapid_key_fingerprint FROM push_subscriptions WHERE subscription_id = 'sub-orig-1'")
-        ).mappings().one()
+        post_records = conn.execute(
+            text(f"SELECT {', '.join(old_cols)}, vapid_key_fingerprint FROM push_subscriptions ORDER BY subscription_id ASC;")
+        ).mappings().all()
+        post_count = len(post_records)
 
-        assert row["subscription_id"] == "sub-orig-1"
-        assert row["device_id"] == "dev-apple-1"
-        assert row["endpoint"] == "https://push.apple.com/send/token1"
-        assert row["p256dh_key"] == "key_p256_b64"
-        assert row["auth_key"] == "auth_b64"
-        assert "iPhone" in row["user_agent"]
-        assert row["created_at"] == "2026-11-01T00:00:00Z"
-        assert row["last_pushed_at"] == "2026-11-01T00:05:00Z"
-        assert row["is_active"] == 1
-        assert row["vapid_key_fingerprint"] == "legacy_unverified", "存量记录指纹必须默认回填为 legacy_unverified"
+        # 对比迁移前后数据总量绝对一致
+        assert post_count == pre_count, f"迁移前后总行数必须绝对一致: 迁移前={pre_count}, 迁移后={post_count}"
+
+        # 逐行比对旧字段值并核对新增字段回填值
+        for new_row in post_records:
+            sid = new_row["subscription_id"]
+            assert sid in pre_map, f"迁移后未找到存量订阅标识: {sid}"
+            old_row = pre_map[sid]
+
+            # 9 列旧字段逐一核对
+            for col in old_cols:
+                assert new_row[col] == old_row[col], f"订阅 {sid} 的字段 {col} 迁移后发生不匹配: 新值={new_row[col]!r}, 旧值={old_row[col]!r}"
+
+            # 单独核验新增字段的回填值必须为 legacy_unverified
+            assert new_row["vapid_key_fingerprint"] == "legacy_unverified", f"订阅 {sid} 的指纹必须回填为 legacy_unverified"
+
+        # 验证完整性与外键双重检查
+        integ = conn.execute(text("PRAGMA integrity_check;")).scalar()
+        assert str(integ).lower() == "ok"
+        fk_errs = conn.execute(text("PRAGMA foreign_key_check;")).fetchall()
+        assert len(fk_errs) == 0
     engine.dispose()
 
 
@@ -374,8 +450,12 @@ def test_use_case_14_composite_foreign_key_and_cascade(temp_db_path: Path) -> No
     engine.dispose()
 
 
-def test_use_case_33_partial_unique_index_open_window(temp_db_path: Path) -> None:
-    """用例 33：部分唯一索引 uq_notifications_open_agg 并发与开放窗口排他性测试。"""
+def test_use_case_33_partial_unique_index_constraint_verification(temp_db_path: Path) -> None:
+    """用例 33：部分唯一索引 uq_notifications_open_agg 约束测试（顺序排他性与条件约束验证）。
+    
+    【说明】本测试严格验证数据库引擎层面的部分唯一索引条件约束有效性（开放窗口唯一性与关闭后允许多条）。
+    多进程/多连接并发竞争与 CAS 事务防冲突测试留待 Phase 5.3 Dispatcher 调度引擎落地。
+    """
     cfg = _build_alembic_cfg(temp_db_path)
     command.upgrade(cfg, "head")
 
@@ -486,7 +566,14 @@ def test_use_case_38_ck_notifications_link_validation(temp_db_path: Path) -> Non
 
 
 def test_use_case_39_project_delete_cascade_and_purged_event_retention(temp_db_path: Path) -> None:
-    """用例 39：项目删除级联清除与 purged 变更记录保留测试，以及 404 遇网络错误重置逻辑。"""
+    """用例 39：项目删除级联清除与全局 purged 变更记录长效保留核验。
+    
+    【验收细节 1 落实】
+    严格区分级联清理与 purged 保留记录：
+    - 项目原有的 notification_changes 记录随项目删除而级联清理；
+    - 项目删除事务中新写入的 project_id=NULL、change_type='purged' 记录必须独立长效保留，
+      不因级联删除而丢失，供全端离线游标与重连客户端感知项目清理并触发 resync。
+    """
     cfg = _build_alembic_cfg(temp_db_path)
     command.upgrade(cfg, "head")
 
@@ -530,19 +617,34 @@ def test_use_case_39_project_delete_cascade_and_purged_event_retention(temp_db_p
         p_change_count = conn.execute(text("SELECT COUNT(*) FROM notification_changes WHERE project_id = 'p-del'")).scalar()
         assert p_change_count == 0, "关联该项目的旧 notification_changes 必须被级联删除"
 
-        # 新写入的 project_id IS NULL 且 change_type = 'purged' 的记录必须保留
+        # 新写入的 project_id IS NULL 且 change_type = 'purged' 的记录必须保留（不得断言表为空）
         purged_records = conn.execute(
             text("SELECT change_seq, project_id, change_type, payload_json FROM notification_changes WHERE change_type = 'purged'")
         ).mappings().all()
         assert len(purged_records) == 1, "全局 purged 记录必须完好保留"
         assert purged_records[0]["project_id"] is None
         assert "p-del" in purged_records[0]["payload_json"]
+    engine.dispose()
 
-    # 落实验收细节 2：测试 404 遇网络错误时重置连续 404 判定
+
+def test_delivery_last_http_status_reset_storage_capability(temp_db_path: Path) -> None:
+    """验证投递记录 last_http_status 字段存储与状态清空能力（底层存储能力验证）。
+    
+    【说明】本测试仅验证 notification_deliveries 具备在底层存储中显式清空 last_http_status 为 NULL 的持久化能力，
+    为遇到网络异常时重置连续 404 判定提供数据模型基础。
+    Delivery Worker 真实的重试退避与 404 连续性业务状态机留待 Phase 5.4 落地。
+    """
+    cfg = _build_alembic_cfg(temp_db_path)
+    command.upgrade(cfg, "head")
+
+    engine = create_sqlite_engine(temp_db_path)
     with engine.begin() as conn:
+        # 建立测试设备与订阅
+        conn.execute(text("INSERT INTO device_sessions (device_id, device_name, auth_token_hash, created_at, last_active_at, is_revoked) VALUES ('d-test', 'Phone', 'h1', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', 0)"))
+        conn.execute(text("INSERT INTO push_subscriptions (subscription_id, device_id, endpoint, p256dh_key, auth_key, created_at, is_active, vapid_key_fingerprint) VALUES ('sub-test', 'd-test', 'https://fcm/t', 'k1', 'a1', '2026-11-01T00:00:00Z', 1, 'fp')"))
         # 建立测试通知与 delivery
         conn.execute(text("INSERT INTO notifications (id, category, priority, title, body, link_url, window_started_at, is_window_open, is_read, created_at, updated_at) VALUES ('n-404', 'system_alert', 'normal', 'Title', 'Body', '/tasks/1', '2026-11-01T00:00:00Z', 0, 0, '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z')"))
-        conn.execute(text("INSERT INTO notification_deliveries (id, notification_id, subscription_id, device_id, status, next_retry_at, last_http_status, created_at, updated_at) VALUES ('deliv-404', 'n-404', 'sub-del', 'd-del', 'retry', '2026-11-01T00:00:00Z', 404, '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z')"))
+        conn.execute(text("INSERT INTO notification_deliveries (id, notification_id, subscription_id, device_id, status, next_retry_at, last_http_status, created_at, updated_at) VALUES ('deliv-404', 'n-404', 'sub-test', 'd-test', 'retry', '2026-11-01T00:00:00Z', 404, '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z')"))
 
         # 模拟第 2 次尝试发生网络超时或断网（无 HTTP 状态码），回写时将 last_http_status 明确重置为 NULL
         conn.execute(

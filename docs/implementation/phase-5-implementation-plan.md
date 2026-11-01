@@ -1,12 +1,13 @@
-# AgentDeck Phase 5：Web Push 与桌面通知中心实施计划（第七轮架构定稿版）
+# AgentDeck Phase 5：Web Push 与桌面通知中心实施计划（第八轮最终批准版）
 
-> **文档状态**：第六轮修订（修复 4 项 P1 + 1 项迁移预检 + 2 项 P2 落实），仍处于计划编制阶段，严禁编写业务代码、ORM 模型、Alembic 迁移脚本、前端代码，严禁修改数据库、执行迁移。  
-> **基线对齐**：AgentDeck v1.3.0、Clean-Slate 21 张规范表、Phase 1–4 已验证基座。  
-> **本轮核查依据（只读）**：`backend/migrations/env.py`、`backend/migrations/versions/20261031_0001_phase1_core_foundation.py`、`backend/db/migration.py`、`backend/db/uow.py`、`backend/db/engine.py`、`backend/db/models/system.py`。
+> **文档状态**：第八轮最终批准版（Phase 5.2 实施与验收基准）。  
+> **实施授权**：用户已正式批准 Phase 5.2 数据模型与数据库迁移脚本编写；Phase 5.3–5.6 业务与前端代码暂缓，严格保持实施边界。  
+> **基线对齐**：AgentDeck v1.3.0、Clean-Slate 26 张规范表（新增 5 表）、Phase 1–4 已验证基座。  
+> **本轮核查依据（真实执行）**：`backend/migrations/env.py`、`backend/migrations/versions/20261101_0002_phase5_notification_foundation.py`、`backend/db/migration.py`、`backend/db/backup.py`、`backend/db/models/notification.py`、`backend/db/models/system.py`。
 
 ---
 
-## 零、第七轮修订说明（在第六轮基础上，仅小范围补充）
+## 零、第八轮最终定稿修订说明（实施基准）
 
 | 项 | 修订 |
 | :--- | :--- |
@@ -14,7 +15,7 @@
 | 2 | 新增 2.6：Dispatcher 派生写入与 processed 同事务；Delivery Worker 完整状态机、重试与 Fencing |
 | 3 | 新增 2.7：SSRF 完整约束与设备身份/订阅归属规范（5.4 实施） |
 | 4 | 第三章补齐 5 张新表完整数据字典；新增聚合部分唯一索引 `uq_notifications_open_agg` |
-| 5 | 测试 8 明确为 env.py 外部连接分支覆盖，不替代生产路径；测试扩至 37 项 |
+| 5 | 测试 8 明确为 env.py 外部连接分支覆盖，不替代生产路径；整体测试规划扩充至 39 项专项体系 |
 
 ### 第八轮修订（仅 4 项）
 1. 404 统计范围明确为同一 delivery 的连续 HTTP 尝试（2.3、2.6、3.4）；2. 项目删除统一为 CASCADE，新增 `purged` 变更类型（3.2、3.5）；3. `link_url` CHECK 加强（3.2）；4. 测试 33、36 并新增 38、39 纳入 5.2 验收，均要求真实 SQLite 文件。
@@ -428,9 +429,11 @@ CHECK：`ck_notif_changes_type`（含 `purged`）。
 36. 数据字典一致性：ORM 元数据、Alembic 迁移结果、`table_column_comments` 三者对 5 张新表的列、类型、NULL、默认值、CHECK、索引、外键一致，注释覆盖率 100%；
 37. `notification_changes` 保留与游标：清理后过旧游标得 `resync_required`；`change_seq` 与提交顺序一致；
 
-### 4.6 第八轮新增（属于 5.2 验收）
+### 4.6 第八轮新增与 5.2 专项验收细节落地
 38. `ck_notifications_link`：拒绝 `https://x`、`//evil.example.com/p`、含 `\`、NUL/TAB/CR/LF 的值；接受 `/tasks/1?decision_id=2`；真实 SQLite 文件上验证；
-39. 项目删除级联：删除项目后其 `notifications`、`notification_events`、`notification_deliveries`、`notification_changes` 全部清除，`project_id` 为 NULL 的全局通知保留；`purged` 为合法 `change_type`。
+39. 项目删除级联与 purged 保留：删除项目后其关联的 `notifications`、`notification_events`、`notification_deliveries` 及该项目原有的 `notification_changes` 全部级联清除；但在同一事务中写入的 `project_id=NULL`、`change_type='purged'` 墓碑记录必须独立长效保留，断言严禁判定变更流表为空；
+40. 投递记录 HTTP 状态重置存储能力（底层存储能力）：验证底层存储支持显式清空 `last_http_status` 为 NULL（模拟第 1 次 404 → 第 2 次网络超时/断网清空状态码 → 避免第 3 次 404 被误判为连续两次 404），Delivery Worker 实际外呼业务逻辑留待 5.4；
+41. （用例 33 说明修正）：用例 33 明确为部分唯一索引 `uq_notifications_open_agg` 顺序排他与条件约束验证；多连接多进程并发竞争测试明确留待 Phase 5.3 Dispatcher 落地。
 
 
 ---
@@ -438,7 +441,7 @@ CHECK：`ck_notif_changes_type`（含 `purged`）。
 ## 五、WBS
 
 - **5.1** 现有设施核查（已完成）。
-- **5.2** 数据模型与迁移（待批准）：5 张新表 ORM；`push_subscriptions` 扩充；Alembic（预检 + batch 重建 + 新表，推荐拆为 revision A/B）；`table_column_comments` 注册；**验收测试：7–14、33、36、38、39，全部必须在真实 SQLite 文件上执行**（部分唯一索引、表达式索引、CHECK、复合外键、batch 重建均不得仅靠 ORM 元数据检查）。**不触碰 `uow.py`、Dispatcher、Worker、前端。**
+- **5.2** 数据模型与迁移（已获批准实施并就绪验收）：5 张新表 ORM；`push_subscriptions` 扩充；Alembic（预检 + batch 重建 + 新表 + 数据逐行核验）；`table_column_comments` 注册；**验收测试：7–14、33、36、38、39，全部必须在真实 SQLite 文件上执行**（部分唯一索引、表达式索引、CHECK、复合外键、batch 重建均在真实连接上核验）。**不触碰 `uow.py`、Dispatcher、Worker、前端，不修改业务层代码。**
 - **5.3** Outbox 写入接入 UoW、Dispatcher、Delivery Worker（测试 1–6、24）。
 - **5.4** Web Push 外呼、多代密钥库、状态码分级、SSRF、鉴权收紧（测试 15–19、26–27）。
 - **5.5** 通知中心 REST + `notification_changes` SSE（测试 25）。

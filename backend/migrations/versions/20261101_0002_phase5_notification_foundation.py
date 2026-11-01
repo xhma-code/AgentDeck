@@ -93,7 +93,25 @@ def upgrade() -> None:
     # 0. 迁移前前置预检
     _run_preflight_checks(conn)
 
-    # 1. 重建 push_subscriptions 表：扩充 vapid_key_fingerprint，添加复合唯一键与设备外键
+    # 1. 存量订阅数据快照采集（用于表重建后的逐行一致性与字段完整性核验）
+    old_columns = [
+        "subscription_id",
+        "device_id",
+        "endpoint",
+        "p256dh_key",
+        "auth_key",
+        "user_agent",
+        "created_at",
+        "last_pushed_at",
+        "is_active",
+    ]
+    old_records = conn.execute(
+        sa.text(f"SELECT {', '.join(old_columns)} FROM push_subscriptions ORDER BY subscription_id ASC")
+    ).fetchall()
+    count_before = len(old_records)
+    old_records_map = {row[0]: row for row in old_records}
+
+    # 2. 重建 push_subscriptions 表：扩充 vapid_key_fingerprint，添加复合唯一键与设备外键
     with op.batch_alter_table("push_subscriptions", schema=None, recreate="always") as batch_op:
         batch_op.add_column(
             sa.Column(
@@ -115,6 +133,33 @@ def upgrade() -> None:
             ["device_id"],
             ondelete="CASCADE",
         )
+
+    # 3. 存量订阅数据逐行一致性与回填严格核验
+    new_columns = old_columns + ["vapid_key_fingerprint"]
+    new_records = conn.execute(
+        sa.text(f"SELECT {', '.join(new_columns)} FROM push_subscriptions ORDER BY subscription_id ASC")
+    ).fetchall()
+    count_after = len(new_records)
+    if count_before != count_after:
+        raise RuntimeError(
+            f"数据完整性校验失败：迁移前后 push_subscriptions 行数不一致（迁移前 {count_before} 行，迁移后 {count_after} 行）"
+        )
+    for new_row in new_records:
+        rec_id = new_row[0]
+        if rec_id not in old_records_map:
+            raise RuntimeError(f"数据完整性校验失败：未找到迁移前匹配记录 subscription_id={rec_id}")
+        old_row = old_records_map[rec_id]
+        for idx, col_name in enumerate(old_columns):
+            if new_row[idx] != old_row[idx]:
+                raise RuntimeError(
+                    f"数据完整性校验失败：记录 subscription_id={rec_id} 字段 {col_name} 迁移前后不匹配: "
+                    f"原值={old_row[idx]!r}, 新值={new_row[idx]!r}"
+                )
+        vapid_fp = new_row[-1]
+        if vapid_fp != "legacy_unverified":
+            raise RuntimeError(
+                f"数据完整性校验失败：记录 subscription_id={rec_id} 新增 vapid_key_fingerprint 回填异常: {vapid_fp!r}"
+            )
 
     # 2. 创建第 22 张表：notification_outbox（业务解耦与可靠分流表）
     op.create_table(

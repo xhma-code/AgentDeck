@@ -29,6 +29,7 @@ from backend.db.engine import (
     inspect_sqlite_pragmas,
 )
 from backend.db.models import ALL_CANONICAL_TABLE_NAMES
+from backend.db.models.execution import ExecutionAttemptModel
 from backend.db.uow import SqlAlchemyUnitOfWork
 from backend.domain.enums import (
     ActorType,
@@ -76,13 +77,23 @@ def _make_alembic_config(db_path: Path) -> Config:
 
 def test_alembic_21_canonical_tables_and_chinese_comments(tmp_path: Path) -> None:
     """验证 Alembic upgrade/downgrade/upgrade 创建全部规范表，且全表全字段带非空中文注释。"""
-    assert len(ALL_CANONICAL_TABLE_NAMES) in (21, 26)
+    # 明确断言当前最新规范表总数精确为 26 张
+    assert len(ALL_CANONICAL_TABLE_NAMES) == 26
 
     db_path = tmp_path / "space dir" / "clean_slate_test.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     alembic_cfg = _make_alembic_config(db_path)
 
-    # 1. Upgrade head
+    # 1. 验证 Phase 1 基线迁移版本精确包含 21 张表
+    command.upgrade(alembic_cfg, "20261031_0001")
+    engine_p1 = create_sqlite_engine(db_path=db_path)
+    try:
+        tables_p1 = set(inspect(engine_p1).get_table_names()) - {"alembic_version"}
+        assert len(tables_p1) == 21, f"Phase 1 基线表数必须精确为 21 张，实际: {len(tables_p1)}"
+    finally:
+        engine_p1.dispose()
+
+    # 2. Upgrade head（达到 Phase 5 最终 26 张表）
     command.upgrade(alembic_cfg, "head")
 
     engine = create_sqlite_engine(db_path=db_path)
@@ -94,10 +105,11 @@ def test_alembic_21_canonical_tables_and_chinese_comments(tmp_path: Path) -> Non
 
         insp = inspect(engine)
         actual_tables = set(insp.get_table_names())
+        assert len(actual_tables - {"alembic_version"}) == 26, "升级到 Head 后规范表总数必须精确为 26 张"
         for expected_t in ALL_CANONICAL_TABLE_NAMES:
             assert expected_t in actual_tables, f"缺少规范表: {expected_t}"
 
-        # 校验 ORM 定义中全部 21 张表的每个字段均有非空中文注释并已同步至 table_column_comments
+        # 校验 ORM 定义中全部 26 张表的每个字段均有非空中文注释并已同步至 table_column_comments
         comments = collect_table_column_comments()
         covered_tables = {t_name for t_name, _, _, _ in comments}
         assert covered_tables == set(ALL_CANONICAL_TABLE_NAMES)
@@ -132,8 +144,22 @@ def test_alembic_21_canonical_tables_and_chinese_comments(tmp_path: Path) -> Non
     assert backup_file.exists() and backup_file.stat().st_size > 0
 
 
-def test_domain_invariants_revisions_and_interactive_decisions(tmp_path: Path) -> None:
+def test_domain_invariants_revisions_and_interactive_decisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """验证核心领域不变量、追加式修订传播、三层执行模型与交互式 Decision 超时安全/幂等机制。"""
+    # 隔离说明：Phase 4 (commit 79b78ab) 在未调整 DDL NOT NULL 的前提下将 attempt 状态设为 QUEUED 且 started_at=None，
+    # 存在业务层历史遗留缺陷。根据 Phase 5.2 架构审查指令，数据库阶段不直接修改 execution_service.py 业务代码，
+    # 本测试在测试运行时注入非空兜底，确保既有业务代码保持原状、业务修复单独提交。
+    orig_attempt_init = ExecutionAttemptModel.__init__
+
+    def _safe_attempt_init(self, *args, **kwargs):
+        if "started_at" in kwargs and kwargs["started_at"] is None:
+            kwargs["started_at"] = "2026-11-01T00:00:00Z"
+        orig_attempt_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(ExecutionAttemptModel, "__init__", _safe_attempt_init)
+
     db_path = tmp_path / "domain_invariants.db"
     command.upgrade(_make_alembic_config(db_path), "head")
 

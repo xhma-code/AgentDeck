@@ -115,3 +115,43 @@ def create_online_sqlite_backup(
     res = create_sqlite_online_backup(source_db_path, target_backup_dir, tag=label)
     return Path(res.backup_path)
 
+
+def restore_sqlite_backup(backup_path: Path, target_db_path: Path) -> None:
+    """使用 SQLite Backup API 从备份文件恢复目标数据库并校验完整性。"""
+    bak_resolved = backup_path.resolve()
+    target_resolved = target_db_path.resolve()
+    if not bak_resolved.exists():
+        raise FileNotFoundError(f"备份文件不存在: {bak_resolved}")
+
+    # 验证备份文件本身的完整性
+    chk_conn = sqlite3.connect(f"file:{bak_resolved.as_posix()}?mode=ro", uri=True, timeout=10.0)
+    try:
+        row = chk_conn.execute("PRAGMA integrity_check;").fetchone()
+        integrity = str(row[0] if row else "unknown")
+        if integrity.lower() != "ok":
+            raise RuntimeError(f"待恢复的备份文件损坏或未通过完整性检查: {integrity}")
+    finally:
+        chk_conn.close()
+
+    target_resolved.parent.mkdir(parents=True, exist_ok=True)
+    # 使用 sqlite3 backup API 恢复至目标文件
+    src_conn = sqlite3.connect(f"file:{bak_resolved.as_posix()}?mode=ro", uri=True, timeout=15.0)
+    dst_conn = sqlite3.connect(str(target_resolved), timeout=15.0)
+    try:
+        src_conn.backup(dst_conn, pages=256, sleep=0.01)
+    finally:
+        dst_conn.close()
+        src_conn.close()
+
+    # 校验恢复后目标库完整性
+    verify_conn = sqlite3.connect(f"file:{target_resolved.as_posix()}?mode=ro", uri=True, timeout=10.0)
+    try:
+        row = verify_conn.execute("PRAGMA integrity_check;").fetchone()
+        integrity = str(row[0] if row else "unknown")
+        if integrity.lower() != "ok":
+            raise RuntimeError(f"恢复后目标数据库完整性校验失败: {integrity}")
+    finally:
+        verify_conn.close()
+    logger.info("SQLite 数据库已成功从备份恢复并通过完整性校验: %s -> %s", bak_resolved.name, target_resolved.name)
+
+

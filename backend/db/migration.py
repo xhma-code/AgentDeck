@@ -18,7 +18,8 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import Engine
 
 from backend.config import get_settings
-from backend.core.logger import logger
+from backend.core.logger import log_structured_error, logger
+from backend.db.backup import create_sqlite_online_backup
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 ALEMBIC_INI_PATH = PROJECT_ROOT / "alembic.ini"
@@ -36,18 +37,23 @@ def get_alembic_config(db_path: Optional[Path] = None) -> Config:
 
 
 def backup_database_file(db_path: Path) -> Optional[Path]:
-    """在执行正式数据库迁移前对现有 SQLite 数据库创建时间戳备份副本。"""
+    """在执行正式数据库迁移前使用 SQLite Backup API 创建一致性热备并立即校验完整性。"""
     if not db_path.exists() or db_path.stat().st_size == 0:
         return None
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    backup_path = db_path.with_name(f"{db_path.name}.bak.{timestamp}")
+    backup_dir = db_path.parent / "backups"
     try:
-        shutil.copy2(db_path, backup_path)
-        logger.info("数据库迁移前备份成功: %s", backup_path)
+        res = create_sqlite_online_backup(db_path, backup_dir=backup_dir, tag="migration_pre")
+        backup_path = Path(res.backup_path)
+        logger.info("数据库迁移前在线热备成功并通过完整性校验: %s", backup_path)
         return backup_path
     except Exception as exc:
-        logger.warning("数据库备份失败: %s", exc)
-        return None
+        diag = log_structured_error(
+            problem="数据库迁移前热备失败，已依据安全策略中止迁移",
+            cause=f"{type(exc).__name__}: {exc}",
+            fix="请检查备份目录权限、磁盘空间及当前数据库连接状态，迁移操作已安全中断。",
+            exc=exc,
+        )
+        raise RuntimeError(f"数据库迁移前热备失败，中止迁移以保护现有数据: {exc}") from exc
 
 
 def inspect_migration_status(engine: Engine, db_path: Optional[Path] = None) -> dict[str, Any]:
