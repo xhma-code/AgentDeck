@@ -11,16 +11,16 @@
 
 ---
 
-## 零、第九轮定稿修订说明（消除实现歧义与并发边界）
+## 零、第九轮定稿与最终复核修订说明（锁定实施契约）
 
 | 项 | 修订项 | 对应问题 | 修订核心内容 |
 | :--- | :--- | :--- | :--- |
 | 1 | UoW 原子提交顺序与成员名修正 | P53-08 (P0) | 对齐当前代码 `self._pending_events`；明确先 flush 业务实体，再 flush 事件获取 `seq_id`，再创建 Outbox 并原子提交的执行流水线 |
 | 2 | 10 秒聚合窗口迟到与乱序边界 | P53-05 (P0) | 确立有效聚合闭区间 $[0, 10\text{s}]$；负向乱序事件强制独立建表即关；超时新开窗口与旧窗口关闭在同一 `BEGIN IMMEDIATE` 事务内完成 |
-| 3 | Delivery Worker Fencing CAS | P53-02 (P0) | 明确 Delivery 的成功、重试、熔断及订阅停用全路径必须通过 `attempt_count` CAS 回写保护；停用订阅与 Delivery 状态变更同事务强绑定 |
+| 3 | Delivery Worker Fencing CAS 增强 | P53-02 (P0) | 补齐 `lease_expires_at > :now` 租约有效性条件；影响行数为 0 视为失去执行权，强制回滚且严禁执行订阅停用副作用 |
 | 4 | Attempt 计数语义与术语纠偏 | P53-04 (P0) | 精确定义为“已认领并启动的工作尝试次数”（包含外呼前崩溃）；澄清其不等于实际 HTTP 发包数 |
 | 5 | 用例 12 并发订阅快照场景重构 | P53-07 (P1) | 消除与 SQLite 单写者排他冲突；改为连接 A 持有写锁读取快照，连接 B 写入被阻塞/BUSY，A 提交后 B 写入，断言投递单不追加 |
-| 6 | 统一 Outbox 租约与 Full Jitter 定义 | P53-01/06 (P1) | 统一 Outbox 租约 60 秒、Delivery 租约 30 秒；给出严格数学公式 $delay=\text{random}(0,\min(cap, base \times 2^n))$ 与总等待预算约束 |
+| 6 | 统一 Outbox 租约与重试总预算 | P53-01/06 (P1) | 统一 Outbox 租约 60 秒、Delivery 租约 30 秒；明确“初次执行 + 3 次重试（最多 4 次尝试）”，最大锁等待预算精确为 60 秒 |
 
 ### 第八轮修订说明（保留参考）
 
@@ -250,7 +250,12 @@ WHERE id=:id AND attempt_count < max_attempts
   - **数学公式**：
     $$delay = \text{random}(0, \min(cap, base \times 2^n))$$
     其中基数 $base = 50\text{ms}$，最大退避上限 $cap = 300\text{ms}$，重试轮次 $n \in \{0, 1, 2\}$（最多重试 3 次）。
-  - **总等待预算与调度守卫**：单次写锁等待上限为 15s（`busy_timeout`），叠加 3 次退避抖动，单事务极端总等待预算约为 15~45 秒。调度器设有周期调度守护，若超过 3 次重试仍失败，必须安全释放上下文并记录结构化 error 日志，立即退出当前调度周期，防止单个任务或 Worker 永久阻塞调度循环。
+  - **重试轮次与最大锁等待预算（修正 P53-06，消除计算歧义）**：
+    - **最大事务尝试次数**：固定为**初次执行 + 3 次重试（最多 4 次完整事务尝试）**；
+    - **锁等待上限**：每次事务连接配置 `PRAGMA busy_timeout = 15000`（15 秒）；
+    - **退避策略**：3 次严格 Full Jitter 退避（$delay = \text{random}(0, \min(cap, base \times 2^n))$，$base=50\text{ms}, cap=300\text{ms}$）；
+    - **最大锁等待总预算**：$$4 \times 15\text{s} = 60\text{s}$$
+    - **调度守护**：若经历最多 4 次完整事务尝试后仍捕获 `SQLITE_BUSY` 或锁冲突，必须安全释放事务上下文并记录中文结构化 error 日志，立即安全退出当前调度周期，由外部后台定时器在下一个周期重新调度，严禁单个任务或 Worker 无限阻塞调度循环。
   - **整事务重试原则**：重试必须彻底回滚并释放当前失败事务上下文，从最外层的事务起点（开启全新的数据库连接与事务）重新开始，**严禁在受污染的半事务或脏连接中继续执行**。明确不作“杜绝死锁”的不切实际假设，而是以有限重试与确定性回滚保证系统弹性可用。
 - **并发验证规范**：验收测试必须使用**多个真实独立的 SQLite 数据库连接/多线程**进行并发压力实测，严禁使用单连接协程或共享内存模拟。
 
@@ -419,13 +424,17 @@ WHERE id=:id AND attempt_count < max_attempts
   WHERE id = :delivery_id
     AND status = 'processing'
     AND locked_by = :worker_id
-    AND attempt_count = :claimed_attempt_count;
+    AND attempt_count = :claimed_attempt_count
+    AND lease_expires_at > :now;
   ```
+- **Fencing CAS 权限丧失与副作用零泄漏铁律（修正 P53-02）**：
+  - **执行权判定**：回写时若更新影响行数为 0，必须视为**已彻底失去执行权**（原因包括：自身发生长卡顿导致 `lease_expires_at <= :now` 已过期失效，或者已被其他 Worker 超时接管导致 `attempt_count` 递增或 `locked_by` 变更）。
+  - **强制回滚与零副作用**：一旦影响行数为 0，**严禁产生任何副作用**（包括不得更新 Delivery 状态，严禁停用订阅，严禁写入任何关联流水），必须立即触发强制 `ROLLBACK` 退出！
 - **订阅停用与 Delivery 回写同事务强绑定（防误停用铁律）**：
   当网关返回 410 或连续第 2 次 404 需要置 Delivery 为 `gone` 并停用订阅（`push_subscriptions.is_active = 0`）时：
   1. 必须在**同一个数据库事务**内先后执行 Delivery CAS 回写与订阅停用；
-  2. **前置强断言**：Delivery 的 CAS 回写影响行数**必须为 1**；
-  3. 若影响行数为 0（说明该 Delivery 的租约已超时被其他 Worker 接管）：**必须强制立即 ROLLBACK 整个事务，严禁将订阅停用**！防止过期 Worker 误关活订阅。
+  2. **前置强断言**：Delivery 的 CAS 回写影响行数**必须为 1**（证明身份凭证与租约均在有效期内）；
+  3. 若影响行数为 0：必须立即触发强制 `ROLLBACK` 整个事务，**严禁将订阅停用**，防止过期/假死 Worker 误关活跃订阅。
 - **租约时长统一规定**：
   - **Notification Outbox Dispatcher**：统一为 **60 秒**（`lease_expires_at = utc_now_iso(offset_sec=60)`）；
   - **Notification Delivery Worker**：统一为 **30 秒**（`lease_expires_at = utc_now_iso(offset_sec=30)`）。
