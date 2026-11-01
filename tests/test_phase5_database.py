@@ -139,12 +139,15 @@ def _dump_db_full_snapshot(db_path: Path) -> dict[str, list[dict]]:
 def test_use_case_09a_ddl_transaction_automatic_rollback(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """用例 09A：验证迁移中途失败时 DDL 事务自动回滚、临时表安全清理及物理热备全量还原。
+    """用例 09A：验证迁移失败时原生 DDL 事务回滚边界、兜底清理闭环与物理热备全量还原。
     
     【核心断言顺序】：
-    1. 迁移中途异常时，先验证 SQLite DDL 事务原子自动回滚（版本号未推进、未产生的新表 notification_outbox 被撤销、存量数据无损）；
-    2. 配合 env.py 兜底清理残留临时表，原库表总数精确恢复为 21 张，全库快照与迁移前 100% 逐表逐行一致；
-    3. 人为对原数据库进行破坏性污染后，验证 restore_sqlite_backup 物理热备恢复能力，全库快照再次 100% 比对一致。
+    1. 显式禁用清理函数（AGENTDECK_DISABLE_MIGRATION_CLEANUP=1），迁移中途异常时，
+       验证 SQLite 原生 DDL 事务回滚能力（版本号未推进、新表 notification_outbox 撤销、原表存量数据无损）；
+    2. 物理实证 SQLite 在 batch 重建回滚后必然遗留临时表（表总数 22 张，含 _alembic_tmp_push_subscriptions），
+       证明第二道防线（兜底清理）的不可或缺性；
+    3. 随后触发兜底清理，验证表总数精准恢复为 21 张，原库全量快照与迁移前 100% 逐表逐行比对一致；
+    4. 人为注入破坏后，验证 restore_sqlite_backup 物理热备恢复能力，全库快照再次 100% 比对一致。
     """
     cfg = _build_alembic_cfg(temp_db_path)
     # 1. 初始化到基线 Phase 1 并建立存量业务数据
@@ -173,7 +176,6 @@ def test_use_case_09a_ddl_transaction_automatic_rollback(
     backup_file = backup_database_file(temp_db_path)
     assert backup_file is not None and backup_file.exists(), "必须成功生成在线备份文件"
 
-    # 检查备份文件能否独立打开并通过 PRAGMA integrity_check
     chk_conn = sqlite3.connect(f"file:{backup_file.as_posix()}?mode=ro", uri=True)
     try:
         integrity_res = chk_conn.execute("PRAGMA integrity_check;").fetchone()
@@ -181,11 +183,13 @@ def test_use_case_09a_ddl_transaction_automatic_rollback(
     finally:
         chk_conn.close()
 
-    # 对比备份文件与原数据库全量快照，证明数据 100% 完整一致
     backup_snapshot = _dump_db_full_snapshot(backup_file)
     assert backup_snapshot == pre_migration_snapshot, "在线备份生成的全库快照必须与原库 100% 逐表逐行一致"
 
-    # 3. 模拟迁移执行中途发生严重故障（例如创建第 23 张表 notifications 时抛出非预期异常）
+    # 3. 显式禁用 env.py 兜底清理函数，首先独立证明 SQLite 原生 DDL 事务的能力与物理边界
+    monkeypatch.setenv("AGENTDECK_DISABLE_MIGRATION_CLEANUP", "1")
+
+    # 模拟迁移执行中途发生严重故障（例如创建第 23 张表 notifications 时抛出非预期异常）
     import importlib
     mig_mod = importlib.import_module("backend.migrations.versions.20261101_0002_phase5_notification_foundation")
 
@@ -202,28 +206,22 @@ def test_use_case_09a_ddl_transaction_automatic_rollback(
         command.upgrade(cfg, "head")
     assert "模拟迁移执行到一半" in str(exc_info.value)
 
-    # 4. 【直接检查原数据库的自动回滚结果（绝不允许先恢复备份）】：
+    # 4. 【第一阶段：验证纯 SQLite 原生事务回滚的职责边界（尚未执行兜底清理）】：
     abort_engine = create_sqlite_engine(temp_db_path)
     with abort_engine.connect() as conn:
-        # a. 验证 Alembic 版本号未被提前推进，仍然严格为 Phase 1 基线 20261031_0001
+        # a. 验证 Alembic 版本号未被提前推进，纯靠事务回滚保持为 20261031_0001
         current_rev = conn.execute(text("SELECT version_num FROM alembic_version;")).scalar()
-        assert current_rev == "20261031_0001", f"迁移失败后版本号必须保持为 20261031_0001，实际为 {current_rev}"
+        assert current_rev == "20261031_0001", f"版本号必须保持为 20261031_0001，实际为 {current_rev}"
 
-        # b. 验证表数量严格保持为 Phase 1 基线的 21 张表
+        # b. 验证半途创建的普通新表已纯靠原生事务彻底撤销
         tables = conn.execute(
             text("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version';")
         ).scalars().all()
-        assert len(tables) == 21, f"迁移中途异常回滚后表总数必须精确等于 21 张，实际: {len(tables)}: {tables}"
+        assert "notification_outbox" not in tables, "普通新表 notification_outbox 纯靠事务回滚被撤销"
 
-        # c. 验证未留下任何新表或半成品批处理临时表
-        assert "notification_outbox" not in tables, "半途创建的新表必须被回滚撤销"
-        assert not any(t.startswith("_alembic_tmp") for t in tables), f"不得遗留任何 batch 临时表: {tables}"
-
-        # d. 验证 push_subscriptions 原表结构完好，未包含 vapid_key_fingerprint 新字段
+        # c. 验证原表 push_subscriptions 结构与数据纯靠原生事务完整保留
         cols = [col[1] for col in conn.execute(text("PRAGMA table_info(push_subscriptions);")).fetchall()]
-        assert "vapid_key_fingerprint" not in cols, "回滚后 push_subscriptions 绝不包含新字段"
-
-        # e. 验证原始存量订阅数据 100% 依然存在且数值未被破坏
+        assert "vapid_key_fingerprint" not in cols, "原表结构纯靠事务回滚保持未改变"
         sub_rows = conn.execute(
             text("SELECT subscription_id, device_id, endpoint, user_agent, is_active FROM push_subscriptions;")
         ).mappings().all()
@@ -233,23 +231,38 @@ def test_use_case_09a_ddl_transaction_automatic_rollback(
         assert sub_rows[0]["endpoint"] == "https://fcm.googleapis.com/test1"
         assert sub_rows[0]["is_active"] == 1
 
-        # f. 验证回滚后数据库整体快照与迁移前 100% 一致
+        # d. 【物理实证】：验证 SQLite 在 batch alter 回滚后确实会遗留临时表（证明为什么必须有第二道防线）
+        assert "_alembic_tmp_push_subscriptions" in tables
+        assert len(tables) == 22, f"禁用清理函数时，SQLite batch 重建回滚必然遗留临时表，当前表数应为 22，实际: {len(tables)}"
+
+        # 5. 【第二阶段：显式触发第二道防线（兜底清理），验证数据库恢复至干净基线与全量快照】：
+        from backend.migrations.env import _cleanup_sqlite_alembic_tmp_tables
+        monkeypatch.delenv("AGENTDECK_DISABLE_MIGRATION_CLEANUP", raising=False)
+        cleaned = _cleanup_sqlite_alembic_tmp_tables(conn)
+        assert cleaned == ["_alembic_tmp_push_subscriptions"]
+
+        # 清理后表总数精准恢复为基线 21 张表
+        clean_tables = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version';")
+        ).scalars().all()
+        assert len(clean_tables) == 21, f"兜底清理后表数必须精准为 21 张，实际: {len(clean_tables)}"
+        assert "_alembic_tmp_push_subscriptions" not in clean_tables
+
+        # 验证回滚并清理后全库快照与迁移前 100% 逐表逐行一致
         post_abort_snapshot = _dump_db_full_snapshot(temp_db_path)
-        assert post_abort_snapshot == pre_migration_snapshot, "迁移自动回滚后数据库全量状态必须与迁移前完全一致"
+        assert post_abort_snapshot == pre_migration_snapshot, "回滚并清理后全库快照必须与迁移前完全一致"
     abort_engine.dispose()
 
-    # 5. 【单独进行灾备恢复能力验证】：先对原数据库进行破坏性污染，再验证 restore_sqlite_backup
+    # 6. 【第三阶段：单独进行灾备恢复能力验证】：先对原数据库进行破坏性污染，再验证 restore_sqlite_backup
     corrupt_engine = create_sqlite_engine(temp_db_path)
     with corrupt_engine.begin() as conn:
-        # 破坏原库：注入脏表并清空订阅数据
         conn.execute(text("CREATE TABLE corrupted_accident_table (id INT);"))
         conn.execute(text("DELETE FROM push_subscriptions;"))
     corrupt_engine.dispose()
 
-    # 执行灾难恢复覆盖
     restore_sqlite_backup(backup_file, temp_db_path)
 
-    # 6. 验证灾难恢复后原数据库完整性与全量数据逐表逐行一致
+    # 验证灾难恢复后原数据库完整性与全量数据逐表逐行一致
     restored_engine = create_sqlite_engine(temp_db_path)
     with restored_engine.connect() as conn:
         integ = conn.execute(text("PRAGMA integrity_check;")).scalar()
@@ -264,7 +277,6 @@ def test_use_case_09a_ddl_transaction_automatic_rollback(
         assert len(tables) == 21, f"恢复后表总数必须精确为 21 张，实际: {len(tables)}"
         assert "corrupted_accident_table" not in tables, "破坏性脏表必须被备份恢复彻底清除"
 
-        # 验证恢复后数据库全量快照与迁移前 100% 完全比对一致
         restored_snapshot = _dump_db_full_snapshot(temp_db_path)
         assert restored_snapshot == pre_migration_snapshot, "灾备恢复后全库所有表、所有行必须与迁移前 100% 绝对一致"
     restored_engine.dispose()

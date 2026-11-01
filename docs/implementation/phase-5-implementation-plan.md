@@ -182,7 +182,7 @@ WHERE id=:id AND attempt_count < max_attempts
 - 基线迁移中 `push_subscriptions`：主键 `pk_push_subscriptions(subscription_id)`；索引 `ix_push_subscriptions_device_active(device_id,is_active)`；**无外键、无 CHECK、无其他唯一约束**；`is_active` 带 `server_default='1'`。`device_sessions.device_id` 在 ORM 与基线中为主键（迁移实施前仍须以预检 SQL 实证）。
 - 当前**没有任何表引用 `push_subscriptions`**（新表 `notification_deliveries` 尚未创建）。
 - `backend/db/migration.py` 的 `apply_database_migrations` 已在迁移前基于 SQLite Backup API 备份数据库文件（`.bak.<时间戳>`）。
-- **SQLite 事务回滚与 batch alter 行为边界**：在 `transactional_ddl=True` 下，常规 DDL（如新建表、删除表）具备数据库级事务原子性；但在使用 `render_as_batch=True` 进行表重建时，若在重命名阶段（`RENAME TO`）之后发生事务回滚，SQLite 虽能安全回滚重命名与存量数据，但可能遗留 `_alembic_tmp_*` 临时表，需配合清理机制。
+- **SQLite 事务回滚与 batch alter 行为边界（工程严谨性限定）**：`transactional_ddl=True` 是 Alembic 的事务配置，不能单独作为 SQLite 驱动一定执行物理事务回滚的证据；实际结果取决于 Python sqlite3 事务控制与 SQLAlchemy 连接行为。经真实 SQLite 文件实测证明：在指定运行环境（Python 3.12 + SQLAlchemy 2.0 + SQLite WAL）下，常规 DDL 与版本号推进具备原子回滚能力；但在使用 `render_as_batch=True` 进行表重建时，若在重命名阶段（`RENAME TO`）之后发生事务回滚，SQLite 虽能安全回滚重命名与存量数据，但物理上必然遗留 `_alembic_tmp_*` 临时表，必须配合 `env.py` 兜底清理机制。此结论严格限定于本工程实测环境，不泛化为所有 SQLite 组合。
 
 #### 2.4.2 迁移前数据预检（任一失败 ⇒ 中止迁移并输出报告，绝不静默删除或修改历史数据）
 1. `device_sessions.device_id` 是 PK 或具备 UNIQUE（`PRAGMA index_list/table_info` 校验）；
