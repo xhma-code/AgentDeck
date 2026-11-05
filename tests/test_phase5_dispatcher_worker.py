@@ -71,14 +71,20 @@ def test_use_case_01_uow_outbox_atomicity_and_whitelist(temp_db_path: Path) -> N
     3. 业务抛出异常回滚时，业务实体、events 与 notification_outbox 整体回滚零残留；
     4. 验证白名单集合完整包含 6 类高价值通知事件。
     """
-    # 验证白名单定义完整性
+    # 验证白名单定义完整性（v1.3.0 Phase 5.3 规范扩展白名单）
     expected_whitelist = {
         "task.blocked",
         "task.failed",
+        "task.completed",
+        "step.blocked",
         "step.failed",
+        "step.completed",
         "execution.failed",
+        "execution.completed",
         "decision.created",
+        "decision.expired",
         "decision.timeout",
+        "decision.auto_recommended_submitted",
     }
     assert NOTIFICATION_EVENT_WHITELIST == expected_whitelist
 
@@ -1396,3 +1402,342 @@ def test_use_case_13_sqlite_busy_retry_with_full_jitter(temp_db_path: Path) -> N
     # 释放锁后再次调度，能够成功派发
     processed_after = dispatcher.dispatch_with_retry(max_tasks=1)
     assert processed_after == 1
+
+
+def test_delivery_worker_lease_expired_cas_rejection(temp_db_path: Path) -> None:
+    """用例（Worker 租约真实过期防穿透实测，精准区分新旧时钟实现，P1 级整改）：
+
+    时钟调用阶段与返回值矩阵（严格对齐架构审阅规范）：
+    1. 认领任务阶段：返回 12:00:00Z（租约有效截止时间设定为 12:00:30Z）；
+    2. 阶段二事务开启/初始快照阶段：返回 12:00:29Z（距离到期还剩 1s，旧实现若仅依赖事务启动快照，会误判有效）；
+    3. 阶段二最终 CAS 执行前刷新阶段：返回 12:00:35Z（已过期 5s，新实现必须拒绝 CAS）。
+
+    验证：
+    - 旧实现若只在事务启动时抓取快照（12:00:29Z），CAS 条件成立并错误放行；
+    - 新实现必须在最终 CAS 前刷新时间为 12:00:35Z，断言 CAS 影响行数为 0，返回 False 并整体回滚；
+    - Delivery 状态严格保持 processing，PushSubscription 绝不停用（零副作用）。
+    """
+    engine = create_sqlite_engine(temp_db_path)
+    session_factory = create_session_factory(engine)
+
+    sub_id = "sub-pure-lease-exp"
+    dev_id = "dev-pure-lease-exp"
+    _seed_active_subscription(session_factory, sub_id, dev_id)
+
+    # 阶段化可控时钟
+    clock_state = {"phase": "claim", "commit_called": False}
+
+    def controlled_clock() -> str:
+        if clock_state["phase"] == "claim":
+            return "2026-11-01T12:00:00Z"
+        elif clock_state["phase"] == "execute":
+            # 第一次调用（事务开始时的 tx_started_at 快照）：返回 12:00:29Z（尚未过期）
+            if not clock_state["commit_called"]:
+                clock_state["commit_called"] = True
+                return "2026-11-01T12:00:29Z"
+            # 第二次调用（最终 CAS 前重新获取 commit_now）：返回 12:00:35Z（已经过期！）
+            return "2026-11-01T12:00:35Z"
+        return "2026-11-01T12:00:00Z"
+
+    # 使用 410 状态码：若 CAS 校验被穿透，410 会触发停用订阅；以此断言零副作用
+    adapter = MockWebPushAdapter(default_status_code=410)
+    worker = NotificationDeliveryWorker(
+        session_factory,
+        worker_id="worker-lease-test",
+        adapter=adapter,
+        now_func=controlled_clock,
+    )
+
+    with session_factory() as session:
+        notif = NotificationModel(
+            id="notif-lease-exp",
+            category="decision_required",
+            priority="high",
+            title="租约过期测试通知",
+            body="正文",
+            link_url="/",
+            window_started_at="2026-11-01T12:00:00Z",
+            is_window_open=0,
+            aggregated_count=1,
+            is_read=0,
+            created_at="2026-11-01T12:00:00Z",
+            updated_at="2026-11-01T12:00:00Z",
+        )
+        deliv = NotificationDeliveryModel(
+            id="deliv-lease-exp",
+            notification_id="notif-lease-exp",
+            subscription_id=sub_id,
+            device_id=dev_id,
+            status="pending",
+            attempt_count=0,
+            max_attempts=4,
+            next_retry_at="2026-11-01T12:00:00Z",
+            created_at="2026-11-01T12:00:00Z",
+            updated_at="2026-11-01T12:00:00Z",
+        )
+        session.add(notif)
+        session.flush()
+        session.add(deliv)
+        session.commit()
+
+    # 1. 认领任务（使用 12:00:00Z，租约 30s，到期时间设定为 12:00:30Z）
+    claim = worker.claim_one_task()
+    assert claim is not None
+    assert claim.claimed_attempt_count == 1
+    assert claim.locked_by == "worker-lease-test"
+
+    with session_factory() as session:
+        d = session.get(NotificationDeliveryModel, "deliv-lease-exp")
+        assert d.status == "processing"
+        assert d.lease_expires_at == "2026-11-01T12:00:30Z"
+        assert d.attempt_count == 1
+        assert d.locked_by == "worker-lease-test"
+
+    # 2. 对照验证：证明若使用旧版事务初始快照 12:00:29Z，CAS 会错误放行
+    with session_factory() as session:
+        stale_snapshot_time = "2026-11-01T12:00:29Z"
+        old_cas_matched = session.execute(
+            text(
+                "SELECT count(*) FROM notification_deliveries "
+                "WHERE id = :id AND status = 'processing' AND locked_by = :worker_id "
+                "AND attempt_count = :attempt AND lease_expires_at > :stale_now"
+            ),
+            {
+                "id": claim.delivery_id,
+                "worker_id": "worker-lease-test",
+                "attempt": 1,
+                "stale_now": stale_snapshot_time,
+            },
+        ).scalar()
+        assert old_cas_matched == 1, "对照证明：旧实现若以事务初始快照 12:00:29Z 校验，必然错误认为租约有效放行！"
+
+    # 3. 切换时钟至执行阶段序列：事务开始返回 12:00:29Z，CAS 刷新前返回 12:00:35Z
+    clock_state["phase"] = "execute"
+    clock_state["commit_called"] = False
+
+    # 4. Worker 真实执行 execute_and_commit
+    # 新实现必须在最终 CAS 前重新刷新时钟为 12:00:35Z，拒绝 CAS 回写
+    success = worker.execute_and_commit(claim)
+    assert success is False, "新实现必须在最终 CAS 前重新获取 12:00:35Z，断言租约过期并整体回滚返回 False"
+
+    # 5. 验证零副作用：Delivery 状态不变，订阅绝不停用
+    with session_factory() as session:
+        d_after = session.get(NotificationDeliveryModel, "deliv-lease-exp")
+        assert d_after.status == "processing", "CAS 失败后 Delivery 状态必须保持 processing，等待后续接管"
+        assert d_after.attempt_count == 1
+        assert d_after.delivered_at is None
+        assert d_after.failed_at is None
+
+        sub_after = session.get(PushSubscriptionModel, sub_id)
+        assert sub_after.is_active == 1, "失去租约有效性的 Worker 绝不能触发订阅停用（零副作用保障）"
+
+
+def test_aggregation_window_with_active_subscription_no_duplicate_delivery(temp_db_path: Path) -> None:
+    """用例（聚合通知 + 活跃订阅防重复创建 Delivery 回归实测，P2 级整改）：
+
+    验证：
+    1. 预先存在真实活跃订阅；
+    2. 首条事件派发建立通知 (aggregated_count=1) 并批量生成 Deliveries；
+    3. 在 10s 聚合窗口内派发第二条同聚合键事件，正确合入原通知 (aggregated_count=2)；
+    4. 不重复遍历生成 Delivery，Delivery 数量严格保持不变，绝对不触发 uq_notif_deliveries_notif_sub 唯一约束冲突；
+    5. notification_events 溯源表精准记录 2 条关联，变更流按序记录 created 与 updated。
+    """
+    engine = create_sqlite_engine(temp_db_path)
+    session_factory = create_session_factory(engine)
+
+    # 1. 创建 2 个真实活跃订阅
+    _seed_active_subscription(session_factory, "sub-agg-dup-1", "dev-agg-dup-1")
+    _seed_active_subscription(session_factory, "sub-agg-dup-2", "dev-agg-dup-2")
+
+    dispatcher = NotificationDispatcher(session_factory, dispatcher_id="disp-agg-dup")
+    pid = "proj-agg-dup"
+
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        proj = ProjectModel(
+            id=pid,
+            slug="slug-agg-dup",
+            name="聚合防重测试项目",
+            root_path="/tmp/agg_dup",
+            created_at="2026-11-01T12:00:00Z",
+            updated_at="2026-11-01T12:00:00Z",
+        )
+        uow.session.add(proj)
+        uow.commit()
+
+    # 2. 产生第一条事件 E1 (12:00:00Z)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        uow.record_event(
+            entity_type="task",
+            entity_id="task-same-key",
+            event_type="task.failed",
+            project_id=pid,
+            payload={"error": "首次失败"},
+        )
+        uow._pending_events[-1].created_at = "2026-11-01T12:00:00Z"
+        uow.commit()
+
+    # 派发 E1
+    assert dispatcher.dispatch_one_task() is True
+
+    # 检查状态：1 个开放通知，2 条 Deliveries（对应 2 个订阅各 1 条）
+    with session_factory() as session:
+        notifs = session.query(NotificationModel).filter_by(project_id=pid).all()
+        assert len(notifs) == 1
+        notif_id = notifs[0].id
+        assert notifs[0].aggregated_count == 1
+        assert notifs[0].is_window_open == 1
+
+        deliveries = session.query(NotificationDeliveryModel).filter_by(notification_id=notif_id).all()
+        assert len(deliveries) == 2
+        deliv_ids_e1 = {d.id for d in deliveries}
+
+    # 3. 产生第二条事件 E2 (12:00:05Z，位于 10s 窗口内，相同聚合键 task:task-same-key)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        uow.record_event(
+            entity_type="task",
+            entity_id="task-same-key",
+            event_type="task.failed",
+            project_id=pid,
+            payload={"error": "合流二次失败"},
+        )
+        uow._pending_events[-1].created_at = "2026-11-01T12:00:05Z"
+        uow.commit()
+
+    # 派发 E2：此处必须平滑合流，绝不触发 UNIQUE 约束崩溃
+    assert dispatcher.dispatch_one_task() is True
+
+    # 4. 关键验证：
+    with session_factory() as session:
+        # 通知仍为 1 条，计数递增为 2
+        notifs = session.query(NotificationModel).filter_by(project_id=pid).all()
+        assert len(notifs) == 1
+        assert notifs[0].id == notif_id
+        assert notifs[0].aggregated_count == 2
+        assert notifs[0].is_window_open == 1
+
+        # Deliveries 严格保持为原有的 2 条，未重复创建，未产生 4 条！
+        deliveries = session.query(NotificationDeliveryModel).filter_by(notification_id=notif_id).all()
+        assert len(deliveries) == 2
+        assert {d.id for d in deliveries} == deliv_ids_e1
+
+        # 溯源表关联了 2 条事件
+        events_mapped = session.query(NotificationEventModel).filter_by(notification_id=notif_id).all()
+        assert len(events_mapped) == 2
+
+        # 变更流记录了 2 条：1 个 created，1 个 updated
+        changes = session.query(NotificationChangeModel).filter_by(notification_id=notif_id).all()
+        assert len(changes) == 2
+        types = [c.change_type for c in changes]
+        assert types == ["created", "updated"]
+
+
+def test_uow_outbox_dynamic_status_filtering(temp_db_path: Path) -> None:
+    """用例（Outbox 动态事件过滤与白名单边界回归实测，P2 级整改）：
+
+    验证：
+    1. decision.* 显式白名单事件（decision.expired, decision.auto_recommended_submitted）；
+    2. task.* 与 step.* 的 4 种高价值状态对称全覆盖（blocked, failed, completed, needs_revalidation）；
+    3. execution.* 与 session.* 的动态状态过滤支持；
+    4. 普通运行态（running, pending, active 等）不进入 Outbox；
+    5. 平台状态与 Agent 报告状态不一致时，按高价值状态判定入 Outbox；
+    6. events 审计表全量保留所有事件，Outbox 仅精准沉淀高价值待通知事件。
+    """
+    engine = create_sqlite_engine(temp_db_path)
+    session_factory = create_session_factory(engine)
+
+    pid = "proj-filter-test"
+    test_cases = [
+        # (event_type, payload, expect_outbox, desc)
+        # --- 显式白名单 ---
+        ("decision.expired", {"reason": "用户超时未审批"}, True, "白名单 decision.expired"),
+        ("decision.auto_recommended_submitted", {"mode": "auto"}, True, "白名单 decision.auto_recommended_submitted"),
+
+        # --- Task 4 种高价值状态全覆盖 ---
+        ("task.status_updated", {"platform_status": "blocked"}, True, "Task blocked"),
+        ("task.status_updated", {"platform_status": "failed"}, True, "Task failed"),
+        ("task.status_updated", {"platform_status": "completed"}, True, "Task completed"),
+        ("task.status_updated", {"platform_status": "needs_revalidation"}, True, "Task needs_revalidation"),
+
+        # --- Step 4 种高价值状态全覆盖 ---
+        ("step.status_updated", {"platform_status": "blocked"}, True, "Step blocked"),
+        ("step.status_updated", {"platform_status": "failed"}, True, "Step failed"),
+        ("step.status_updated", {"platform_status": "completed"}, True, "Step completed"),
+        ("step.status_updated", {"platform_status": "needs_revalidation"}, True, "Step needs_revalidation"),
+
+        # --- Execution 动态状态过滤 ---
+        ("execution.status_updated", {"platform_status": "failed"}, True, "Execution failed 入 Outbox"),
+        ("execution.status_updated", {"platform_status": "completed"}, True, "Execution completed 入 Outbox"),
+        ("execution.status_updated", {"platform_status": "running"}, False, "Execution running 不入 Outbox"),
+
+        # --- Session 动态状态过滤 ---
+        ("session.status_updated", {"platform_status": "completed"}, True, "Session completed 入 Outbox"),
+        ("session.status_updated", {"platform_status": "active"}, False, "Session active 不入 Outbox"),
+
+        # --- 普通非通知状态过滤 ---
+        ("task.status_updated", {"platform_status": "running"}, False, "Task running 不入 Outbox"),
+        ("step.status_updated", {"platform_status": "pending"}, False, "Step pending 不入 Outbox"),
+
+        # --- 平台与 Agent 不一致判定 ---
+        (
+            "task.status_updated",
+            {"platform_status": "running", "agent_reported_status": "blocked_by_decision"},
+            True,
+            "平台running但Agent报告blocked_by_decision -> 入 Outbox",
+        ),
+        (
+            "task.status_updated",
+            {"platform_status": "running", "agent_reported_status": "failed"},
+            True,
+            "平台running但Agent报告failed -> 入 Outbox",
+        ),
+        (
+            "task.status_updated",
+            {"platform_status": "running", "agent_reported_status": "working"},
+            False,
+            "平台与Agent均为普通状态 -> 不入 Outbox",
+        ),
+    ]
+
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        proj = ProjectModel(
+            id=pid,
+            slug="slug-filter-test",
+            name="动态过滤测试项目",
+            root_path="/tmp/filter_test",
+            created_at="2026-11-01T12:00:00Z",
+            updated_at="2026-11-01T12:00:00Z",
+        )
+        uow.session.add(proj)
+
+        for idx, (evt_type, payload, _, desc) in enumerate(test_cases):
+            entity_type = evt_type.split(".")[0]
+            uow.record_event(
+                entity_type=entity_type,
+                entity_id=f"entity-{idx}",
+                event_type=evt_type,
+                project_id=pid,
+                payload=payload,
+            )
+        uow.commit()
+
+    with session_factory() as session:
+        # 1. 验证 events 审计表完整记录了全部测试事件
+        events = session.query(EventModel).filter_by(project_id=pid).order_by(EventModel.seq_id.asc()).all()
+        assert len(events) == len(test_cases), f"events 审计表必须全量记录 {len(test_cases)} 条事件"
+
+        # 2. 验证 outbox 记录：仅 expect_outbox == True 的事件被派生
+        outbox_items = (
+            session.query(NotificationOutboxModel)
+            .join(EventModel, NotificationOutboxModel.event_seq_id == EventModel.seq_id)
+            .filter(EventModel.project_id == pid)
+            .order_by(NotificationOutboxModel.event_seq_id.asc())
+            .all()
+        )
+
+        expected_seq_ids = [events[i].seq_id for i, tc in enumerate(test_cases) if tc[2]]
+        actual_seq_ids = [ob.event_seq_id for ob in outbox_items]
+        assert actual_seq_ids == expected_seq_ids, (
+            f"Outbox 事件序列不符合预期！预期 seq_ids={expected_seq_ids}, 实际 seq_ids={actual_seq_ids}"
+        )
+        expected_eligible_count = sum(1 for tc in test_cases if tc[2])
+        assert len(outbox_items) == expected_eligible_count, f"共有 {expected_eligible_count} 条事件符合通知派发条件写入 Outbox"

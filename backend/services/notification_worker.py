@@ -90,6 +90,13 @@ def _parse_iso_to_ts(iso_str: str) -> float:
     return dt.timestamp()
 
 
+def _add_seconds_to_iso(iso_str: str, seconds: int) -> str:
+    """基于基准 UTC ISO 时间戳计算秒数偏移。"""
+    ts = _parse_iso_to_ts(iso_str)
+    dt = datetime.fromtimestamp(ts + seconds, timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class NotificationDeliveryWorker:
     """按订阅投递外呼的 Worker 工作单元服务。"""
 
@@ -239,9 +246,7 @@ class NotificationDeliveryWorker:
     # 阶段二：Mock 外呼与带租约 CAS 回写独立事务
     # -------------------------------------------------------------------------
     def execute_and_commit(self, claim: ClaimedDeliveryTask) -> bool:
-        """调用适配器模拟发送，并在独立写事务内带 lease_expires_at > :now 执行 Fencing CAS 回写。"""
-        now = self._now_func()
-
+        """调用适配器模拟发送，并在独立写事务内带 lease_expires_at > commit_now 执行 Fencing CAS 回写。"""
         # 1. 模拟调用 Web Push 适配器（严格 Mock/Stub，Phase 5.3 绝不发起真实网络外呼）
         resp = self.adapter.send(
             delivery_id=claim.delivery_id,
@@ -255,31 +260,31 @@ class NotificationDeliveryWorker:
         with self._session_factory() as session:
             try:
                 session.execute(text("BEGIN IMMEDIATE;"))
-                # 外呼结束且成功获得写锁后即刻刷新当前绝对时间，确保 Fencing 租约判定与时间戳精准反映锁内时钟
-                now = self._now_func()
+                # 记录获得锁进入写事务时的初始时钟快照（旧实现以此作为唯一时间快照）
+                tx_started_at = self._now_func()
 
                 # 判定状态机目标状态与重试参数
                 target_status = "delivered"
-                delivered_at = None
-                failed_at = None
-                next_retry = now
+                is_delivered = False
+                is_failed = False
+                backoff_sec: Optional[int] = None
                 deactivate_subscription = False
 
                 if status_code == 201:
                     # 分支 A: 投递成功终态
                     target_status = "delivered"
-                    delivered_at = now
+                    is_delivered = True
                     error_msg = None
                 elif status_code == 410:
                     # 分支 B: 明确失效终态，同事务停用订阅
                     target_status = "gone"
-                    failed_at = now
+                    is_failed = True
                     deactivate_subscription = True
                 elif status_code == 404:
                     # 分支 C: 404 判断（同一 Delivery 内连续第 2 次 404 视同 410）
                     if claim.last_http_status == 404:
                         target_status = "gone"
-                        failed_at = now
+                        is_failed = True
                         deactivate_subscription = True
                         error_msg = "Consecutive 404 responses; subscription considered gone"
                     else:
@@ -287,21 +292,29 @@ class NotificationDeliveryWorker:
                         if claim.claimed_attempt_count < 4:
                             target_status = "retry"
                             backoff_sec = 2 * (4 ** (claim.claimed_attempt_count - 1))
-                            next_retry = self._get_now_offset_iso(backoff_sec)
                         else:
                             target_status = "failed"
-                            failed_at = now
+                            is_failed = True
                 else:
                     # 分支 D: 5xx / 429 / 暂时性网络错误
                     if claim.claimed_attempt_count < 4:
                         target_status = "retry"
                         backoff_sec = 2 * (4 ** (claim.claimed_attempt_count - 1))
-                        next_retry = self._get_now_offset_iso(backoff_sec)
                     else:
                         target_status = "failed"
-                        failed_at = now
+                        is_failed = True
 
-                # 3. 执行严格携带 lease_expires_at > :now 的 Fencing CAS 回写
+                # 在最终 CAS 执行前重新获取当前绝对时间 commit_now，用于断言租约有效性并统一对齐时间戳
+                commit_now = self._now_func()
+                delivered_at = commit_now if is_delivered else None
+                failed_at = commit_now if is_failed else None
+                next_retry = (
+                    _add_seconds_to_iso(commit_now, backoff_sec)
+                    if backoff_sec is not None
+                    else commit_now
+                )
+
+                # 3. 执行严格携带 lease_expires_at > commit_now 的 Fencing CAS 回写
                 cas_stmt = (
                     sa.update(NotificationDeliveryModel)
                     .where(
@@ -309,7 +322,7 @@ class NotificationDeliveryWorker:
                         NotificationDeliveryModel.status == "processing",
                         NotificationDeliveryModel.locked_by == self.worker_id,
                         NotificationDeliveryModel.attempt_count == claim.claimed_attempt_count,
-                        NotificationDeliveryModel.lease_expires_at > now,  # 租约有效期强校验
+                        NotificationDeliveryModel.lease_expires_at > commit_now,  # 租约有效期强校验
                     )
                     .values(
                         status=target_status,
@@ -321,7 +334,7 @@ class NotificationDeliveryWorker:
                         locked_by=None,
                         locked_at=None,
                         lease_expires_at=None,
-                        updated_at=now,
+                        updated_at=commit_now,
                     )
                 )
                 cas_res = session.execute(cas_stmt)
@@ -344,7 +357,7 @@ class NotificationDeliveryWorker:
                     session.execute(
                         sa.update(PushSubscriptionModel)
                         .where(PushSubscriptionModel.subscription_id == claim.subscription_id)
-                        .values(last_pushed_at=now)
+                        .values(last_pushed_at=commit_now)
                     )
 
                 session.commit()
